@@ -56,6 +56,23 @@ static void airLog(const char *fmt, ...)
 
 #define LOG(fmt, ...) airLog(fmt, ##__VA_ARGS__)
 
+/* Last associate request, kept apart from the log ring so scans cannot push it
+ * out. Only header fields are recorded, never key material. */
+static void setLastAssoc(const char *fmt, ...) __printflike(1, 2);
+static void setLastAssoc(const char *fmt, ...)
+{
+	char buf[256];
+	va_list ap;
+	va_start(ap, fmt);
+	vsnprintf(buf, sizeof(buf), fmt, ap);
+	va_end(ap);
+	if (gLogTarget && gLogLock) {
+		IOLockLock(gLogLock);
+		gLogTarget->setProperty("RTLAirLastAssoc", buf);
+		IOLockUnlock(gLogLock);
+	}
+}
+
 static uint64_t uptimeMs()
 {
 	uint64_t ns;
@@ -567,6 +584,13 @@ IOReturn RTLAirInterface::setWCL_ASSOCIATE(apple80211AssocCandidates *cand)
 
 	const uint8_t *key = c + 64;                 /* embedded apple80211_key */
 	uint32_t keyLen = *(const uint32_t *)(key + 4);
+	{
+		const uint32_t *h = (const uint32_t *)c;
+		const uint32_t *k = (const uint32_t *)key;
+		setLastAssoc("ssid_len %u keyLen %u key hdr %x %x %x %x | req hdr %x %x %x %x %x %x %x %x",
+		    ssidLen, keyLen, k[0], k[1], k[2], k[3],
+		    h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7]);
+	}
 	if (keyLen == 32) {
 		j.has_pmk = 1;
 		memcpy(j.pmk, key + 16, 32);
@@ -1321,7 +1345,7 @@ bool RTLAirNub::start(IOService *provider)
 		LOG("not armed (boot-arg rtlair=1, or 2 with data path), staying out");
 		return false;
 	}
-	LOG("nub 0.27, rtlair=%u", armed);
+	LOG("nub 0.28, rtlair=%u", armed);
 	if (!gWorkQueue)
 		gWorkQueue = (IO80211WorkQueue *)rtl_io_workQueue();
 	if (!gWorkQueue) {
@@ -1370,7 +1394,7 @@ bool RTLAirController::start(IOService *provider)
 	PE_parse_boot_argn("rtlairstep", &step, sizeof(step));
 	/* Everything allocated before IO80211Controller::start is released by free(). */
 	_armed = armed;
-	LOG("start 0.27, rtlair=%u rtlairstep=%u", armed, step);
+	LOG("start 0.28, rtlair=%u rtlairstep=%u", armed, step);
 	if (step == 1) {
 		LOG("rtlairstep 1: nub only");
 		return false;
@@ -1688,7 +1712,7 @@ IOReturn RTLAirController::getDRIVER_VERSION(IO80211SkywalkInterface *, apple802
 	STUB_ENTER();
 	if (!vd)
 		return kIOReturnBadArgument;
-	putStr((uint8_t *)vd, "RTL8814AirLayer 0.27 (radio ABI 1)");
+	putStr((uint8_t *)vd, "RTL8814AirLayer 0.28 (radio ABI 1)");
 	return kIOReturnSuccess;
 }
 
