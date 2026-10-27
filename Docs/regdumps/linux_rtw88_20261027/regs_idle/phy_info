@@ -1,0 +1,39 @@
+==========[Common Info]========
+Is link = Y
+Current CH(fc) = 155
+Current BW = 2
+Current IGI = 0x3d
+TP {Tx, Rx} = {0, 0}Mbps
+1SS for TX and RX = N
+
+==========[Tx Phy Info]========
+[Tx Rate] =  VHT2SMCS9(0x3f)
+
+==========[Rx Phy Info]========
+[Rx Beacon Count] = 18
+[Rx Rate] =  OFDM_6M  (0x4)
+[Rx Rate Count]:
+ * CCK = {0, 0, 0, 0}
+ * OFDM = {18, 0, 0, 0, 0, 0, 0, 0}
+ * HT_MCS[0:7] = {0, 0, 0, 0, 0, 0, 0, 0}
+ * HT_MCS[8:15] = {0, 0, 0, 0, 0, 0, 0, 0}
+ * HT_MCS[16:23] = {0, 0, 0, 0, 0, 0, 0, 0}
+ * VHT_MCS-1ss MCS[0:9] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+ * VHT_MCS-2ss MCS[0:9] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+ * VHT_MCS-3ss MCS[0:9] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+[RSSI(dBm)] = {-40, -46, -42, -48}
+[Rx EVM(dB)] = {-23, -63, -63, -0}
+[Rx SNR] = {25, 24, 27, 25}
+[CFO_tail(KHz)] = {70, 70, 0, 0}
+[Rx Average Status]:
+ * OFDM, EVM: {-23}, SNR: {25}
+ * 1SS, EVM: {-29}, SNR: {25}
+ * 2SS, EVM: {-30, -29}, SNR: {26, 24}
+ * 3SS, EVM: {-0, -0, -0}, SNR: {0, 0, 0}
+[Rx Counter]:
+ * CCA (CCK, OFDM, Total) = (0, 39, 39)
+ * False Alarm (CCK, OFDM, Total) = (0, 1, 1)
+ * CCK cnt (ok, err) = (0, 0)
+ * OFDM cnt (ok, err) = (32, 2)
+ * HT cnt (ok, err) = (0, 0)
+ * VHT cnt (ok, err) = (1, 5)

@@ -1,0 +1,63 @@
+**********************************************
+		BT Coexist info 7
+**********************************************
+============[Coex is STOPPED]============
+==========================================
+Mech/ RFE                                = Non-Shared/ 1
+Coex Ver/ BT Dez/ BT Rpt                 = 00000000/ 0x00/ 0x00000000 (Match)
+Role/ RoleSwCnt/ IgnWL/ Feature          = Master/ 0/ 0
+WL FW/ BT FW/ BT FW Desired/ KT          = 33.6/ 0x0/ 0x0/ B
+AFH Map                                  = 0/ 0/ 0/ ch-(155)
+RSSI/ STA Channel                        = -38dBm/ 155
+TP {Tx, Rx} = {26, 19}Mbps
+[Tx Rate] =  VHT2SMCS9(0x3f)
+[Rx Rate] =  OFDM_6M  (0x4)
+**********************************************
+		BT Status
+**********************************************
+BT status/ rssi/ retry/ pop              = non-conn/ -100dBm/ 0/ 0
+Profiles                                 =  (multi-link 0)
+Reinit/ Relink/ IgnWl/ Feature           = 0/ 0/ 0/ 0x00000000
+Page/ Inq/ iqk/ iqk fail                 = 0/ 0/ 0/ 0
+0xae/ 0xac/ score board (W->B)/ (B->W)   = 0xeaea/ 0xeaea/ 0x0000/ 0x0000
+Hi-Pri TX/RX, Lo-Pri TX/RX               = 0/0, 0/0
+WL_FW                                    = 00 00 00 00 00 00 00
+BT_RSP                                   = 00 00 00 00 00 00 00
+BT_ACT                                   = 00 00 00 00 00 00 00
+**********************************************
+		WiFi Status
+**********************************************
+Scanning                                 = 0
+G_busy/ TX/ RX                           = 1/ TX 26 Mbps/ RX 19 Mbps
+IPS/ Low Power/ PS mode                  = 0/ 0/ 1
+Iface on Port (0)
+	Beacon interval                  = 100
+	Network Type                     = 2
+	Peer   0
+		RSSI                     = 56
+		BW mode                  = 2
+**********************************************
+		Mechanism
+**********************************************
+TDMA                                     = 00 00 00 00 00 (case-0)
+Coex Mode/Free Run/Timer base            = Unknown/ No/ 0
+Table/ 0x6c0/ 0x6c4/ 0x6c8               = 1(255)/ 0x00000000/ 0x00000000/ 0x00000000
+0x778/ 0x6cc/ Run Count/ Reason          = 0x00000001/ 0x08000018/ 0/ reason (WLSTATUS)
+AFH Map to BT                            = 00 00 00
+AntDiv/ BtCtrlLPS/ g_busy                = Off/ 1
+Null All/ Retry/ Ack/ BT Empty/ BT Late  = 0/ 0/ 0/ 0/ 0
+Cnt TDMA Toggle/ Lk 5ms/ Lk 5ms on/ FW   = 0/ 0/ No/ 0
+WL_TxPw/ BT_TxPw/ WL_Rx/ BT_LNA_Lvl      = 0/ 0/ Off/ 0
+**********************************************
+		HW setting
+**********************************************
+LTE Coex/ Path Owner                     = OFF/ BT
+GNT_WL_CTRL/ GNT_BT_CTRL/ Dbg            = RF:HW_BB:HW/ RF:HW_BB:HW/ Off
+GNT_WL/ GNT_BT                           = 0/ 0
+CRC OK CCK/ OFDM/ HT/ VHT                = 0/ 45/ 0/ 2
+CRC ERR CCK/ OFDM/ HT/ VHT               = 0/ 0/ 0/ 0
+HiPr/ Locking/ Locked/ Noisy             = N/ N/ N/ 0
+EVM A/ EVM B/ SNR A/ SNR B               = -24/ -63/ -30/ -25
+CCK-CCA/CCK-FA/OFDM-CCA/OFDM-FA          = 0/ 0/ 60/ 9
+CRC OK CCK/11g/11n/11ac                  = 0/ 45/ 0/ 2
+CRC Err CCK/11g/11n/11ac                 = 0/ 0/ 0/ 0

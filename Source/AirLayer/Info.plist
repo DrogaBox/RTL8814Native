@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleExecutable</key>
+	<string>RTL8814AirLayer</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.DrogaBox.driver.RTL8814AirLayer</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>RTL8814AirLayer</string>
+	<key>CFBundlePackageType</key>
+	<string>KEXT</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.27.0</string>
+	<key>CFBundleSignature</key>
+	<string>????</string>
+	<key>CFBundleSupportedPlatforms</key>
+	<array>
+		<string>MacOSX</string>
+	</array>
+	<key>CFBundleVersion</key>
+	<string>0.27.0</string>
+	<key>NSHumanReadableCopyright</key>
+	<string>Copyright (c) 2026 DrogaBox. GPL-2.0.</string>
+	<key>IOKitPersonalities</key>
+	<dict>
+		<key>RTL8814AirLayer</key>
+		<dict>
+			<key>CFBundleIdentifier</key>
+			<string>com.DrogaBox.driver.RTL8814AirLayer</string>
+			<key>IOClass</key>
+			<string>RTLAirNub</string>
+			<key>IOProviderClass</key>
+			<string>RTL8814Native</string>
+			<key>IOProbeScore</key>
+			<integer>1000</integer>
+		</dict>
+		<key>RTL8814AirController</key>
+		<dict>
+			<key>CFBundleIdentifier</key>
+			<string>com.DrogaBox.driver.RTL8814AirLayer</string>
+			<key>IOClass</key>
+			<string>RTLAirController</string>
+			<key>IOProviderClass</key>
+			<string>RTLAirNub</string>
+			<key>IOProbeScore</key>
+			<integer>1000</integer>
+		</dict>
+	</dict>
+	<key>OSBundleLibraries</key>
+	<dict>
+		<key>com.apple.driver.corecapture</key>
+		<string>1.0.0</string>
+		<key>com.apple.iokit.IO80211Family</key>
+		<string>1.0</string>
+		<key>com.apple.iokit.IOSkywalkFamily</key>
+		<string>1.0</string>
+		<key>com.apple.iokit.IONetworkingFamily</key>
+		<string>1.5.0</string>
+		<key>com.apple.kpi.bsd</key>
+		<string>8.10.0</string>
+		<key>com.apple.kpi.iokit</key>
+		<string>8.10.0</string>
+		<key>com.apple.kpi.libkern</key>
+		<string>8.10.0</string>
+		<key>com.apple.kpi.mach</key>
+		<string>8.10.0</string>
+	</dict>
+	<key>OSBundleRequired</key>
+	<string>Network-Root</string>
+</dict>
+</plist>

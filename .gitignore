@@ -1,0 +1,25 @@
+# Build artifacts
+Build/
+*.o
+*.linker-file
+*.dSYM
+
+# Local backups & diagnostic session logs
+Backups/
+Logs/
+
+# Pre-compiled CLI binary
+Tools/test_uc
+Tools/test_uc.prev
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store
+._*
+
+# Editor
+*.swp
+.idea/
+.vscode/
+Tools/cardcap

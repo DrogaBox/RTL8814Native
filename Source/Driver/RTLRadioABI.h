@@ -1,0 +1,116 @@
+/*
+ * RTL8814Native — radio ABI
+ *
+ * A small, stable surface for a separate kext (the planned native IO80211
+ * layer, Phase 5) to drive the radio without linking against it. Calls go
+ * through IOService::callPlatformFunction on the RTL8814Native instance:
+ *
+ *   drv->callPlatformFunction(RTL_RADIO_FN_STATUS, false, &st, NULL, NULL, NULL);
+ *
+ * The header is plain C with fixed-width fields so both kexts (and test_uc,
+ * through kRTLUC_RadioCall) share it. Bump RTL_RADIO_ABI on any layout change.
+ *
+ * Copyright (c) 2026 DrogaBox — GPL-2.0
+ */
+#ifndef _RTL8814_RADIO_ABI_H
+#define _RTL8814_RADIO_ABI_H
+
+#include <stdint.h>
+
+#define RTL_RADIO_ABI             1
+
+/* Function names (OSSymbol keys for callPlatformFunction); p1..p4 below */
+#define RTL_RADIO_FN_ABI          "rtlRadioAbi"        /* p1: uint32_t *abi (out) */
+#define RTL_RADIO_FN_SCAN_START   "rtlRadioScanStart"  /* no args; kIOReturnBusy if one is running */
+#define RTL_RADIO_FN_SCAN_COPY    "rtlRadioScanCopy"   /* p1: struct rtl_radio_bss[], p2: uint32_t *count (in: capacity, out: filled) */
+#define RTL_RADIO_FN_CHANNELS     "rtlRadioChannels"   /* p1: struct rtl_radio_chan[], p2: uint32_t *count (in/out) */
+#define RTL_RADIO_FN_JOIN         "rtlRadioJoin"       /* p1: const struct rtl_radio_join * */
+#define RTL_RADIO_FN_STATUS       "rtlRadioStatus"     /* p1: struct rtl_radio_status * (out) */
+#define RTL_RADIO_FN_LEAVE        "rtlRadioLeave"      /* no args */
+#define RTL_RADIO_FN_MAC          "rtlRadioMac"        /* p1: uint8_t[6] (out) */
+/* p1: const uint8_t[6]. Not while linked or joining (kIOReturnBusy); builds
+ * before 4.15 answer kIOReturnUnsupported. Lasts until the kext unloads. */
+#define RTL_RADIO_FN_SET_MAC      "rtlRadioSetMac"
+/*
+ * Data path. While a hook is attached every received data frame (Ethernet
+ * framing) goes to the hook as an mbuf the hook then owns, and en2 reports
+ * its link inactive. The hook runs on the RX workqueue thread: it must not
+ * block or call back into the radio.
+ */
+#define RTL_RADIO_FN_DATA_HOOK    "rtlRadioDataHook"   /* p1: rtl_radio_rx_fn (NULL = detach), p2: void *ctx */
+#define RTL_RADIO_FN_TX           "rtlRadioTx"         /* p1: mbuf_t, Ethernet frame (consumed in all cases) */
+
+typedef void (*rtl_radio_rx_fn)(void *ctx, void *mbuf);
+
+/* rtl_radio_status.state */
+#define RTL_RADIO_S_IDLE          0
+#define RTL_RADIO_S_SCAN          1
+#define RTL_RADIO_S_JOINING       2   /* auth/assoc in progress */
+#define RTL_RADIO_S_LINKED        3   /* associated (keys may still be pending, see port_valid) */
+
+#define RTL_RADIO_BAND_2G         0
+#define RTL_RADIO_BAND_5G         1
+
+/* Channel widths (bss_bw, rx_bw) */
+#define RTL_RADIO_BW_20           0
+#define RTL_RADIO_BW_40           1
+#define RTL_RADIO_BW_80           2
+
+#define RTL_RADIO_MAX_IES         1024
+
+struct rtl_radio_bss {
+	uint8_t  bssid[6];
+	uint8_t  ssid_len;
+	uint8_t  ssid[32];
+	uint8_t  channel;          /* primary channel */
+	uint8_t  band;             /* RTL_RADIO_BAND_* */
+	uint8_t  security;         /* 0 = open, 1 = WEP, 2 = WPA, 3 = WPA2 */
+	int16_t  rssi_dbm;
+	uint16_t capinfo;
+	uint16_t intval;           /* beacon interval (TU) */
+	uint16_t ies_len;          /* bytes valid in ies[] */
+	uint8_t  ies[RTL_RADIO_MAX_IES]; /* elements from the SSID on, as received
+	                            * (truncated past RTL_RADIO_MAX_IES) */
+};
+
+struct rtl_radio_chan {
+	uint8_t  channel;
+	uint8_t  band;             /* RTL_RADIO_BAND_* */
+	uint8_t  passive;          /* passive scan only (DFS / regulatory) */
+	uint8_t  reserved;
+};
+
+struct rtl_radio_join {
+	uint8_t  ssid_len;
+	uint8_t  ssid[32];
+	uint8_t  has_pmk;          /* 0 = open network */
+	uint8_t  pmk[32];          /* WPA2-PSK PMK (PBKDF2 output), never a passphrase */
+	uint8_t  bssid[6];         /* preferred BSS, all zero = any */
+};
+
+struct rtl_radio_status {
+	uint32_t state;            /* RTL_RADIO_S_* */
+	uint8_t  port_valid;       /* 4-way handshake done (or open network) */
+	uint8_t  rsn;              /* WPA2 in use */
+	uint8_t  bssid[6];
+	uint8_t  ssid_len;
+	uint8_t  ssid[32];
+	uint8_t  channel;          /* primary channel */
+	uint8_t  band;             /* RTL_RADIO_BAND_* */
+	uint8_t  bss_bw;           /* operating width, RTL_RADIO_BW_* */
+	uint8_t  center;           /* center channel of that width */
+	int16_t  rssi_dbm;
+	uint8_t  tx_rate;          /* DESC_RATE* from the FW RA report (0x2C + n = VHT1SS MCSn, ...) */
+	uint8_t  tx_sgi;
+	uint8_t  rx_rate;          /* DESC_RATE* of the last unicast data frame */
+	uint8_t  rx_bw;
+	uint8_t  rx_sgi;
+	uint8_t  nss;              /* spatial streams negotiated with the AP (1-4) */
+	uint8_t  hook_attached;    /* RX goes to the data hook, en2 link inactive */
+	uint8_t  scanning;         /* a scan is running (state stays LINKED during a
+	                            * scan while associated); 0 from builds before 4.11 */
+	int8_t   noise_dbm;        /* noise floor estimate, 0 = unknown (and before 4.16) */
+	uint8_t  reserved[1];
+};
+
+#endif /* _RTL8814_RADIO_ABI_H */

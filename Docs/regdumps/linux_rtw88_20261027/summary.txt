@@ -1,0 +1,12 @@
+IF=wlan0 DRV=rtw88_8814au usb_speed=5000
+	SSID: QueMirasBobo
+	freq: 5785.0
+	signal: -46 dBm
+	rx bitrate: 6.0 MBit/s
+	tx bitrate: 866.7 MBit/s VHT-MCS 9 80MHz short GI VHT-NSS 2
+DOWN run1 35950764 B/s  1.390793s  http=200
+DOWN run2 40077108 B/s  1.247597s  http=200
+DOWN run3 45723733 B/s  1.093526s  http=200
+UP   run1 32332659 B/s  0.773214s  http=200
+UP   run2 34993127 B/s  0.714428s  http=200
+UP   run3 28384093 B/s  0.880777s  http=200
