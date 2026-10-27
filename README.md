@@ -95,6 +95,7 @@ clang -Wall -O2 Tools/test_uc.c -framework IOKit -framework CoreFoundation -o To
 - [Docs/ROADMAP.md](Docs/ROADMAP.md): what is done, what is open, and why
 - [Docs/ARCHITECTURE.md](Docs/ARCHITECTURE.md): hardware notes, USB rules, and a dated log of bugs and fixes
 - [Docs/PHASE5_IO80211.md](Docs/PHASE5_IO80211.md): notes on Apple's IO80211Family and Skywalk, including vtable layouts
+- [Docs/SAE_HANDOFF.md](Docs/SAE_HANDOFF.md): WPA3-SAE, how far it got and what is still to write
 
 ## License
 
