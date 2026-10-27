@@ -424,3 +424,18 @@ Bugs found re-reading 0.1, all fixed in 0.2:
      needs to change.
 4. **Data path:** with `rtlair=2`, join from the Wi-Fi menu; DHCP should come up on the new
    interface instead of en2.
+
+## WPA3-SAE gates (layer 0.29 / 0.30)
+
+macOS refuses a WPA3-only network before the layer ever sees it, unless the card says it can do SAE. I found three gates by tracing `airportd` and `Apple80211Associate2` (IO80211.framework) with lldb breakpoints and `dyld_info -disassemble`:
+
+1. `airportd` checks that `capabilities` contains 75, otherwise it fails with "WPA3-SAE security not supported for this platform". That is userspace byte 9 bit 3 of CARD_CAPABILITIES, so `p[13] |= 0x08` in the kernel struct (the family strips a 4-byte version, same shift as the AWDL bit).
+2. `Apple80211IsAuthSelAllowed(SAE)` needs that same bit, `wifi.forcewpa2` off, and a PMF flag.
+3. The PMF flag comes from `_getMFPCaps`, which reports nothing unless userspace byte 6 has bit 0 or bit 4 set (`p[10] |= 0x10`; Broadcom sets it from a firmware feature). Without it `Apple80211Associate2` returns -3900 after 4 ms and no ioctl is sent.
+
+With all three set (layer 0.30), `setWCL_ASSOCIATE` finally runs for a WPA3 hotspot. What macOS hands over for SAE:
+
+- the key length is the passphrase length (8 for my test hotspot), not 32, and the passphrase itself is at `key + 16`;
+- request header dwords: `+16` is 1 and `+20` is 0x1000, which I read as open-system lower auth plus the SAE upper auth.
+
+Side effect: macOS now also tries SAE on my WPA2/WPA3 mixed router, and the layer still refuses anything that is not a 32-byte PMK, so that router stops joining. Layer 0.28 does not have the bits and keeps working. What is missing for real SAE is the Dragonfly exchange on P-256 (commit and confirm in auth frames), PMF with BIP, and the key schedule into the existing 4-way handshake.
