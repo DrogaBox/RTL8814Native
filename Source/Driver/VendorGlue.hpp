@@ -253,7 +253,7 @@ struct rtl_radio_join;
 struct rtl_radio_status;
 int  rtl8814native_radio_scan_copy(struct rtl_radio_bss *out, uint32_t *count);
 int  rtl8814native_radio_channels(struct rtl_radio_chan *out, uint32_t *count);
-int  rtl8814native_radio_join(const struct rtl_radio_join *j);
+int  rtl8814native_radio_join(struct rtl_radio_join *j);
 void rtl8814native_radio_status(struct rtl_radio_status *st);
 void rtl8814native_radio_mac(uint8_t mac[6]);
 int  rtl8814native_radio_set_mac(const uint8_t mac[6]);

@@ -9,6 +9,9 @@
 #
 # Every run first copies EFI/OC/config.plist and the touched kexts to
 # Backups/efi_phase5_<date>/. Ends with Tools/phase5_efi_check.py.
+# Optional per-run source/checksum overrides (for a just-built test kext):
+#   RTL8814_DRIVER_SRC=Build/RTL8814Native.kext RTL8814_DRIVER_MD5=<md5> ... driver
+#   RTL8814_LAYER_SRC=Build/RTL8814AirLayer.kext RTL8814_LAYER_MD5=<md5> ... layer 2
 #
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -19,10 +22,10 @@ OC="$EFI/EFI/OC"
 CFG="$OC/config.plist"
 PB=/usr/libexec/PlistBuddy
 GUID="7C436110-AB2A-4BBB-A880-FE41995C9F82"
-DRIVER_SRC="Backups/build_4.22/RTL8814Native.kext"
-DRIVER_MD5="36ea1ac8a83a606ceeb2d36f8c9ff015"
-LAYER_SRC="Backups/airlayer_0.30/RTL8814AirLayer.kext"
-LAYER_MD5="d84740a6a6a75dc8c6db34af626d6d6e"
+DRIVER_SRC="${RTL8814_DRIVER_SRC:-Backups/build_4.22/RTL8814Native.kext}"
+DRIVER_MD5="${RTL8814_DRIVER_MD5:-36ea1ac8a83a606ceeb2d36f8c9ff015}"
+LAYER_SRC="${RTL8814_LAYER_SRC:-Backups/airlayer_0.30/RTL8814AirLayer.kext}"
+LAYER_MD5="${RTL8814_LAYER_MD5:-d84740a6a6a75dc8c6db34af626d6d6e}"
 
 [ -f "$CFG" ] || { echo "no $CFG (is the EFI mounted?)"; exit 1; }
 # Mount names move between boots ("NO NAME" can be the USB stick): internal disks only

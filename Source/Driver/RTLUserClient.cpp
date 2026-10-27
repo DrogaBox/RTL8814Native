@@ -275,7 +275,7 @@ IOReturn RTLUserClient::radioCall(IOExternalMethodArguments *args)
                 }
                 memcpy(&j, args->structureInput, sizeof(j));
                 ret = _driver->callPlatformFunction(names[op], false, &j, NULL, NULL, NULL);
-                bzero(&j, sizeof(j));   /* do not leave the PMK on the stack */
+                bzero(&j, sizeof(j));   /* do not leave the PMK or SAE password on the stack */
                 break;
         }
         case RTL_UC_RADIO_STATUS:

@@ -201,7 +201,7 @@ private:
 	uint32_t _scanTicks, _joinTicks, _lqmTicks;
 	uint8_t _joinBssid[6];
 	/* The network joined, to re-issue a join the radio dropped and to roam;
-	 * holds the PMK while joining or linked (zeroed on leave or link loss). */
+	 * holds the PMK or SAE password while joining or linked (zeroed on leave or link loss). */
 	struct rtl_radio_join _joinReq;
 	uint32_t _joinRetries, _joinTrace;
 	/* The link as last seen by the poll, answered to WCL while a roam runs. */

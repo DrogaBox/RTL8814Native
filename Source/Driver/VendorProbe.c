@@ -915,7 +915,8 @@ int rtl8814native_join_network(const char *ssid_str, const char *psk_str, uint32
 		return -EINVAL;
 
 	/* Configure Open or WPA2-PSK security + PMK + RSN IE */
-	rtl8814_wpa2_configure(g_padapter, ssid_str, ssid_len, psk_str, auth_mode);
+	rtl8814_wpa2_configure(g_padapter, ssid_str, ssid_len, psk_str,
+			       psk_str ? (u32)strlen(psk_str) : 0, auth_mode);
 
 	NDIS_802_11_SSID ndis_ssid;
 	_rtw_memset(&ndis_ssid, 0, sizeof(ndis_ssid));
@@ -1046,7 +1047,7 @@ int rtl8814native_radio_channels(struct rtl_radio_chan *out, uint32_t *count)
 	return 0;
 }
 
-int rtl8814native_radio_join(const struct rtl_radio_join *j)
+int rtl8814native_radio_join(struct rtl_radio_join *j)
 {
 	static const char hex[] = "0123456789abcdef";
 	static const u8 zero_bssid[6];
@@ -1054,7 +1055,37 @@ int rtl8814native_radio_join(const struct rtl_radio_join *j)
 	char pmk_hex[65];
 	int i, rc;
 
-	if (!j || j->ssid_len == 0 || j->ssid_len > 32)
+	if (!j)
+		return -EINVAL;
+	if (j->is_sae) {
+		if (!j->ssid_len || j->ssid_len > 32 || j->has_pmk ||
+		    !j->sae_password_len || j->sae_password_len > RTL_RADIO_SAE_PASSWORD_MAX) {
+			_rtw_memset(j->sae_password, 0, sizeof(j->sae_password));
+			j->sae_password_len = 0;
+			return -EINVAL;
+		}
+		if (!g_padapter || !g_padapter->bup) {
+			_rtw_memset(j->sae_password, 0, sizeof(j->sae_password));
+			j->sae_password_len = 0;
+			return -ENODEV;
+		}
+		char sae_password[RTL_RADIO_SAE_PASSWORD_MAX + 1];
+		_rtw_memcpy(sae_password, j->sae_password, j->sae_password_len);
+		sae_password[j->sae_password_len] = '\0';
+		rtl8814_wpa2_configure(g_padapter, (const char *)j->ssid, j->ssid_len,
+				       sae_password, j->sae_password_len, RTL8814_AUTH_SAE);
+		rc = -EOPNOTSUPP;
+		_rtw_memset(sae_password, 0, sizeof(sae_password));
+		_rtw_memset(j->sae_password, 0, sizeof(j->sae_password));
+		j->sae_password_len = 0;
+		return rc;
+	}
+	if (j->sae_password_len) {
+		_rtw_memset(j->sae_password, 0, sizeof(j->sae_password));
+		j->sae_password_len = 0;
+		return -EINVAL;
+	}
+	if (j->ssid_len == 0 || j->ssid_len > 32)
 		return -EINVAL;
 	if (!g_padapter || !g_padapter->bup)
 		return -ENODEV;
@@ -1078,7 +1109,8 @@ int rtl8814native_radio_join(const struct rtl_radio_join *j)
 		NDIS_802_11_SSID ndis_ssid;
 
 		rtl8814_wpa2_configure(g_padapter, ssid, j->ssid_len,
-				       j->has_pmk ? pmk_hex : NULL, j->has_pmk ? 1 : 0);
+				       j->has_pmk ? pmk_hex : NULL, j->has_pmk ? 64 : 0,
+				       j->has_pmk ? 1 : 0);
 		_rtw_memset(&ndis_ssid, 0, sizeof(ndis_ssid));
 		_rtw_memcpy(ndis_ssid.Ssid, j->ssid, j->ssid_len);
 		ndis_ssid.SsidLength = j->ssid_len;

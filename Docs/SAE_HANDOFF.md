@@ -27,6 +27,14 @@ Notes for whoever picks this up. Everything below was checked on my one setup (T
 5. **PMF in the data path.** BIP for group management frames, and protected unicast deauth/disassoc. The hardware may or may not help; this is the part I know least about.
 6. **Join log entries** for each step so a failure can be located (`Source/Driver/RTLJoinLog.h`, read with `Tools/test_uc joinlog`).
 
+### Step 1 — SAE passphrase plumbing (ABI 2; built, not deployed)
+
+- `RTL_RADIO_ABI` is now 2. `rtl_radio_join` appends an SAE marker, a passphrase length, and a 63-byte passphrase buffer; the existing WPA2 PMK fields and offsets are unchanged.
+- `setWCL_ASSOCIATE` recognizes upper auth `0x1000`, accepts a non-empty password up to 63 bytes, and copies it into the join request. It continues to treat a 32-byte key as a WPA2 PMK for non-SAE joins.
+- `rtl8814native_radio_join` logs only the password length, calls the supplicant's SAE placeholder, wipes its local copy and the ABI request copy, then returns `-EOPNOTSUPP`. The placeholder resets security state and logs that SAE is not implemented. This is plumbing only; WPA3 joins still fail cleanly.
+- The user-client temporary join structure is wiped after the call. No password bytes are logged or written to the join log.
+- Verification: `./build.sh`, `./build_airlayer.sh`, and the `Tools/test_uc` compile completed; the required vendor-symbol grep returned no matches. No files under `Source/rtl8814au/os_dep/linux/` were built. Nothing has been deployed.
+
 ## How I test
 
 - A phone hotspot set to WPA3 (my router is locked, so I cannot force WPA3 or change its channel). The Wi-Fi password only ever goes into the macOS dialog, never into a command or a log.

@@ -28,9 +28,11 @@ enum rtl8814_wpa2_state {
 	WPA2_STATE_FAILED     = 4
 };
 
-/* Configure securitypriv & PMK before calling rtw_set_802_11_ssid() */
+#define RTL8814_AUTH_SAE 2
+
+/* Configure securitypriv & PMK before calling rtw_set_802_11_ssid(). */
 void rtl8814_wpa2_configure(_adapter *padapter, const char *ssid, u32 ssid_len,
-                            const char *psk, u32 auth_mode);
+                            const char *psk, u32 psk_len, u32 auth_mode);
 
 /* Reset WPA2 state on disconnect */
 void rtl8814_wpa2_reset(_adapter *padapter);

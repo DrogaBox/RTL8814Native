@@ -651,8 +651,7 @@ static int radio_cmd(io_connect_t c, int argc, char **argv) {
         return kr != KERN_SUCCESS;
     }
     if (strcmp(sub, "join") == 0 && argc >= 4) {
-        /* Same path the IO80211 layer will take: the PMK (as airportd hands
-         * it over) is derived here; the passphrase never reaches the kext. */
+        /* WPA2 test path: derive the PMK here; the passphrase never reaches the kext. */
         struct rtl_radio_join j;
         memset(&j, 0, sizeof(j));
         size_t sl = strlen(argv[3]);

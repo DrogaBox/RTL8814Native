@@ -17,14 +17,15 @@
 
 #include <stdint.h>
 
-#define RTL_RADIO_ABI             1
+#define RTL_RADIO_ABI             2
+#define RTL_RADIO_SAE_PASSWORD_MAX 63
 
 /* Function names (OSSymbol keys for callPlatformFunction); p1..p4 below */
 #define RTL_RADIO_FN_ABI          "rtlRadioAbi"        /* p1: uint32_t *abi (out) */
 #define RTL_RADIO_FN_SCAN_START   "rtlRadioScanStart"  /* no args; kIOReturnBusy if one is running */
 #define RTL_RADIO_FN_SCAN_COPY    "rtlRadioScanCopy"   /* p1: struct rtl_radio_bss[], p2: uint32_t *count (in: capacity, out: filled) */
 #define RTL_RADIO_FN_CHANNELS     "rtlRadioChannels"   /* p1: struct rtl_radio_chan[], p2: uint32_t *count (in/out) */
-#define RTL_RADIO_FN_JOIN         "rtlRadioJoin"       /* p1: const struct rtl_radio_join * */
+#define RTL_RADIO_FN_JOIN         "rtlRadioJoin"       /* p1: struct rtl_radio_join * (SAE password consumed and wiped) */
 #define RTL_RADIO_FN_STATUS       "rtlRadioStatus"     /* p1: struct rtl_radio_status * (out) */
 #define RTL_RADIO_FN_LEAVE        "rtlRadioLeave"      /* no args */
 #define RTL_RADIO_FN_MAC          "rtlRadioMac"        /* p1: uint8_t[6] (out) */
@@ -86,6 +87,9 @@ struct rtl_radio_join {
 	uint8_t  has_pmk;          /* 0 = open network */
 	uint8_t  pmk[32];          /* WPA2-PSK PMK (PBKDF2 output), never a passphrase */
 	uint8_t  bssid[6];         /* preferred BSS, all zero = any */
+	uint8_t  is_sae;           /* SAE join: password below, not a PMK */
+	uint8_t  sae_password_len;
+	uint8_t  sae_password[RTL_RADIO_SAE_PASSWORD_MAX]; /* consumed and wiped by the radio */
 };
 
 struct rtl_radio_status {

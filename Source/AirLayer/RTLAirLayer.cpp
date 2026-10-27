@@ -584,6 +584,8 @@ IOReturn RTLAirInterface::setWCL_ASSOCIATE(apple80211AssocCandidates *cand)
 
 	const uint8_t *key = c + 64;                 /* embedded apple80211_key */
 	uint32_t keyLen = *(const uint32_t *)(key + 4);
+	uint32_t upperAuth = *(const uint32_t *)(c + 20);
+	bool isSae = upperAuth == 0x1000;            /* observed Tahoe WCL SAE selector */
 	{
 		const uint32_t *h = (const uint32_t *)c;
 		const uint32_t *k = (const uint32_t *)key;
@@ -591,7 +593,15 @@ IOReturn RTLAirInterface::setWCL_ASSOCIATE(apple80211AssocCandidates *cand)
 		    ssidLen, keyLen, k[0], k[1], k[2], k[3],
 		    h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7]);
 	}
-	if (keyLen == 32) {
+	if (isSae) {
+		if (keyLen == 0 || keyLen > RTL_RADIO_SAE_PASSWORD_MAX) {
+			LOG("associate: SAE passphrase length %u unsupported", keyLen);
+			return kIOReturnUnsupported;
+		}
+		j.is_sae = 1;
+		j.sae_password_len = (uint8_t)keyLen;
+		memcpy(j.sae_password, key + 16, keyLen);
+	} else if (keyLen == 32) {
 		j.has_pmk = 1;
 		memcpy(j.pmk, key + 16, 32);
 	} else if (keyLen != 0) {
@@ -601,7 +611,7 @@ IOReturn RTLAirInterface::setWCL_ASSOCIATE(apple80211AssocCandidates *cand)
 	if (*(const uint32_t *)(c + 532) > 0)
 		memcpy(j.bssid, c + 540, 6);             /* first candidate */
 	LOG("associate: ssid_len %u, auth %u/%u, cipher %u, %u candidates", ssidLen,
-	    *(const uint32_t *)(c + 16), *(const uint32_t *)(c + 20),
+	    *(const uint32_t *)(c + 16), upperAuth,
 	    *(const uint32_t *)(key + 8), *(const uint32_t *)(c + 532));
 	IOReturn r = _ctrl->startJoin(&j);
 	bzero(&j, sizeof(j));
@@ -1860,7 +1870,9 @@ IOReturn RTLAirController::startJoin(const struct rtl_radio_join *j)
 	struct rtl_radio_status st;
 	radioStatus(&st);
 	IOLockLock(_lock);
-	IOReturn r = radio(RTL_RADIO_FN_JOIN, (void *)j);
+	struct rtl_radio_join request;
+	memcpy(&request, j, sizeof(request));
+	IOReturn r = radio(RTL_RADIO_FN_JOIN, &request);
 	if (r == kIOReturnSuccess) {
 		_phase = kJoining;
 		_joinTicks = 0;
@@ -1868,7 +1880,12 @@ IOReturn RTLAirController::startJoin(const struct rtl_radio_join *j)
 		_joinTrace = ~0u;
 		memcpy(_joinBssid, j->bssid, 6);
 		memcpy(&_joinReq, j, sizeof(_joinReq));
+		if (j->is_sae)
+			bzero(_joinReq.sae_password, sizeof(_joinReq.sae_password));
+	} else if (j->is_sae) {
+		bzero(&_joinReq, sizeof(_joinReq));
 	}
+	bzero(&request, sizeof(request));
 	IOLockUnlock(_lock);
 	LOG("join: radio state %u scanning %u before, rtlRadioJoin 0x%x", st.state, st.scanning, r);
 	if (r == kIOReturnSuccess)

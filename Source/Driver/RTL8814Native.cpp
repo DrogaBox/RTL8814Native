@@ -464,9 +464,10 @@ IOReturn RTL8814Native::callPlatformFunction(const OSSymbol *functionName,
                        ? kIOReturnSuccess : kIOReturnNotReady;
         }
         if (functionName->isEqualTo(RTL_RADIO_FN_JOIN)) {
-                int rc = rtl8814native_radio_join((const struct rtl_radio_join *)param1);
+                int rc = rtl8814native_radio_join((struct rtl_radio_join *)param1);
                 return rc == 0 ? kIOReturnSuccess
-                       : rc == -EINVAL ? kIOReturnBadArgument : kIOReturnError;
+                       : rc == -EINVAL ? kIOReturnBadArgument
+                       : rc == -EOPNOTSUPP ? kIOReturnUnsupported : kIOReturnError;
         }
         if (functionName->isEqualTo(RTL_RADIO_FN_STATUS)) {
                 if (!param1)

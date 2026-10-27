@@ -478,7 +478,7 @@ int rtl8814_wpa2_get_state(void)
 }
 
 void rtl8814_wpa2_configure(_adapter *padapter, const char *ssid, u32 ssid_len,
-                            const char *psk, u32 auth_mode)
+                            const char *psk, u32 psk_len, u32 auth_mode)
 {
 	if (!padapter)
 		return;
@@ -486,7 +486,13 @@ void rtl8814_wpa2_configure(_adapter *padapter, const char *ssid, u32 ssid_len,
 	struct security_priv *psec = &padapter->securitypriv;
 	rtl8814_wpa2_reset(padapter);
 
-	size_t psk_len = psk ? strlen(psk) : 0;
+	if (auth_mode == RTL8814_AUTH_SAE) {
+		rtw_reset_securitypriv(padapter);
+		rtl_printk("RTL8814Native: [SAE] passphrase received (length %u); exchange not implemented\n",
+			   psk_len);
+		return;
+	}
+
 	if (auth_mode == 0 || psk_len == 0) {
 		/* Open network */
 		rtw_reset_securitypriv(padapter);
