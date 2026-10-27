@@ -59,6 +59,7 @@ KNOWN = {
     "613b72cbc45b205c86395ca253247790": "RTL8814AirLayer 0.26 (0.25 + setWCL_SET_ROAM_LOCK accepted)",
     "574f1f3aa4b0ea3eabe35caed3ab13e5": "RTL8814AirLayer 0.27 (0.26 + AWDL capability bits p[7]/p[8] in CARD_CAPABILITIES)",
     "7066099fce56a727b6171315a98dcb7f": "RTL8814AirLayer 0.28 (0.27 + RTLAirLastAssoc: header of the last associate request, no key bytes)",
+    "9562958429548084322e45d57bcff933": "RTL8814AirLayer 0.29 (0.28 + capability 75 / p[13] bit 3 so airportd offers WPA3-SAE; experiment, SAE itself not implemented)",
 }
 KEXTS = [("RTL8814Native.kext", "RTL8814Native"), ("RTL8814AirLayer.kext", "RTL8814AirLayer")]
 NVRAM_GUID = "7C436110-AB2A-4BBB-A880-FE41995C9F82"

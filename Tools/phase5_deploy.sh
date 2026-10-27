@@ -21,8 +21,8 @@ PB=/usr/libexec/PlistBuddy
 GUID="7C436110-AB2A-4BBB-A880-FE41995C9F82"
 DRIVER_SRC="Backups/build_4.22/RTL8814Native.kext"
 DRIVER_MD5="36ea1ac8a83a606ceeb2d36f8c9ff015"
-LAYER_SRC="Backups/airlayer_0.28/RTL8814AirLayer.kext"
-LAYER_MD5="7066099fce56a727b6171315a98dcb7f"
+LAYER_SRC="Backups/airlayer_0.29/RTL8814AirLayer.kext"
+LAYER_MD5="9562958429548084322e45d57bcff933"
 
 [ -f "$CFG" ] || { echo "no $CFG (is the EFI mounted?)"; exit 1; }
 # Mount names move between boots ("NO NAME" can be the USB stick): internal disks only

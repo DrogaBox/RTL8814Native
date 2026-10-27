@@ -1345,7 +1345,7 @@ bool RTLAirNub::start(IOService *provider)
 		LOG("not armed (boot-arg rtlair=1, or 2 with data path), staying out");
 		return false;
 	}
-	LOG("nub 0.28, rtlair=%u", armed);
+	LOG("nub 0.29, rtlair=%u", armed);
 	if (!gWorkQueue)
 		gWorkQueue = (IO80211WorkQueue *)rtl_io_workQueue();
 	if (!gWorkQueue) {
@@ -1394,7 +1394,7 @@ bool RTLAirController::start(IOService *provider)
 	PE_parse_boot_argn("rtlairstep", &step, sizeof(step));
 	/* Everything allocated before IO80211Controller::start is released by free(). */
 	_armed = armed;
-	LOG("start 0.28, rtlair=%u rtlairstep=%u", armed, step);
+	LOG("start 0.29, rtlair=%u rtlairstep=%u", armed, step);
 	if (step == 1) {
 		LOG("rtlairstep 1: nub only");
 		return false;
@@ -1712,7 +1712,7 @@ IOReturn RTLAirController::getDRIVER_VERSION(IO80211SkywalkInterface *, apple802
 	STUB_ENTER();
 	if (!vd)
 		return kIOReturnBadArgument;
-	putStr((uint8_t *)vd, "RTL8814AirLayer 0.28 (radio ABI 1)");
+	putStr((uint8_t *)vd, "RTL8814AirLayer 0.29 (radio ABI 1)");
 	return kIOReturnSuccess;
 }
 
@@ -1752,6 +1752,10 @@ IOReturn RTLAirController::getCARD_CAPABILITIES(IO80211SkywalkInterface *, apple
 	 */
 	p[7] |= 0x01;
 	p[8] |= 0x01;
+	/* airportd refuses WPA3-only networks unless capability 75 is present
+	 * (userspace byte 9 bit 3, kernel p[13] bit 3). Experiment: this makes
+	 * macOS ask for SAE on transition networks too. */
+	p[13] |= 0x08;
 	return kIOReturnSuccess;
 }
 
