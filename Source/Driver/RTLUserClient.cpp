@@ -214,6 +214,13 @@ IOReturn RTLUserClient::externalMethod(uint32_t selector,
                 return kIOReturnSuccess;
         }
 
+        case kRTLUC_SetKnob: {
+                if (!args->scalarInput || args->scalarInputCount < 2)
+                        return kIOReturnBadArgument;
+                int rc = rtl8814native_set_knob((uint32_t)args->scalarInput[0], (uint32_t)args->scalarInput[1]);
+                return (rc == 0) ? kIOReturnSuccess : kIOReturnBadArgument;
+        }
+
         default:
                 return kIOReturnUnsupported;
         }

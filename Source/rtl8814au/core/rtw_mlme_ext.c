@@ -3710,6 +3710,18 @@ unsigned int OnAction_back(_adapter *padapter, union recv_frame *precv_frame)
 
 		action = frame_body[1];
 		RTW_INFO("%s, action=%d\n", __FUNCTION__, action);
+		if (action == RTW_WLAN_ACTION_ADDBA_REQ) {
+			u16 p = RTW_GET_LE16(&frame_body[3]);
+
+			rtl8814native_jlog(JL_BA, action | (((p >> 2) & 0xf) << 8),
+					   ((p >> 6) & 0x3ff) | (RTW_GET_LE16(&frame_body[5]) << 16));
+		} else if (action == RTW_WLAN_ACTION_DELBA) {
+			rtl8814native_jlog(JL_BA, action | ((frame_body[3] >> 4) << 8) | (((frame_body[3] >> 3) & 1) << 16),
+					   RTW_GET_LE16(&frame_body[4]));
+		} else if (action == RTW_WLAN_ACTION_ADDBA_RESP) {
+			rtl8814native_jlog(JL_BA, action | (((frame_body[5] >> 2) & 0xf) << 8),
+					   RTW_GET_LE16(&frame_body[3]));
+		}
 		switch (action) {
 		case RTW_WLAN_ACTION_ADDBA_REQ: /* ADDBA request */
 

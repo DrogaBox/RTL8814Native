@@ -27,6 +27,7 @@ enum {
         kRTLUC_GetRxLog      = 8,   /* out: struct rtl8814_rx_log        */
         kRTLUC_RadioCall     = 9,   /* in: op (RTL_UC_RADIO_*), struct in/out: radio ABI call through callPlatformFunction */
         kRTLUC_GetJoinLog    = 10,  /* out: struct rtl_jlog (RTLJoinLog.h) */
+        kRTLUC_SetKnob       = 11,  /* in: knob id, value (live experiments, VendorProbe.c) */
         kRTLUC_SelCount
 };
 

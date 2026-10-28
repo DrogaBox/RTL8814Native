@@ -245,6 +245,7 @@ int  rtl8814native_trigger_scan(void);
 int  rtl8814native_get_scan_results(struct rtl_scan_entry *entries, uint32_t max_entries, uint32_t *out_count);
 int  rtl8814native_join_network(const char *ssid, const char *psk, uint32_t auth_mode);
 int  rtl8814native_disconnect(void);
+int  rtl8814native_set_knob(uint32_t knob, uint32_t value);
 
 /* Radio ABI backends (RTLRadioABI.h, VendorProbe.c) */
 struct rtl_radio_bss;

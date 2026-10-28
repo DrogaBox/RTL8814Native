@@ -40,6 +40,7 @@ enum {
     kRTLUC_GetRxLog      = 8,
     kRTLUC_RadioCall     = 9,
     kRTLUC_GetJoinLog    = 10,
+    kRTLUC_SetKnob       = 11,
 };
 
 #define RX_XFER_LOG_N 16
@@ -541,7 +542,7 @@ static void show_joinlog(io_connect_t connect) {
         "?", "radio join", "radio leave", "do_join", "select", "survey for join", "clnt join",
         "auth rx", "assoc rx", "deauth rx", "disassoc rx", "link timer", "join res",
         "joinbss evt", "join timeout", "disconnect hdl", "indicate disc", "wpa2", "survey done",
-	        "auth tx", "mgmt rx", "regs", "flush scanq", "SAE auth rx", "SAE auth tx", "SAE step", "PMF", "CSA",
+	        "auth tx", "mgmt rx", "regs", "flush scanq", "SAE auth rx", "SAE auth tx", "SAE step", "PMF", "CSA", "BA",
 	    };
     static struct rtl_jlog log;
     size_t sz = sizeof(log);
@@ -577,6 +578,18 @@ static void show_joinlog(io_connect_t connect) {
             else
                 printf("%8u  %-16s %s %d\n", e->t_ms - t0, nm,
                        k < sizeof(kinds) / sizeof(kinds[0]) ? kinds[k] : "?", e->b);
+            continue;
+        }
+        if (e->ev == JL_BA) {
+            unsigned act = e->a & 0xff, tid = (e->a >> 8) & 0xff, ini = (e->a >> 16) & 1;
+            if (act == 0)
+                printf("%8u  %-16s ADDBA request tid=%u bufsize=%u timeout=%u\n", e->t_ms - t0, nm, tid,
+                       e->b & 0xffff, (unsigned)e->b >> 16);
+            else if (act == 1)
+                printf("%8u  %-16s ADDBA response tid=%u status=%d\n", e->t_ms - t0, nm, tid, e->b);
+            else
+                printf("%8u  %-16s DELBA tid=%u from %s reason=%d\n", e->t_ms - t0, nm, tid,
+                       ini ? "originator" : "recipient", e->b);
             continue;
         }
         if (e->ev == JL_CSA) {
@@ -768,6 +781,11 @@ int main(int argc, char **argv) {
             printf("RF[%c][0x%02X] = 0x%05X\n", 'A' + (int)path, reg, v);
     } else if (strcmp(argv[1], "joinlog") == 0) {
         show_joinlog(connect);
+    } else if (strcmp(argv[1], "knob") == 0 && argc >= 4) {
+        /* knob 1 <0|1|255>: RX A-MPDU accept. knob 2 <0|1>: protect robust management frames we send. */
+        uint64_t in[2] = { strtoul(argv[2], NULL, 0), strtoul(argv[3], NULL, 0) };
+        kern_return_t kr = IOConnectCallScalarMethod(connect, kRTLUC_SetKnob, in, 2, NULL, NULL);
+        printf("[+] knob %llu = %llu: %s\n", in[0], in[1], kr == KERN_SUCCESS ? "ok" : "rejected");
     } else if (strcmp(argv[1], "rxlog") == 0) {
         show_rxlog(connect);
     } else if (strcmp(argv[1], "recycle") == 0 && argc >= 3) {

@@ -39,6 +39,8 @@ enum {
 	JL_SAE_STEP,            /* a: SAE step (RTL_SAE_STEP_*), b: result or status */
 	JL_PMF,                 /* a: RTL_PMF_* kind, b: detail (reason, key id or subtype) */
 	JL_CSA,                 /* a: RTL_CSA_* kind, b: channel | bw << 8 | count << 16 */
+	JL_BA,                  /* Block Ack action from the AP. a: action | tid << 8 | initiator << 16,
+	                         * b: ADDBA req: buffer size | timeout << 16; DELBA: reason; ADDBA resp: status */
 };
 
 enum {

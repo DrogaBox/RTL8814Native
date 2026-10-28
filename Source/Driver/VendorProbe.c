@@ -949,6 +949,23 @@ int rtl8814native_join_network(const char *ssid_str, const char *psk_str, uint32
 	return (res == _TRUE) ? 0 : -EIO;
 }
 
+/* Live experiments from Tools/test_uc (kRTLUC_SetKnob). 1: RX A-MPDU accept (0 off, 1 on, 255 auto).
+ * 2: protect robust management frames we send (0 off, 1 on). */
+int rtl8814native_set_knob(uint32_t knob, uint32_t value)
+{
+	if (!g_padapter)
+		return -1;
+	switch (knob) {
+	case 1:
+		g_padapter->fix_rx_ampdu_accept = (u8)value;
+		return 0;
+	case 2:
+		rtl8814_wpa2_pmf_tx_enable(value != 0);
+		return 0;
+	}
+	return -1;
+}
+
 int rtl8814native_disconnect(void)
 {
 	if (!g_padapter)

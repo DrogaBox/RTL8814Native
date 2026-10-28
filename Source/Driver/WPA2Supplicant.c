@@ -556,12 +556,19 @@ int rtl8814_wpa2_pmf_rx(u8 *frame, u32 *len)
  * the next join with status 30, and it never sees our BlockAck responses.
  * Returns 1 when the frame was protected.
  */
+static int g_pmf_tx_enabled = 1;
+
+void rtl8814_wpa2_pmf_tx_enable(int on)
+{
+	g_pmf_tx_enabled = on;
+}
+
 int rtl8814_wpa2_pmf_protect_tx(u8 *frame, u32 *len)
 {
 	size_t out_len = 0;
 	u8 subtype, cat;
 
-	if (!g_pmf_tx.valid || *len < RTL_PMF_MGMT_HDR_LEN || ((frame[0] >> 2) & 3) != 0)
+	if (!g_pmf_tx_enabled || !g_pmf_tx.valid || *len < RTL_PMF_MGMT_HDR_LEN || ((frame[0] >> 2) & 3) != 0)
 		return 0;
 	subtype = (u8)(frame[0] >> 4);
 	if ((subtype != 10 && subtype != 12 && subtype != 13) || frame[1] & 0x40)

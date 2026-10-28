@@ -51,6 +51,7 @@ int rtl8814_wpa2_pmf_rx(u8 *frame, u32 *len);
 
 /* Protect our own deauth/disassoc to the AP of the last SAE link (CCMP, in place). */
 int rtl8814_wpa2_pmf_protect_tx(u8 *frame, u32 *len);
+void rtl8814_wpa2_pmf_tx_enable(int on);
 
 /* Intercepts incoming Ethernet frames; returns 1 if EAPOL (0x888E) consumed */
 int rtl8814_wpa2_rx_eapol(_adapter *padapter, struct sk_buff *skb);

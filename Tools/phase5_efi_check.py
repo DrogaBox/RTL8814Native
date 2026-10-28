@@ -41,6 +41,7 @@ KNOWN = {
     "592d6c18b948573918e1cfd0f5228599": "RTL8814Native 4.27 (4.26 + protected deauth on leave, so a PMF AP drops the association)",
     "b284deba7c704f803a920d20b5f05393": "RTL8814Native 4.28 (4.27 + every unicast deauth/disassoc/robust action protected, answers SA Query)",
     "01d9f68205fbb150102b68e838e6b4ba": "RTL8814Native 4.29 (4.28 + follows an AP channel switch announcement without leaving)",
+    "dd232e96b47245c0ee8cb9e01aed9199": "RTL8814Native 4.30 (4.29 + live knobs via test_uc knob, Block Ack action log)",
     "04402631c59a4a756e356d299f8fd7e2": "RTL8814AirLayer 0.1 (superseded, do not use)",
     "206cf1337b555a57e7b6975301d1fa47": "RTL8814AirLayer 0.2 (superseded, do not use)",
     "92c7d5df31b667590564f8cd95af943c": "RTL8814AirLayer 0.3 (superseded, do not use)",
