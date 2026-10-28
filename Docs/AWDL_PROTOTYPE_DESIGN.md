@@ -141,7 +141,7 @@ setVIRTUAL_IF_CREATE(req):
 
 ## 6. Pendientes para la sesión IDA del usuario
 
-1. Desde `sub_10036C2B0` / `sub_1003654A0` y la continuación del initializer, identificar xrefs directos e indirectos de `Apple80211RawSet/RawGet/Set/Get` y wrappers; transcribir ID/tipo, tamaño, nombre de interfaz, campos, orden y ramo de error.
+1. **Parcialmente resuelto** por [`Docs/AWDL_WIFIP2PD_REQUESTS.md`](AWDL_WIFIP2PD_REQUESTS.md): `RawGet` type 12/len 21 (`CARD_CAPABILITIES`) precede a `RawSet` type 94/len 32 (`VIRTUAL_IF_CREATE`); en esta última, el rol 6 está en `+0x0C` y la MAC en `+4..+9`. Tras el éxito, `wifip2pd` espera un semáforo hasta 30 s; el handle de rol 6 usa el nombre `awdl`. **PENDIENTE de verificar en IDA:** qué evento libera el semáforo; la identidad de los tipos 97 y 293; y las peticiones `get/setAWDL_*` posteriores, con sus buffers y ramas de error. El type 293 observado en otra función no está atribuido a AWDL.
 2. Recuperar nombres/firma de los slots puros de `IO80211AWDLProtocol` (vtable entries 507–569) y el slot 490 aún puro de `IO80211VirtualInterface`, y comparar las implementaciones Broadcom entry by entry.
 3. Confirmar por xref cuál es la llamada virtual en slot `+1648` de `createProxInterface` y si/o cuándo el controller recibe `setAwdlInterface`.
 4. Hacer una prueba de link sólo después de esos datos, con imports limitados a símbolos `0f` de estas versiones; documentar sin ejecutar en hardware hasta disponer de una ruta de recuperación.
