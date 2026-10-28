@@ -34,6 +34,10 @@ enum rtl8814_wpa2_state {
 void rtl8814_wpa2_configure(_adapter *padapter, const char *ssid, u32 ssid_len,
                             const char *psk, u32 psk_len, u32 auth_mode);
 
+/* Arm the 4-way handshake for AKM 00-0F-AC:8 once SAE has produced the PMK */
+void rtl8814_wpa2_start_sae(_adapter *padapter, const u8 pmk[32],
+                            const u8 *rsn_ie, u32 rsn_len, u8 grp_cipher);
+
 /* Reset WPA2 state on disconnect */
 void rtl8814_wpa2_reset(_adapter *padapter);
 

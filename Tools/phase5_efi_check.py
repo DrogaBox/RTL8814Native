@@ -35,6 +35,7 @@ KNOWN = {
     "92599d00cf29ad1291f175049adabc6b": "RTL8814Native 4.23.1 (superseded: SAE start still fails, passphrase wiped before use; 4.23 + entropy served in 64-byte pieces so SAE start can run)",
     "45df0ceebf494a1cb038733c0a65cfb6": "RTL8814Native 4.23.2 (superseded: SAE exchange completes but the join failed on an RSN IE length check; 4.23.1 + keep the passphrase copy when the SAE worker starts)",
     "613d9d9d9d4d88312f2a8d412e06778f": "RTL8814Native 4.23.3 (4.23.2 + SAE association RSN IE length and PMF-required parsing fixed)",
+    "9eca28a115b051ed5341d3cf5c281eb8": "RTL8814Native 4.24 (4.23.3 + 4-way handshake for AKM 8: KDF-SHA256 PTK, AES-128-CMAC MIC)",
     "04402631c59a4a756e356d299f8fd7e2": "RTL8814AirLayer 0.1 (superseded, do not use)",
     "206cf1337b555a57e7b6975301d1fa47": "RTL8814AirLayer 0.2 (superseded, do not use)",
     "92c7d5df31b667590564f8cd95af943c": "RTL8814AirLayer 0.3 (superseded, do not use)",

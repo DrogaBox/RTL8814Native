@@ -18,6 +18,7 @@
 #include "SAE.h"
 #include "SAEAuth.h"
 #include "SAEJoin.h"
+#include "WPA2Supplicant.h"
 
 #define SAE_RX_SLOTS       4
 #define SAE_RX_MAX         (RTL_SAE_COMMIT_MAX_LEN + 16)
@@ -312,6 +313,9 @@ static void sae_complete(_adapter *padapter)
 	g_sae.assoc_ready = 1;
 	g_sae.active = 0;       /* the exchange is over; keys stay for step 4 */
 	_exit_critical_bh(&g_sae.lock, &irqL);
+	/* The AP can send message 1 right after the association response, so
+	 * the handshake has to be armed before the association request goes out. */
+	rtl8814_wpa2_start_sae(padapter, pmk, ie, (u32)ielen, group);
 	_rtw_memset(pmk, 0, sizeof(pmk));
 	_rtw_memset(pmkid, 0, sizeof(pmkid));
 	_rtw_memset(ie, 0, sizeof(ie));

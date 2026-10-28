@@ -13,6 +13,8 @@
 
 #include "WPA2Supplicant.h"
 #include "VendorGlue.hpp"
+#include <linux/random.h>
+#include "SAE.h"
 
 extern netdev_tx_t _rtw_xmit_entry(_pkt *pkt, _nic_hdl pnetdev);
 
@@ -420,7 +422,17 @@ static struct {
 	u8   rsn_ie[64];
 	u32  rsn_ie_len;
 	u8   grp_cipher; /* 0x04 = CCMP, 0x02 = TKIP */
+	int  akm_sae;    /* AKM 00-0F-AC:8: KDF-SHA256 PTK, AES-128-CMAC MIC */
 } g_wpa2 = {0};
+
+/* EAPOL-Key MIC: HMAC-SHA1 for PSK, AES-128-CMAC for SAE (16 bytes either way) */
+static void wpa2_calc_mic(const u8 *data, u32 len, u8 mic[20])
+{
+	if (g_wpa2.akm_sae)
+		rtl_aes128_cmac(g_wpa2.ptk, data, len, mic);
+	else
+		hmac_sha1(g_wpa2.ptk, 16, data, len, mic);
+}
 
 static int hex_val(char c)
 {
@@ -553,6 +565,24 @@ void rtl8814_wpa2_configure(_adapter *padapter, const char *ssid, u32 ssid_len,
 		   ssid, g_wpa2.grp_cipher);
 }
 
+/* An SAE exchange has produced a PMK: arm the handshake for AKM 8. The RSN IE
+ * is the one sent in the association request (the PMKID must match). */
+void rtl8814_wpa2_start_sae(_adapter *padapter, const u8 pmk[32],
+                            const u8 *rsn_ie, u32 rsn_len, u8 grp_cipher)
+{
+	if (!padapter || !pmk || !rsn_ie || !rsn_len || rsn_len > sizeof(g_wpa2.rsn_ie))
+		return;
+	rtl8814_wpa2_reset(padapter);
+	_rtw_memcpy(g_wpa2.pmk, (void *)pmk, 32);
+	_rtw_memcpy(g_wpa2.rsn_ie, (void *)rsn_ie, rsn_len);
+	g_wpa2.rsn_ie_len = rsn_len;
+	g_wpa2.grp_cipher = grp_cipher;
+	g_wpa2.akm_sae = 1;
+	g_wpa2.active = 1;
+	g_wpa2.state = WPA2_STATE_WAIT_MSG1;
+	rtl8814native_jlog(JL_WPA2, WPA2_STATE_WAIT_MSG1, 1);
+}
+
 static void wpa2_send_eapol_key(_adapter *padapter, const u8 *bssid,
                                 u8 desc_type, u16 key_info,
                                 const u8 replay_counter[8],
@@ -600,7 +630,7 @@ static void wpa2_send_eapol_key(_adapter *padapter, const u8 *bssid,
 
 	/* Compute 16-byte MIC using KCK (g_wpa2.ptk[0..15]) */
 	u8 mic[20];
-	hmac_sha1(g_wpa2.ptk, 16, eapol, 4 + body_len, mic);
+	wpa2_calc_mic(eapol, 4 + body_len, mic);
 	_rtw_memcpy(key + 77, mic, 16);
 
 	skb->dev = padapter->pnetdev;
@@ -693,9 +723,18 @@ int rtl8814_wpa2_rx_eapol(_adapter *padapter, struct sk_buff *skb)
 	/* --- Case 1: 4-Way Handshake Message 1/4 (Pairwise + Ack, !MIC) --- */
 	if (is_pairwise && is_ack && !is_mic) {
 		_rtw_memcpy(g_wpa2.anonce, (void *)key_nonce, 32);
-		rtl_get_random_bytes(g_wpa2.snonce, 32);
-
-		wpa2_prf_ptk(g_wpa2.pmk, aa, spa, g_wpa2.anonce, g_wpa2.snonce, g_wpa2.ptk);
+		if (g_wpa2.akm_sae) {
+			/* the SNonce protects the PTK: no xorshift here */
+			if (rtl_sae_entropy_fill(NULL, g_wpa2.snonce, 32)) {
+				g_wpa2.state = WPA2_STATE_FAILED;
+				rtl8814native_jlog(JL_WPA2, WPA2_STATE_FAILED, 0);
+				return 1;
+			}
+			rtl_sae_derive_ptk(g_wpa2.pmk, aa, spa, g_wpa2.anonce, g_wpa2.snonce, g_wpa2.ptk);
+		} else {
+			rtl_get_random_bytes(g_wpa2.snonce, 32);
+			wpa2_prf_ptk(g_wpa2.pmk, aa, spa, g_wpa2.anonce, g_wpa2.snonce, g_wpa2.ptk);
+		}
 
 		u16 reply_info = key_ver | 0x0008 | 0x0100; /* Pairwise | MIC */
 		wpa2_send_eapol_key(padapter, aa, desc_type, reply_info,
@@ -720,7 +759,7 @@ int rtl8814_wpa2_rx_eapol(_adapter *padapter, struct sk_buff *skb)
 		_rtw_memset(tmp + 4 + 77, 0, 16);
 
 		u8 calc_mic[20];
-		hmac_sha1(g_wpa2.ptk, 16, tmp, tot_eapol, calc_mic);
+		wpa2_calc_mic(tmp, tot_eapol, calc_mic);
 		rtw_mfree(tmp, tot_eapol);
 
 		if (_rtw_memcmp(calc_mic, key_mic, 16) == _FALSE) {
@@ -801,7 +840,7 @@ int rtl8814_wpa2_rx_eapol(_adapter *padapter, struct sk_buff *skb)
 		_rtw_memset(tmp + 4 + 77, 0, 16);
 
 		u8 calc_mic[20];
-		hmac_sha1(g_wpa2.ptk, 16, tmp, tot_eapol, calc_mic);
+		wpa2_calc_mic(tmp, tot_eapol, calc_mic);
 		rtw_mfree(tmp, tot_eapol);
 
 		if (_rtw_memcmp(calc_mic, key_mic, 16) == _FALSE)
