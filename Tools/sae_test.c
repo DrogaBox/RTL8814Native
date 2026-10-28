@@ -194,6 +194,9 @@ int main(void)
     REQUIRE(rtl_sae_p256_write_confirm(&sae, confirm) == 0 &&
             confirm[0] == 2 && confirm[1] == 0,
             "advance send-confirm counter");
+    REQUIRE(rtl_sae_p256_write_confirm(&sae, confirm) == 0 &&
+            confirm[0] == 3 && confirm[1] == 0,
+            "SAE confirm retransmission uses a fresh counter");
     sae.send_confirm = UINT16_MAX;
     REQUIRE(rtl_sae_p256_write_confirm(&sae, confirm) == 0 &&
             confirm[0] == 0xff && confirm[1] == 0xff &&

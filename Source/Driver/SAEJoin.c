@@ -324,6 +324,13 @@ static void sae_handle_rx(_adapter *padapter)
 	body = f + SAE_AUTH_HDR;
 	body_len = len - SAE_AUTH_HDR;
 
+	if (status == SAE_STATUS_TOKEN && seq != 1) {
+		sae_fail(padapter, status);
+		return;
+	}
+	if (seq == 1 && status == SAE_STATUS_TOKEN && w_sae.phase == SAE_PH_CONFIRMED) {
+		return; /* A delayed token challenge belongs to the pre-commit exchange. */
+	}
 	if (seq == 1 && status == SAE_STATUS_TOKEN && w_sae.phase == SAE_PH_COMMITTED) {
 		/* group (2 bytes), then the token */
 		if (body_len < 3 || (body[0] | (body[1] << 8)) != RTL_SAE_GROUP_P256 ||
@@ -339,6 +346,9 @@ static void sae_handle_rx(_adapter *padapter)
 		sae_send_commit(padapter);
 		return;
 	}
+	if (seq == 1 && status == SAE_STATUS_TOKEN && w_sae.phase != SAE_PH_COMMITTED) {
+		return;
+	}
 	if (status != 0) {
 		/* 126 (H2E required) and 127 (SAE-PK) show up here plainly */
 		sae_fail(padapter, status);
@@ -347,7 +357,7 @@ static void sae_handle_rx(_adapter *padapter)
 
 	if (seq == 1) {
 		if (w_sae.phase == SAE_PH_CONFIRMED) {
-			/* the AP repeated its commit: repeat our confirm */
+			/* SAE duplicate-commit response: send a fresh Confirm counter and verifier. */
 			sae_send_confirm(padapter);
 			return;
 		}
@@ -392,7 +402,10 @@ static void sae_handle_timeout(_adapter *padapter)
 		return;
 	}
 	sae_step(RTL_SAE_STEP_RETRY, w_sae.last.seq);
-	sae_tx(padapter, w_sae.last.seq, w_sae.last.status, w_sae.last.body, w_sae.last.len);
+	if (w_sae.phase == SAE_PH_CONFIRMED)
+		sae_send_confirm(padapter); /* Each Confirm retry uses a fresh Send-Confirm value. */
+	else
+		sae_tx(padapter, w_sae.last.seq, w_sae.last.status, w_sae.last.body, w_sae.last.len);
 }
 
 enum { SAE_EV_NONE = 0, SAE_EV_START, SAE_EV_RX, SAE_EV_TIMEOUT, SAE_EV_SKIP };
