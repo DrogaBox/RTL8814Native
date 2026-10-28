@@ -137,16 +137,17 @@ static void sae_parse_ap_rsn(_adapter *padapter, u8 *group_cipher, int *pmf_requ
 	if (p[4] == 0x00 && p[5] == 0x0f && p[6] == 0xac)
 		*group_cipher = p[7];
 	{
-		int pos = 8, n;
+		/* offsets into the IE body: version 0, group 2, pairwise count 6 */
+		int pos = 6, n;
 		if (pos + 2 > ielen)
 			return;
 		n = p[2 + pos] | (p[2 + pos + 1] << 8);
-		pos += 2 + 4 * n;
-		if (pos + 2 > ielen)
+		pos += 2 + 4 * n;           /* now at the AKM count */
+		if (n > 16 || pos + 2 > ielen)
 			return;
 		n = p[2 + pos] | (p[2 + pos + 1] << 8);
-		pos += 2 + 4 * n;
-		if (pos + 2 > ielen)
+		pos += 2 + 4 * n;           /* now at the RSN capabilities */
+		if (n > 16 || pos + 2 > ielen)
 			return;
 		*pmf_required = (p[2 + pos] & 0x40) != 0;
 	}
@@ -289,11 +290,13 @@ static void sae_complete(_adapter *padapter)
 		return;
 	}
 	sae_parse_ap_rsn(padapter, &group, &pmf_req);
-	ielen = rtl_sae_build_rsn_ie(group, pmf_req, pmkid, ie, sizeof(ie));
-	if (ielen <= 0 || sae_stale(padapter)) {
+	/* returns 0 on success; the IE has a fixed length */
+	rc = rtl_sae_build_rsn_ie(group, pmf_req, pmkid, ie, sizeof(ie));
+	ielen = rc ? 0 : RTL_SAE_RSN_IE_LEN;
+	if (rc || sae_stale(padapter)) {
 		_rtw_memset(pmk, 0, sizeof(pmk));
 		_rtw_memset(pmkid, 0, sizeof(pmkid));
-		if (ielen <= 0)
+		if (rc)
 			sae_fail(padapter, WLAN_STATUS_UNSPECIFIED_FAILURE);
 		else
 			sae_wipe_worker();
