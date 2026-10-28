@@ -36,6 +36,7 @@ enum {
 	JL_FLUSH_SCANQ,         /* a: ms since the last leave, b: 0 */
 	JL_SAE_AUTH_RX,         /* a: SAE transaction sequence, b: exact status */
 	JL_SAE_AUTH_TX,         /* a: SAE transaction sequence, b: status */
+	JL_SAE_STEP,            /* a: SAE step (RTL_SAE_STEP_*), b: result or status */
 };
 
 struct rtl_jlog_ev {

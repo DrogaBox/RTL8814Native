@@ -13,6 +13,7 @@
 #include <hal_intf.h>
 #include <linux/workqueue.h>
 #include "VendorGlue.hpp"
+#include "SAEJoin.h"
 #include "WPA2Supplicant.h"
 #include "RTLRadioABI.h"
 
@@ -914,6 +915,7 @@ int rtl8814native_join_network(const char *ssid_str, const char *psk_str, uint32
 	if (ssid_len == 0 || ssid_len > 32)
 		return -EINVAL;
 
+	rtl_sae_join_cancel(g_padapter);
 	/* Configure Open or WPA2-PSK security + PMK + RSN IE */
 	rtl8814_wpa2_configure(g_padapter, ssid_str, ssid_len, psk_str,
 			       psk_str ? (u32)strlen(psk_str) : 0, auth_mode);
@@ -953,6 +955,7 @@ int rtl8814native_disconnect(void)
 		return -ENODEV;
 
 	rtl8814native_jlog(JL_RADIO_LEAVE, get_fwstate(&g_padapter->mlmepriv), 0);
+	rtl_sae_join_cancel(g_padapter);
 	g_last_leave_ms = rtw_get_current_time();
 	rtl8814_wpa2_reset(g_padapter);
 	rtw_set_802_11_disassociate(g_padapter);
@@ -1069,16 +1072,33 @@ int rtl8814native_radio_join(struct rtl_radio_join *j)
 			j->sae_password_len = 0;
 			return -ENODEV;
 		}
-		char sae_password[RTL_RADIO_SAE_PASSWORD_MAX + 1];
-		_rtw_memcpy(sae_password, j->sae_password, j->sae_password_len);
-		sae_password[j->sae_password_len] = '\0';
-		rtl8814_wpa2_configure(g_padapter, (const char *)j->ssid, j->ssid_len,
-				       sae_password, j->sae_password_len, RTL8814_AUTH_SAE);
-		rc = -EOPNOTSUPP;
-		_rtw_memset(sae_password, 0, sizeof(sae_password));
-		_rtw_memset(j->sae_password, 0, sizeof(j->sae_password));
-		j->sae_password_len = 0;
-		return rc;
+		{
+			NDIS_802_11_SSID ndis_ssid;
+
+			rtl8814native_jlog(JL_RADIO_JOIN, _rtw_memcmp((void *)j->bssid, (void *)zero_bssid, 6) != _TRUE,
+					   get_fwstate(&g_padapter->mlmepriv));
+			rtl_sae_join_cancel(g_padapter);
+			rtl8814_wpa2_reset(g_padapter);
+			rc = rtl_sae_join_prepare(g_padapter, j->sae_password, j->sae_password_len);
+			_rtw_memset(j->sae_password, 0, sizeof(j->sae_password));
+			j->sae_password_len = 0;
+			if (rc)
+				return rc;
+			_rtw_memset(&ndis_ssid, 0, sizeof(ndis_ssid));
+			_rtw_memcpy(ndis_ssid.Ssid, j->ssid, j->ssid_len);
+			ndis_ssid.SsidLength = j->ssid_len;
+			rtw_set_802_11_infrastructure_mode(g_padapter, Ndis802_11Infrastructure, 0);
+			if (g_last_leave_ms && rtw_get_passing_time_ms(g_last_leave_ms) < RTL_JOIN_REPROBE_MS) {
+				rtl8814native_jlog(JL_FLUSH_SCANQ, rtw_get_passing_time_ms(g_last_leave_ms), 0);
+				g_join_flush_scanq = 1;
+			}
+			rc = rtw_set_802_11_connect(g_padapter, (u8 *)j->bssid, &ndis_ssid) == _TRUE ? 0 : -EIO;
+			/* The passphrase is not kept, so a wake re-join must not run open */
+			g_last_ssid[0] = '\0';
+			if (rc)
+				rtl_sae_join_cancel(g_padapter);
+			return rc;
+		}
 	}
 	if (j->sae_password_len) {
 		_rtw_memset(j->sae_password, 0, sizeof(j->sae_password));
@@ -1089,6 +1109,7 @@ int rtl8814native_radio_join(struct rtl_radio_join *j)
 		return -EINVAL;
 	if (!g_padapter || !g_padapter->bup)
 		return -ENODEV;
+	rtl_sae_join_cancel(g_padapter);
 	rtl8814native_jlog(JL_RADIO_JOIN, _rtw_memcmp((void *)j->bssid, (void *)zero_bssid, 6) != _TRUE,
 			   get_fwstate(&g_padapter->mlmepriv));
 

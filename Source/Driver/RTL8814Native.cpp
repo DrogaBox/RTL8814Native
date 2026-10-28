@@ -287,6 +287,7 @@ void RTL8814Native::stopLocked(IOService *provider)
         }
 
         if (owner) {
+                rtl_sae_join_exit();
                 rtl_workqueue_exit();
                 g_owner = nullptr;
         }
@@ -309,6 +310,7 @@ void RTL8814Native::releaseVendorLocked()
                 return;
         rtl8814native_vendor_remove();
         rtl8814native_set_usb_device(nullptr);
+        rtl_sae_join_exit();
         rtl_workqueue_exit();
         g_owner = nullptr;
 }

@@ -1355,7 +1355,7 @@ bool RTLAirNub::start(IOService *provider)
 		LOG("not armed (boot-arg rtlair=1, or 2 with data path), staying out");
 		return false;
 	}
-	LOG("nub 0.30, rtlair=%u", armed);
+	LOG("nub 0.31, rtlair=%u", armed);
 	if (!gWorkQueue)
 		gWorkQueue = (IO80211WorkQueue *)rtl_io_workQueue();
 	if (!gWorkQueue) {
@@ -1404,7 +1404,7 @@ bool RTLAirController::start(IOService *provider)
 	PE_parse_boot_argn("rtlairstep", &step, sizeof(step));
 	/* Everything allocated before IO80211Controller::start is released by free(). */
 	_armed = armed;
-	LOG("start 0.30, rtlair=%u rtlairstep=%u", armed, step);
+	LOG("start 0.31, rtlair=%u rtlairstep=%u", armed, step);
 	if (step == 1) {
 		LOG("rtlairstep 1: nub only");
 		return false;
@@ -1722,7 +1722,7 @@ IOReturn RTLAirController::getDRIVER_VERSION(IO80211SkywalkInterface *, apple802
 	STUB_ENTER();
 	if (!vd)
 		return kIOReturnBadArgument;
-	putStr((uint8_t *)vd, "RTL8814AirLayer 0.30 (radio ABI 1)");
+	putStr((uint8_t *)vd, "RTL8814AirLayer 0.31 (radio ABI 2)");
 	return kIOReturnSuccess;
 }
 

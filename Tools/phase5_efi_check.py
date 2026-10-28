@@ -31,6 +31,7 @@ KNOWN = {
     "6258f28717b70e77c8d557c154a55497": "RTL8814Native 4.20 (4.19 + directed one-channel probe survey before each join)",
     "c5233bd91c7a226eb72a75f461a892ea": "RTL8814Native 4.21 (4.20 + flush scan queue on recent leave: full SSID survey)",
     "36ea1ac8a83a606ceeb2d36f8c9ff015": "RTL8814Native 4.22 (4.21 + REAUTH_LIMIT=32, MAX_JOIN_TIMEOUT=15000)",
+    "24732ed03947a414fe14c71bf0d80149": "RTL8814Native 4.23 (4.22 + SAE join: auth frames, worker, association RSN IE; stops before the 4-way)",
     "04402631c59a4a756e356d299f8fd7e2": "RTL8814AirLayer 0.1 (superseded, do not use)",
     "206cf1337b555a57e7b6975301d1fa47": "RTL8814AirLayer 0.2 (superseded, do not use)",
     "92c7d5df31b667590564f8cd95af943c": "RTL8814AirLayer 0.3 (superseded, do not use)",
@@ -61,6 +62,7 @@ KNOWN = {
     "7066099fce56a727b6171315a98dcb7f": "RTL8814AirLayer 0.28 (0.27 + RTLAirLastAssoc: header of the last associate request, no key bytes)",
     "9562958429548084322e45d57bcff933": "RTL8814AirLayer 0.29 (0.28 + capability 75 / p[13] bit 3 so airportd offers WPA3-SAE; experiment, SAE itself not implemented)",
     "d84740a6a6a75dc8c6db34af626d6d6e": "RTL8814AirLayer 0.30 (0.29 + PMF capability p[10] bit 4, the third gate of Apple80211IsAuthSelAllowed)",
+    "8558455c7b18623ae6ee50d19dd0e267": "RTL8814AirLayer 0.31 (0.30 + carries the SAE passphrase to the radio, radio ABI 2)",
 }
 KEXTS = [("RTL8814Native.kext", "RTL8814Native"), ("RTL8814AirLayer.kext", "RTL8814AirLayer")]
 NVRAM_GUID = "7C436110-AB2A-4BBB-A880-FE41995C9F82"

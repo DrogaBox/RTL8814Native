@@ -19,6 +19,7 @@
 	#include <rtw_wifi_regd.h>
 #endif /* CONFIG_IOCTL_CFG80211 */
 #include <hal_data.h>
+#include "../../Driver/SAEJoin.h"
 
 
 struct mlme_handler mlme_sta_tbl[] = {
@@ -2376,6 +2377,11 @@ normal:
 	status	= le16_to_cpu(*(unsigned short *)((SIZE_PTR)pframe + WLAN_HDR_A3_LEN + offset + 4));
 
 	rtl8814native_jlog(JL_AUTH_RX, seq, status);
+	/* RTL8814Native: SAE commit/confirm frames belong to the SAE worker */
+	if (algthm == 3 && offset == 0 && rtl_sae_join_active(padapter)) {
+		rtl_sae_join_rx_auth(padapter, pframe + WLAN_HDR_A3_LEN, pkt_len - WLAN_HDR_A3_LEN);
+		return _SUCCESS;
+	}
 	if (status != 0) {
 		RTW_INFO("clnt auth fail, status: %d\n", status);
 		if (status == 13) { /* && pmlmeinfo->auth_algo == dot11AuthAlgrthm_Auto) */
@@ -8952,6 +8958,8 @@ void _issue_assocreq(_adapter *padapter, u8 is_reassoc)
 	struct mlme_ext_info	*pmlmeinfo = &(pmlmeext->mlmext_info);
 	int	bssrate_len = 0, sta_bssrate_len = 0;
 	u8	vs_ie_length = 0;
+	u8	sae_rsn[64];	/* RTL8814Native: SAE association RSN IE */
+	u32	sae_rsn_len = 0;
 #ifdef CONFIG_P2P
 	struct wifidirect_info	*pwdinfo = &(padapter->wdinfo);
 	u8					p2pie[255] = { 0x00 };
@@ -9175,6 +9183,10 @@ void _issue_assocreq(_adapter *padapter, u8 is_reassoc)
 				rtw_ft_update_rsnie(padapter, _TRUE, pattrib, &pframe);
 			} else
 #endif
+			if (rtl_sae_join_assoc_rsn(padapter, sae_rsn, &sae_rsn_len)) {
+				/* RTL8814Native: RSN IE for AKM SAE with the PMKID */
+				pframe = rtw_set_ie(pframe, EID_WPA2, sae_rsn_len - 2, sae_rsn + 2, &(pattrib->pktlen));
+			} else
 			{
 #ifdef CONFIG_IOCTL_CFG80211
 				if (rtw_sec_chk_auth_alg(padapter, WLAN_AUTH_OPEN) &&
@@ -11367,6 +11379,12 @@ void start_clnt_auth(_adapter *padapter)
 no_external_auth:
 #endif /* CONFIG_IOCTL_CFG80211 */
 
+	/* RTL8814Native: an SAE join runs its own exchange instead of the open auth frame */
+	if (rtl_sae_join_active(padapter)) {
+		rtl_sae_join_start(padapter);
+		return;
+	}
+
 	issue_auth(padapter, NULL, 0);
 
 	set_link_timer(pmlmeext, REAUTH_TO);
@@ -13073,6 +13091,12 @@ void link_timer_hdl(void *ctx)
 		if (rtw_sec_chk_auth_type(padapter, NL80211_AUTHTYPE_SAE))
 			return;
 #endif /* CONFIG_IOCTL_CFG80211 */
+
+		/* RTL8814Native: the SAE worker owns retransmission */
+		if (rtl_sae_join_active(padapter)) {
+			rtl_sae_join_timeout(padapter);
+			return;
+		}
 
 		/* re-auth timer */
 		if (++pmlmeinfo->reauth_count > REAUTH_LIMIT) {

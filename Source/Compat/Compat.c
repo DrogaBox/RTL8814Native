@@ -519,6 +519,11 @@ struct rtl_wq {
 
 static struct rtl_wq g_system_wq;
 static struct rtl_wq g_rx_wq;
+/* SAE runs P-256 arithmetic that takes far longer than anything else the
+ * driver queues, so it gets a queue of its own. rtl_flush_scheduled_work()
+ * deliberately does not wait for it: SAE work may itself end in a join
+ * result that flushes the other queues. */
+static struct rtl_wq g_sae_wq;
 
 static int rtl_wq_thread(void *arg)
 {
@@ -598,10 +603,12 @@ void rtl_workqueue_init(void)
 {
         rtl_wq_start(&g_system_wq, "rtl_system_wq");
         rtl_wq_start(&g_rx_wq, "rtl_rx_wq");
+        rtl_wq_start(&g_sae_wq, "rtl_sae_wq");
 }
 
 void rtl_workqueue_exit(void)
 {
+        rtl_wq_stop(&g_sae_wq);
         rtl_wq_stop(&g_rx_wq);
         rtl_wq_stop(&g_system_wq);
 }
@@ -610,6 +617,12 @@ void rtl_work_bind_rx(struct work_struct *w)
 {
         if (w)
                 w->wq = &g_rx_wq;
+}
+
+void rtl_work_bind_sae(struct work_struct *w)
+{
+        if (w)
+                w->wq = &g_sae_wq;
 }
 
 int rtl_schedule_work(struct work_struct *w)

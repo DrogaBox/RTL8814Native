@@ -64,6 +64,8 @@ int  rtl_schedule_work(struct work_struct *w);
 /* Route @w to the dedicated "rtl_rx_wq" thread (bulk IN processing) so
  * TX work blocking on the system queue cannot starve RX. */
 void rtl_work_bind_rx(struct work_struct *w);
+/* Route @w to the dedicated SAE thread (long P-256 computations). */
+void rtl_work_bind_sae(struct work_struct *w);
 
 static inline int schedule_work(struct work_struct *w)
 {
