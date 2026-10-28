@@ -73,7 +73,8 @@ Notes for whoever picks this up. Everything below was checked on my one setup (T
 - The PMK and PMKID are kept in `g_sae` after the exchange for step 4 and wiped on cancel. Nothing uses them yet: `g_wpa2.active` stays 0, so the WPA2 handshake handler ignores the AP's EAPOL message 1, and the join will not complete. After association the AP will time the station out. That is the expected end of step 3.
 - A wake re-join is disabled after an SAE join (`g_last_ssid` is cleared), since the passphrase is not kept and an open re-join would be wrong.
 - Not tested: everything here is build-verified only. The hunt-and-peck compute time in the kernel is unmeasured (about 0.1 s per exchange in the userland harness). The worker has no timeout of its own besides the link timer retries (500 ms, 4 tries) and the join's overall watchdog. `rtl_sae_join_exit` wipes the worker's copy only if the worker still gets to run during unload.
-- Builds: driver md5 `24732ed03947a414fe14c71bf0d80149` (`Backups/build_4.23`), layer 0.31 md5 `8558455c7b18623ae6ee50d19dd0e267` (`Backups/airlayer_0.31`, radio ABI 2). They must be deployed together.
+- First live run (driver 4.23): the join reached the SAE worker on the real AP, then `start` failed in 0 ms. `rtl_sae_p256_start` asks the entropy callback for 254 bytes (the dummy password identifier) and `rtl_sae_entropy_fill` refused anything over 64 bytes; the userland harness has no such limit, so it never showed. The same run proved `_read_random` binds in the running kernel. Fixed in driver 4.23.1 (`Backups/build_4.23.1`, md5 `92599d00cf29ad1291f175049adabc6b`): long requests are served in 64-byte pieces.
+- Builds: driver md5 `24732ed03947a414fe14c71bf0d80149` (`Backups/build_4.23`, superseded), layer 0.31 md5 `8558455c7b18623ae6ee50d19dd0e267` (`Backups/airlayer_0.31`, radio ABI 2). They must be deployed together.
 
 ### Step 3, added: kernel entropy source (built, not deployed)
 

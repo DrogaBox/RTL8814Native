@@ -414,9 +414,17 @@ extern void read_random(void *buffer, u_int numbytes) __attribute__((weak_import
 int rtl_sae_entropy_fill(void *context, uint8_t *output, size_t length)
 {
         (void)context;
-        if (!read_random || !output || length == 0 || length > 64)
+        /* SAE asks for up to 254 bytes at once (the dummy password identifier),
+         * so serve long requests in 64-byte pieces. */
+        if (!read_random || !output || length == 0 || length > 1024)
                 return -1;
-        read_random(output, (u_int)length);
+        while (length) {
+                size_t n = length > 64 ? 64 : length;
+
+                read_random(output, (u_int)n);
+                output += n;
+                length -= n;
+        }
         return 0;
 }
 
