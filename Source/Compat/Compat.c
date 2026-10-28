@@ -403,6 +403,23 @@ void rtl_get_random_bytes(void *buf, int len)
                 *p++ = (u8)(prng_next() >> 32);
 }
 
+/*
+ * Kernel CSPRNG (bsd/sys/random.h, Mach KPI export). The import is weak so
+ * the driver still loads on a kernel that does not export it; kxld then
+ * binds the name to NULL and rtl_sae_entropy_fill reports failure, keeping
+ * SAE unavailable instead of falling back to the xorshift PRNG.
+ */
+extern void read_random(void *buffer, u_int numbytes) __attribute__((weak_import));
+
+int rtl_sae_entropy_fill(void *context, uint8_t *output, size_t length)
+{
+        (void)context;
+        if (!read_random || !output || length == 0 || length > 64)
+                return -1;
+        read_random(output, (u_int)length);
+        return 0;
+}
+
 /* ======================================================================
  * String helpers missing from libkern (no ctype in kernel: ASCII-only)
  * ====================================================================== */

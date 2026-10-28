@@ -1,10 +1,11 @@
 /*
  * RTL8814Native — random + misc small shims
  *
- * get_random_bytes() uses XNU's read_random() when available at link
- * time (BSD KPI); the build falls back to a xorshift64* PRNG seeded
- * from mach_absolute_time (fine for backoff/nonce use during
- * bring-up, revisit before shipping — see ROADMAP phase 4).
+ * get_random_bytes() is a xorshift64* PRNG seeded from mach_absolute_time:
+ * fine for backoff, nonces and other non-secret uses, NOT for key material.
+ * rtl_sae_entropy_fill() is the cryptographically secure path for SAE; it
+ * draws from XNU's kernel CSPRNG through a weak read_random import and
+ * fails closed when the kernel does not provide the symbol.
  *
  * Copyright (c) 2026 DrogaBox — GPL-2.0
  */
@@ -19,6 +20,15 @@ extern "C" {
 
 void rtl_get_random_bytes(void *buf, int len);
 #define get_random_bytes(buf, len)  rtl_get_random_bytes((buf), (len))
+
+/*
+ * rtl_sae_random_fn-compatible entropy for SAE exchanges (PWE blinding,
+ * commit scalars). context is ignored. Returns 0 after filling output, or
+ * -1 when the kernel CSPRNG import did not bind or the request is out of
+ * range; callers must treat that as SAE unavailable, never as a reason to
+ * fall back to a weaker generator.
+ */
+int rtl_sae_entropy_fill(void *context, uint8_t *output, size_t length);
 
 static inline u32 prandom_u32(void)
 {
