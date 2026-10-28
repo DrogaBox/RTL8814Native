@@ -46,6 +46,7 @@ KNOWN = {
     "fa5831dbcc78837b46349e4cceedae04": "RTL8814Native 4.32 (bounded RSN and GTK/IGTK KDE parsing)",
     "ef8a9a8808125c2c623ae757ebf14889": "RTL8814Native 4.33 (EAPOL replay counter checks and WPA2 key wiping)",
     "a7ed6fc39a7f212e0edea17d3685f83b": "RTL8814Native 4.34 (SAE retries and PMF receive-path hardening)",
+    "d96b50e17fd20f8db808c99b2382a212": "RTL8814Native 4.35 (drop the stale commit-timer expiry after the first Confirm)",
     "04402631c59a4a756e356d299f8fd7e2": "RTL8814AirLayer 0.1 (superseded, do not use)",
     "206cf1337b555a57e7b6975301d1fa47": "RTL8814AirLayer 0.2 (superseded, do not use)",
     "92c7d5df31b667590564f8cd95af943c": "RTL8814AirLayer 0.3 (superseded, do not use)",

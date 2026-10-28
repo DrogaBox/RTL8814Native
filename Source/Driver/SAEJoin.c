@@ -308,6 +308,17 @@ static void sae_complete(_adapter *padapter)
 	start_clnt_assoc(padapter);
 }
 
+/* The commit timer can expire while the peer commit is being computed; that stale
+ * expiry must not resend the Confirm that was just sent (the AP can reject the pair). */
+static void sae_drop_pending_timeout(void)
+{
+	_irqL irqL;
+
+	_enter_critical_bh(&g_sae.lock, &irqL);
+	g_sae.ev_timeout = 0;
+	_exit_critical_bh(&g_sae.lock, &irqL);
+}
+
 static void sae_handle_rx(_adapter *padapter)
 {
 	const u8 *f = w_sae.frame.data;
@@ -380,6 +391,8 @@ static void sae_handle_rx(_adapter *padapter)
 		w_sae.phase = SAE_PH_CONFIRMED;
 		w_sae.retries = 0;
 		sae_send_confirm(padapter);
+		if (!sae_stale(padapter))	/* a cancel wakes the worker through the same flag */
+			sae_drop_pending_timeout();
 	} else if (seq == 2) {
 		if (w_sae.phase != SAE_PH_CONFIRMED)
 			return;
