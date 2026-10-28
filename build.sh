@@ -163,6 +163,7 @@ DRIVER_SOURCES=(
     "Source/Driver/VendorGlue.cpp"
     "Source/Driver/VendorProbe.c"
     "Source/Driver/WPA2Supplicant.c"
+    "Source/Driver/SAE.c"
 )
 
 # Common kernel flags

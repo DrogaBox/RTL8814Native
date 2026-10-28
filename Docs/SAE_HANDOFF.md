@@ -8,7 +8,7 @@ Notes for whoever picks this up. Everything below was checked on my one setup (T
 - With those bits macOS offers SAE on WPA3 networks, and `setWCL_ASSOCIATE` runs. For a WPA3-only hotspot it receives:
   - `key + 4` (key length) = the passphrase length, and the passphrase bytes at `key + 16`. For WPA2 it was always 32 (a PMK).
   - `req + 16` = 1 and `req + 20` = 0x1000 (open-system lower auth, SAE upper auth).
-- The layer then refuses it (`keyLen != 32` returns `kIOReturnUnsupported`), so the join fails after a few milliseconds. `RTLAirLastAssoc` in ioreg keeps the header of the last request (no key bytes).
+- In the deployed layer the join still fails because it only accepts a 32-byte PMK. The step 1 build below carries the passphrase but intentionally returns unsupported at the radio. `RTLAirLastAssoc` in ioreg keeps the header of the last request (no key bytes).
 - Side effect: macOS now also tries SAE on my WPA2/WPA3 mixed router, and that join fails. Layer 0.28 (`Backups/airlayer_0.28`, md5 `7066099f...`) does not have the bits and keeps the router working. To go back, point `LAYER_SRC`/`LAYER_MD5` in `Tools/phase5_deploy.sh` at it and deploy.
 
 ## What the vendor code gives us
@@ -21,7 +21,7 @@ Notes for whoever picks this up. Everything below was checked on my one setup (T
 ## What has to be written
 
 1. **Plumbing.** `struct rtl_radio_join` (`Source/Driver/RTLRadioABI.h`) has no way to carry a passphrase. Add an SAE flag and a passphrase field at the end and bump `RTL_RADIO_ABI`. In the layer (`setWCL_ASSOCIATE`) accept `keyLen != 32` when the upper auth is SAE and copy the passphrase through. In the driver, `rtl8814native_radio_join` (`Source/Driver/VendorProbe.c`) and `rtl8814_wpa2_configure` need an SAE branch. Wipe the passphrase after use, as the PMK is wiped today.
-2. **SAE exchange** (IEEE 802.11-2020, section 12.4): group 19 (P-256), password element derivation (hunt-and-peck is enough to start; the mixed hotspot may require H2E, check its RSNXE), commit and confirm frames as auth algorithm 3 sequence 1 and 2, anti-clogging token handling, and the PMK and PMKID out of it. This needs bignum and EC arithmetic in the kernel. The kernel already exports corecrypto (`com.apple.kec.corecrypto`, loaded on this machine); I have not checked which `ccec_*`/`ccn_*` symbols a third-party kext can link, and OpenCore drops a kext with unresolved symbols, so check with `nm -u` as the README says.
+2. **SAE exchange** (IEEE 802.11-2020, section 12.4): the standalone group-19 hunt-and-peck exchange is written and vector-tested below. It is not connected to the radio yet. Before using it, provide secure kernel entropy and review the timing and kernel-stack concerns noted below. The auth-frame TX/RX hook remains to be written; H2E is not implemented.
 3. **RSN IE and association.** AKM 00-0F-AC:8, MFPC and MFPR set in the RSN capabilities (WPA3 requires PMF), and the right group management cipher.
 4. **4-way handshake changes for AKM 8.** KDF-SHA256 for the PTK, AES-128-CMAC for the EAPOL-Key MIC (key descriptor version 3), and the IGTK in the key data of message 3.
 5. **PMF in the data path.** BIP for group management frames, and protected unicast deauth/disassoc. The hardware may or may not help; this is the part I know least about.
@@ -34,6 +34,25 @@ Notes for whoever picks this up. Everything below was checked on my one setup (T
 - `rtl8814native_radio_join` logs only the password length, calls the supplicant's SAE placeholder, wipes its local copy and the ABI request copy, then returns `-EOPNOTSUPP`. The placeholder resets security state and logs that SAE is not implemented. This is plumbing only; WPA3 joins still fail cleanly.
 - The user-client temporary join structure is wiped after the call. No password bytes are logged or written to the join log.
 - Verification: `./build.sh`, `./build_airlayer.sh`, and the `Tools/test_uc` compile completed; the required vendor-symbol grep returned no matches. No files under `Source/rtl8814au/os_dep/linux/` were built. Nothing has been deployed.
+
+### Step 2 — standalone SAE group 19 (built, not connected)
+
+- `Source/Driver/SAE.c` and `SAE.h` implement P-256 and legacy hunt-and-peck PWE derivation, SHA-256/HMAC and the SAE KDF without kernel headers or corecrypto imports. I started with hunt-and-peck because it is the first requested path; H2E is not implemented, so H2E-only access points will not work.
+- The API prepares a commit, includes a supplied anti-clogging token in a retry without changing the commit, validates peer scalar/point and reflection, derives KCK/PMK/PMKID, and sends/verifies confirms with a saturating send counter and replay check. Authentication frames and the anti-clogging status/group are the responsibility of the future TX/RX hook. `finish` copies the PMK and PMKID only after confirm and wipes the exchange context; the caller must wipe the output buffers after use. `clear` wipes an abandoned exchange. No key bytes are logged by the module or test.
+- The caller must supply a cryptographically secure entropy callback. **Do not use `rtl_get_random_bytes` for SAE:** its current xorshift/timebase implementation is not cryptographically secure. There is no kernel entropy callback wired up yet and the existing join path still rejects SAE.
+- The PWE loop runs at least 40 rounds (up to 200 if necessary), uses masked first-candidate selection and switches to a random dummy password and identifier after finding it. The P-256 multiplication uses a fixed-length ladder and masked point selection. This is an attempt to reduce timing leakage, not a side-channel audit: the generated code, compiler behavior and kernel stack usage have not been independently reviewed or measured. Hunt-and-peck itself has a history of side-channel attacks. Do not connect this to a production join path until those checks are done.
+- Reference: the fixed group-19 vector in wpa_supplicant `src/common/common_module_tests.c`, branch `android10-qpr1-b-release`, labels its input IEEE P802.11-REVmd/D2.1 Annex J.10. The harness matches its local commit, KCK, PMK, PMKID and local confirm byte-for-byte and accepts its peer confirm. This is the vector as reproduced by wpa_supplicant, not an independent copy of the published 2020 standard. The test also checks a token retry, replay and invalid-input rejection, secret clearing and a two-party local exchange without password identifiers. It does not test a live hostapd session or the radio.
+- Build and run the userland harness from the repository root:
+
+  ```bash
+  mkdir -p Build
+  clang -DRTL_SAE_TESTING -std=c11 -Wall -Wextra -Werror -O2 -ISource/Driver \
+      Source/Driver/SAE.c Tools/sae_test.c -o Build/sae_test
+  ./Build/sae_test
+  ```
+
+  The deterministic scalar entry point is available only in the test build. The harness was also run with address and undefined-behavior sanitizers.
+- `./build.sh` compiles the module into the kext without connecting it to the join path. The required unresolved vendor-symbol check was empty. `nm -u` on the SAE object showed only `memcpy` and `memset`; there are no corecrypto or extra arithmetic runtime imports. No `os_dep/linux` source was compiled and no deployment was performed.
 
 ## How I test
 
