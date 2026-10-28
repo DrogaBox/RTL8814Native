@@ -970,9 +970,11 @@ int rtl8814_wpa2_rx_eapol(_adapter *padapter, struct sk_buff *skb)
 	/* --- Case 2: 4-Way Handshake Message 3/4 (Pairwise + Ack + MIC) --- */
 	if (is_pairwise && is_ack && is_mic) {
 		enum rtl_replay_result replay_result = rtl_replay_check(&g_wpa2.replay, replay_counter);
-		int duplicate_m3 = replay_result == RTL_REPLAY_REPEAT &&
-		                   g_wpa2.replay_last_message == 3 &&
-		                   g_wpa2.state == WPA2_STATE_COMPLETED;
+		/* An M3 after the handshake finished is the AP retrying because our M4 was lost:
+		 * answer with M4 again, never reinstall keys. The retry may carry a fresh counter. */
+		int duplicate_m3 = g_wpa2.state == WPA2_STATE_COMPLETED &&
+		                   (replay_result == RTL_REPLAY_NEW ||
+		                    (replay_result == RTL_REPLAY_REPEAT && g_wpa2.replay_last_message == 3));
 		if (replay_result != RTL_REPLAY_NEW && !duplicate_m3) {
 			rtl8814native_jlog(JL_WPA2_REPLAY, 3, (int)replay_result);
 			return 1;
@@ -1008,9 +1010,13 @@ int rtl8814_wpa2_rx_eapol(_adapter *padapter, struct sk_buff *skb)
 
 		if (duplicate_m3) {
 			u16 reply_info = key_ver | 0x0008 | 0x0100 | (is_secure ? 0x0200 : 0);
-			rtl8814native_jlog(JL_WPA2_REPLAY, 0x103, RTL_REPLAY_REPEAT);
+			rtl8814native_jlog(JL_WPA2_REPLAY, 0x103, (int)replay_result);
 			wpa2_send_eapol_key(padapter, aa, desc_type, reply_info,
 			                    replay_counter, NULL, NULL, 0);
+			if (replay_result == RTL_REPLAY_NEW) {
+				rtl_replay_accept(&g_wpa2.replay, replay_counter);
+				g_wpa2.replay_last_message = 3;
+			}
 			wpa2_secure_zero(calc_mic, sizeof(calc_mic));
 			return 1;
 		}
