@@ -16,6 +16,7 @@
 
 #include <drv_types.h>
 #include <hal_data.h>
+#include "../../Driver/CSA.h"
 
 #if defined(CONFIG_WOWLAN) || defined(CONFIG_AP_WOWLAN)
 	#include <linux/inetdevice.h>
@@ -2715,33 +2716,48 @@ void update_beacon_info(_adapter *padapter, u8 *pframe, uint pkt_len, struct sta
 #ifdef CONFIG_DFS
 void process_csa_ie(_adapter *padapter, u8 *ies, uint ies_len)
 {
+	/* Follow the AP to its new channel without leaving: the old DFS path deauthenticated the
+	 * station, which starts the AP's auth-ignore window and drops the link for a minute. */
+	struct mlme_ext_priv *pmlmeext = &padapter->mlmeextpriv;
 	struct rf_ctl_t *rfctl = adapter_to_rfctl(padapter);
-	unsigned int i;
-	PNDIS_802_11_VARIABLE_IEs	pIE;
-	u8 ch = 0;
+	static u32 last_cmd_time;
+	static u8 last_cmd_ch;
+	struct rtl_csa csa;
+	u8 bw, offset = HAL_PRIME_CHNL_OFFSET_DONT_CARE;
 
-	/* TODO: compare with scheduling CSA */
-	if (rfctl->csa_ch)
+	rtl_csa_parse(ies, ies_len, &csa);
+	if (!csa.found)
 		return;
 
-	for (i = 0; i + 1 < ies_len;) {
-		pIE = (PNDIS_802_11_VARIABLE_IEs)(ies + i);
-
-		switch (pIE->ElementID) {
-		case _CH_SWTICH_ANNOUNCE_:
-			ch = *(pIE->data + 1);
-			break;
-		default:
-			break;
-		}
-
-		i += (pIE->Length + 2);
+	if (csa.channel == 0 || csa.channel == pmlmeext->cur_channel
+	    || rtw_chset_search_ch(rfctl->channel_set, csa.channel) < 0) {
+		rtl8814native_jlog(JL_CSA, RTL_CSA_IGNORED, csa.channel | (pmlmeext->cur_bwmode << 8)
+				   | (csa.count << 16));
+		return;
 	}
 
-	if (ch != 0) {
-		rfctl->csa_ch = ch;
-		if (rtw_set_csa_cmd(padapter) != _SUCCESS)
-			rfctl->csa_ch = 0;
+	/* Beacons repeat the announcement count times. Switch on the last one on the old channel
+	 * (count 1) or once the AP says it is switching (count 0); an earlier beacon would
+	 * strand us on a channel the AP has not reached yet. */
+	if (csa.count > 1)
+		return;
+
+	if (last_cmd_ch == csa.channel && rtw_get_passing_time_ms(last_cmd_time) < 1000)
+		return;
+
+	bw = rtl_csa_pick_bw(&csa, pmlmeext->cur_bwmode);
+	while (bw > CHANNEL_WIDTH_20 && !rtw_get_offset_by_chbw(csa.channel, bw, &offset)) {
+		bw--;
+		offset = HAL_PRIME_CHNL_OFFSET_DONT_CARE;
+	}
+	if (bw == CHANNEL_WIDTH_20)
+		offset = HAL_PRIME_CHNL_OFFSET_DONT_CARE;
+
+	rtl8814native_jlog(JL_CSA, RTL_CSA_SEEN, csa.channel | (bw << 8) | (csa.count << 16));
+	if (rtw_set_chbw_cmd(padapter, csa.channel, bw, offset, 0) == _SUCCESS) {
+		last_cmd_ch = csa.channel;
+		last_cmd_time = rtw_get_current_time();
+		rtl8814native_jlog(JL_CSA, RTL_CSA_FOLLOW, csa.channel | (bw << 8) | (csa.count << 16));
 	}
 }
 #endif /* CONFIG_DFS */

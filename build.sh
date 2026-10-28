@@ -167,6 +167,7 @@ DRIVER_SOURCES=(
     "Source/Driver/SAEAuth.c"
     "Source/Driver/SAEJoin.c"
     "Source/Driver/PMF.c"
+    "Source/Driver/CSA.c"
 )
 
 # Common kernel flags

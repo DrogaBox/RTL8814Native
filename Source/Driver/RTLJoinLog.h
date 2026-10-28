@@ -38,6 +38,7 @@ enum {
 	JL_SAE_AUTH_TX,         /* a: SAE transaction sequence, b: status */
 	JL_SAE_STEP,            /* a: SAE step (RTL_SAE_STEP_*), b: result or status */
 	JL_PMF,                 /* a: RTL_PMF_* kind, b: detail (reason, key id or subtype) */
+	JL_CSA,                 /* a: RTL_CSA_* kind, b: channel | bw << 8 | count << 16 */
 };
 
 enum {
@@ -50,6 +51,12 @@ enum {
 	RTL_PMF_BIP_FAIL,       /* group frame failed BIP or has no MME, b: subtype */
 	RTL_PMF_TX_PROTECTED,   /* a deauth/disassoc/robust action went out protected, b: subtype | category << 8 */
 	RTL_PMF_SA_QUERY        /* answered an SA Query request, b: transaction id */
+};
+
+enum {
+	RTL_CSA_SEEN = 1,       /* the AP announced a channel switch */
+	RTL_CSA_FOLLOW,         /* switched to the announced channel without leaving */
+	RTL_CSA_IGNORED         /* announcement not followed (bad channel or already there) */
 };
 
 struct rtl_jlog_ev {

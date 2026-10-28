@@ -541,7 +541,7 @@ static void show_joinlog(io_connect_t connect) {
         "?", "radio join", "radio leave", "do_join", "select", "survey for join", "clnt join",
         "auth rx", "assoc rx", "deauth rx", "disassoc rx", "link timer", "join res",
         "joinbss evt", "join timeout", "disconnect hdl", "indicate disc", "wpa2", "survey done",
-	        "auth tx", "mgmt rx", "regs", "flush scanq", "SAE auth rx", "SAE auth tx", "SAE step", "PMF",
+	        "auth tx", "mgmt rx", "regs", "flush scanq", "SAE auth rx", "SAE auth tx", "SAE step", "PMF", "CSA",
 	    };
     static struct rtl_jlog log;
     size_t sz = sizeof(log);
@@ -577,6 +577,13 @@ static void show_joinlog(io_connect_t connect) {
             else
                 printf("%8u  %-16s %s %d\n", e->t_ms - t0, nm,
                        k < sizeof(kinds) / sizeof(kinds[0]) ? kinds[k] : "?", e->b);
+            continue;
+        }
+        if (e->ev == JL_CSA) {
+            static const char *kinds[] = { "?", "channel switch announced", "followed channel switch",
+                "channel switch ignored" };
+            printf("%8u  %-16s %s ch=%d bw=%d count=%d\n", e->t_ms - t0, nm,
+                   e->a < 4 ? kinds[e->a] : "?", e->b & 0xff, (e->b >> 8) & 0xff, (e->b >> 16) & 0xff);
             continue;
         }
         if (e->ev == JL_SAE_AUTH_RX || e->ev == JL_SAE_AUTH_TX) {
