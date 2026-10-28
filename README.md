@@ -4,7 +4,7 @@ A native macOS driver for Realtek RTL8814AU (4x4 802.11ac) USB Wi-Fi adapters. I
 
 It runs on macOS Sequoia and Tahoe (x86_64) through OpenCore. It is two kexts:
 
-- `RTL8814Native.kext` is the radio driver: USB transport, the Realtek HAL/PHY code (from `morrownr/8814au`) behind a small Linux-to-XNU compatibility layer, firmware loading, and an in-kernel WPA2-PSK 4-way handshake.
+- `RTL8814Native.kext` is the radio driver: USB transport, the Realtek HAL/PHY code (from `morrownr/8814au`) behind a small Linux-to-XNU compatibility layer, firmware loading, and an in-kernel WPA2-PSK and WPA3-SAE supplicant (4-way handshake, 802.11w).
 - `RTL8814AirLayer.kext` publishes the radio to macOS as a native Skywalk/IO80211 interface, so `airportd`, the menu bar and System Settings can scan, join and reconnect on their own.
 
 Without the second kext you still get a working `enX` interface, but you have to join networks from the command line (`Tools/test_uc`).
@@ -16,15 +16,14 @@ I built and tested this on one setup only: a TP-Link Archer T9UH v1 (`2357:0106`
 What works on that setup:
 
 - Scan, join, leave and reconnect from the Wi-Fi menu, on 2.4 and 5 GHz. The first join after a disconnect used to drop; that is fixed (the access point ignores a client for about 20 s after a disassociation, so the driver keeps retrying authentication for about 10 s).
-- Open and WPA2-PSK networks. A WPA2/WPA3 mixed router joins as WPA2.
+- Open, WPA2-PSK and WPA3-SAE networks, with 802.11w (protected management frames). SAE, the 4-way handshake and PMF are done in the driver (`Source/Driver/SAE.c`, `WPA2Supplicant.c`, `PMF.c`), and a WPA2/WPA3 mixed router joins as WPA3. Tested against an Android hotspot (SAE only, PMF required, 2.4 and 5 GHz) and one WPA2/WPA3-transition router. Known quirk: after a reboot without a clean leave, a PMF access point keeps the old association for 30-60 s and the first join attempt can fail; the next one works.
 - Sleep/wake and unplug/replug.
 - Location Services. macOS positions you from nearby Wi-Fi networks, and it works because the adapter shows up as a normal Wi-Fi interface.
 - About 386 Mbit/s down and 291 Mbit/s up on a 5 GHz 80 MHz link (the adapter runs at USB 2.0 High-Speed on my port).
 
 What does not work, and why:
 
-- **WPA3-only (SAE) networks.** The driver only does the WPA2 4-way handshake itself, using the 32-byte key that macOS derives from the passphrase. SAE needs a different exchange that I have not written.
-- **WPA2/WPA3 Enterprise (802.1X, certificates).** Same reason: there is no EAP code in the driver, and I have no network to test it on.
+- **WPA2/WPA3 Enterprise (802.1X, certificates).** There is no EAP code in the driver, and I have no network to test it on.
 - **WPA/TKIP-only and WEP.** The join code refuses anything but open or CCMP/WPA2-PSK.
 - **AirDrop, wireless Sidecar, Universal Control.** They run over AWDL, which hops channels in sync with other Apple devices. The layer reports the AWDL capability so macOS tries to set it up, but the `awdl0` interface is not created, and I doubt a USB radio can do the channel timing anyway.
 - **AirPlay and Handoff.** They should work over the normal network without AWDL, but I have not tested them.
