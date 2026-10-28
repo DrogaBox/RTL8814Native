@@ -13,6 +13,7 @@
  *
  *****************************************************************************/
 #define _RTW_RECV_C_
+#include "../../Driver/WPA2Supplicant.h"
 
 #include <drv_types.h>
 #include <hal_data.h>
@@ -1967,6 +1968,21 @@ sint validate_recv_mgnt_frame(PADAPTER padapter, union recv_frame *precv_frame)
 {
 	struct sta_info *psta = precv_frame->u.hdr.psta
 		= rtw_get_stainfo(&padapter->stapriv, get_addr2_ptr(precv_frame->u.hdr.rx_data));
+
+	/* RTL8814Native: 802.11w for SAE links (CCMP-protected unicast, BIP group frames) */
+	{
+		u32 flen = (u32)(precv_frame->u.hdr.rx_tail - precv_frame->u.hdr.rx_data);
+		u32 plen = flen;
+
+		if (rtl8814_wpa2_pmf_rx(precv_frame->u.hdr.rx_data, &plen) == 0)
+			return _SUCCESS;
+		if (plen < flen) {
+			u32 cut = flen - plen;
+
+			recvframe_pull_tail(precv_frame, cut);
+			precv_frame->u.hdr.attrib.pkt_len -= cut;
+		}
+	}
 
 #if defined(CONFIG_IEEE80211W) || defined(CONFIG_RTW_MESH)
 	if (validate_mgmt_protect(padapter, precv_frame) == _FAIL) {

@@ -1296,6 +1296,14 @@ static void sae_cmac_double(const uint8_t in[16], uint8_t out[16])
     out[15] ^= (uint8_t)(0x87U & (uint8_t)(0U - msb));
 }
 
+void rtl_aes128_encrypt_block(const uint8_t key[16], const uint8_t in[16], uint8_t out[16])
+{
+    uint8_t rk[176];
+    sae_aes128_expand(key, rk);
+    sae_aes128_encrypt(rk, in, out);
+    sae_secure_zero(rk, sizeof(rk));
+}
+
 void rtl_aes128_cmac(const uint8_t key[16], const uint8_t *data, size_t length,
                      uint8_t mac[16])
 {

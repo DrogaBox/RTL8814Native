@@ -134,6 +134,9 @@ void rtl_sae_derive_ptk(const uint8_t pmk[RTL_SAE_PMK_LEN],
 void rtl_aes128_cmac(const uint8_t key[16], const uint8_t *data, size_t length,
                      uint8_t mac[16]);
 
+/* One AES-128 block encryption (used by the CCMP management-frame check). */
+void rtl_aes128_encrypt_block(const uint8_t key[16], const uint8_t in[16], uint8_t out[16]);
+
 /* Erase the complete exchange state, including password-derived values. */
 void rtl_sae_p256_clear(struct rtl_sae_p256 *sae);
 

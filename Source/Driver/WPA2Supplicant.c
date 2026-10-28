@@ -15,6 +15,7 @@
 #include "VendorGlue.hpp"
 #include <linux/random.h>
 #include "SAE.h"
+#include "PMF.h"
 
 extern netdev_tx_t _rtw_xmit_entry(_pkt *pkt, _nic_hdl pnetdev);
 
@@ -423,7 +424,118 @@ static struct {
 	u32  rsn_ie_len;
 	u8   grp_cipher; /* 0x04 = CCMP, 0x02 = TKIP */
 	int  akm_sae;    /* AKM 00-0F-AC:8: KDF-SHA256 PTK, AES-128-CMAC MIC */
+	u8   igtk[16];   /* BIP-CMAC-128 key from the IGTK KDE */
+	u16  igtk_id;
+	int  igtk_valid;
+	u64  igtk_ipn;   /* highest group management IPN accepted */
+	u64  mgmt_pn;    /* highest unicast management PN accepted */
 } g_wpa2 = {0};
+
+/* Take the IGTK KDE (00-0F-AC type 9: key id, IPN, key) out of decrypted key data */
+static void wpa2_take_igtk(const u8 *kde, int len)
+{
+	int pos = 0, i;
+
+	while (pos + 2 <= len) {
+		u8 id = kde[pos];
+		u8 elen = kde[pos + 1];
+
+		if (id == 0xdd && elen == 0) {
+			pos += 2;
+			continue;
+		}
+		if (pos + 2 + elen > len)
+			break;
+		if (id == 0xdd && elen == 28 && kde[pos + 2] == 0x00 && kde[pos + 3] == 0x0f &&
+		    kde[pos + 4] == 0xac && kde[pos + 5] == 0x09) {
+			u64 ipn = 0;
+
+			for (i = 0; i < 6; i++)
+				ipn |= (u64)kde[pos + 8 + i] << (8 * i);
+			g_wpa2.igtk_id = (u16)(kde[pos + 6] | (kde[pos + 7] << 8));
+			_rtw_memcpy(g_wpa2.igtk, (void *)&kde[pos + 14], 16);
+			g_wpa2.igtk_ipn = ipn;
+			g_wpa2.igtk_valid = 1;
+			rtl8814native_jlog(JL_PMF, RTL_PMF_IGTK, g_wpa2.igtk_id);
+			return;
+		}
+		pos += 2 + elen;
+	}
+}
+
+/*
+ * 802.11w receive filter for management frames, called before dispatch. Only
+ * acts on an SAE link whose handshake finished (PMF is mandatory there). Returns
+ * 1 to keep the frame (unicast protected frames are decrypted in place and
+ * *len shrinks) and 0 to drop it.
+ */
+int rtl8814_wpa2_pmf_rx(u8 *frame, u32 *len)
+{
+	u32 n = *len;
+	u8 subtype, mc;
+	u16 reason = 0;
+
+	if (!g_wpa2.akm_sae || g_wpa2.state != WPA2_STATE_COMPLETED || n < RTL_PMF_MGMT_HDR_LEN)
+		return 1;
+	if (((frame[0] >> 2) & 3) != 0)
+		return 1;
+	subtype = (u8)(frame[0] >> 4);
+	if (subtype != 10 && subtype != 12 && subtype != 13) /* disassoc, deauth, action */
+		return 1;
+	mc = frame[4] & 1;
+
+	if (!mc) {
+		if (frame[1] & 0x40) {
+			size_t out_len = 0;
+			uint64_t pn = 0;
+
+			if (rtl_pmf_ccmp_decrypt_mgmt(&g_wpa2.ptk[32], frame, n, &out_len, &pn) != 0) {
+				rtl8814native_jlog(JL_PMF, RTL_PMF_DEC_FAIL, subtype);
+				return 0;
+			}
+			if (pn <= g_wpa2.mgmt_pn) {
+				rtl8814native_jlog(JL_PMF, RTL_PMF_REPLAY, subtype);
+				return 0;
+			}
+			g_wpa2.mgmt_pn = pn;
+			if (out_len >= RTL_PMF_MGMT_HDR_LEN + 2)
+				reason = (u16)(frame[RTL_PMF_MGMT_HDR_LEN] | (frame[RTL_PMF_MGMT_HDR_LEN + 1] << 8));
+			rtl8814native_jlog(JL_PMF, RTL_PMF_DEC_OK, subtype | (reason << 8));
+			*len = (u32)out_len;
+			return 1;
+		}
+		if (subtype != 13) {
+			if (n >= RTL_PMF_MGMT_HDR_LEN + 2)
+				reason = (u16)(frame[RTL_PMF_MGMT_HDR_LEN] | (frame[RTL_PMF_MGMT_HDR_LEN + 1] << 8));
+			rtl8814native_jlog(JL_PMF, RTL_PMF_UNPROT_DROP, subtype | (reason << 8));
+			return 0;
+		}
+		return 1;
+	}
+
+	/* Group addressed: BIP-CMAC-128 with the IGTK. */
+	{
+		unsigned int kid = 0;
+		uint64_t ipn = 0;
+		int has_mme = n >= RTL_PMF_MGMT_HDR_LEN + RTL_PMF_MME_LEN &&
+			      frame[n - RTL_PMF_MME_LEN] == 76;
+
+		if (subtype == 13 && (!has_mme || !g_wpa2.igtk_valid))
+			return 1; /* not provably protected: leave group actions alone */
+		if (!g_wpa2.igtk_valid || !has_mme ||
+		    rtl_pmf_bip_verify(g_wpa2.igtk, frame, n, &kid, &ipn) != 0 || kid != g_wpa2.igtk_id) {
+			rtl8814native_jlog(JL_PMF, RTL_PMF_BIP_FAIL, subtype);
+			return 0;
+		}
+		if (ipn <= g_wpa2.igtk_ipn) {
+			rtl8814native_jlog(JL_PMF, RTL_PMF_REPLAY, subtype);
+			return 0;
+		}
+		g_wpa2.igtk_ipn = ipn;
+		rtl8814native_jlog(JL_PMF, RTL_PMF_BIP_OK, subtype);
+	}
+	return 1;
+}
 
 /* EAPOL-Key MIC: HMAC-SHA1 for PSK, AES-128-CMAC for SAE (16 bytes either way) */
 static void wpa2_calc_mic(const u8 *data, u32 len, u8 mic[20])
@@ -801,10 +913,11 @@ int rtl8814_wpa2_rx_eapol(_adapter *padapter, struct sk_buff *skb)
 							if (gtk_len > sizeof(gtk_buf))
 								gtk_len = sizeof(gtk_buf);
 							_rtw_memcpy(gtk_buf, &plain[pos + 8], gtk_len);
-							break;
 						}
 						pos += 2 + elen;
 					}
+					if (g_wpa2.akm_sae)
+						wpa2_take_igtk(plain, plain_len);
 				} else {
 					rtl_printk("RTL8814Native: [WPA2] Warning: AES Key Unwrap failed on Msg 3/4\n");
 				}
@@ -867,6 +980,8 @@ int rtl8814_wpa2_rx_eapol(_adapter *padapter, struct sk_buff *skb)
 						if (gtk_len > sizeof(gtk_buf))
 							gtk_len = sizeof(gtk_buf);
 						_rtw_memcpy(gtk_buf, &plain[8], gtk_len);
+						if (g_wpa2.akm_sae)
+							wpa2_take_igtk(plain, plain_len);
 					} else if (plain_len >= 16) {
 						gtk_len = (plain_len >= 32) ? 32 : 16;
 						_rtw_memcpy(gtk_buf, plain, gtk_len);

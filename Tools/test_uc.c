@@ -541,7 +541,7 @@ static void show_joinlog(io_connect_t connect) {
         "?", "radio join", "radio leave", "do_join", "select", "survey for join", "clnt join",
         "auth rx", "assoc rx", "deauth rx", "disassoc rx", "link timer", "join res",
         "joinbss evt", "join timeout", "disconnect hdl", "indicate disc", "wpa2", "survey done",
-	        "auth tx", "mgmt rx", "regs", "flush scanq", "SAE auth rx", "SAE auth tx", "SAE step",
+	        "auth tx", "mgmt rx", "regs", "flush scanq", "SAE auth rx", "SAE auth tx", "SAE step", "PMF",
 	    };
     static struct rtl_jlog log;
     size_t sz = sizeof(log);
@@ -563,6 +563,19 @@ static void show_joinlog(io_connect_t connect) {
                 "FAIL", "stale", "compute ms" };
             printf("%8u  %-16s %s result=%d\n", e->t_ms - t0, nm,
                    e->a < sizeof(steps) / sizeof(steps[0]) ? steps[e->a] : "?", (int)e->b);
+            continue;
+        }
+        if (e->ev == JL_PMF) {
+            static const char *kinds[] = { "?", "IGTK installed", "unicast verified",
+                "unicast CCMP FAIL", "replay drop", "unprotected deauth dropped",
+                "group BIP ok", "group BIP FAIL" };
+            unsigned k = (unsigned)e->a;
+            if (k == RTL_PMF_DEC_OK || k == RTL_PMF_UNPROT_DROP)
+                printf("%8u  %-16s %s subtype=%d reason=%d\n", e->t_ms - t0, nm, kinds[k],
+                       e->b & 0xff, (int)((unsigned)e->b >> 8));
+            else
+                printf("%8u  %-16s %s %d\n", e->t_ms - t0, nm,
+                       k < sizeof(kinds) / sizeof(kinds[0]) ? kinds[k] : "?", e->b);
             continue;
         }
         if (e->ev == JL_SAE_AUTH_RX || e->ev == JL_SAE_AUTH_TX) {

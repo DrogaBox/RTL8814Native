@@ -37,6 +37,17 @@ enum {
 	JL_SAE_AUTH_RX,         /* a: SAE transaction sequence, b: exact status */
 	JL_SAE_AUTH_TX,         /* a: SAE transaction sequence, b: status */
 	JL_SAE_STEP,            /* a: SAE step (RTL_SAE_STEP_*), b: result or status */
+	JL_PMF,                 /* a: RTL_PMF_* kind, b: detail (reason, key id or subtype) */
+};
+
+enum {
+	RTL_PMF_IGTK = 1,       /* IGTK installed, b: key id */
+	RTL_PMF_DEC_OK,         /* protected unicast frame verified, b: subtype | reason << 8 */
+	RTL_PMF_DEC_FAIL,       /* protected unicast frame failed CCMP, b: subtype */
+	RTL_PMF_REPLAY,         /* unicast PN or IPN not newer, b: subtype */
+	RTL_PMF_UNPROT_DROP,    /* unprotected deauth/disassoc dropped, b: subtype | reason << 8 */
+	RTL_PMF_BIP_OK,         /* group frame verified, b: subtype */
+	RTL_PMF_BIP_FAIL        /* group frame failed BIP or has no MME, b: subtype */
 };
 
 struct rtl_jlog_ev {
