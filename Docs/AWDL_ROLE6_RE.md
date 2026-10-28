@@ -80,3 +80,42 @@ En consecuencia, no es posible contestar con rigor la petición “lista complet
 - Las piezas que no se pueden reconstruir como contrato portable desde este binario: formato/ABI completo de los parámetros de registro del bus, protocolo privado de colas/owners, integración de AWDL peer manager y el algoritmo/firmware para sincronía y channel sequence. El pseudocódigo muestra la ruta Broadcom y sus llamadas, no sus especificaciones completas. El hardware RTL8814 además necesitaría coexistencia/time-slicing y acción AWDL real; tener un BSD interface no demuestra soporte de radio.
 
 **Resumen honesto:** se puede aceptar sintácticamente la IOC con un override propio; no hay prueba de que se pueda crear una interfaz role-6 funcional usando únicamente la jerarquía genérica expuesta. Una reimplementación de datapath/estado sería investigación y trabajo sustancial, con integración privada no verificada. Hasta verificar registro, requests posteriores, enlace Skywalk y tráfico AWDL en hardware, Stage 2 sigue bloqueado.
+
+## 6. Secuencia de requests de `wifip2pd` después de crear role 6
+
+### Qué permite afirmar la evidencia conservada
+
+El pseudocódigo guardado para `sub_10036C2B0` (`Build/ida_awdl/current_probe.log`, `0x10036c2b0`; extracto previo `Build/ida_awdl/probe.log`, aproximadamente líneas 49140–49290) sólo permite reconstruir: buscar una interfaz AWDL existente; si no hay, registrar “No AWDL interface found. Creating AWDL interface”; llamar a la ruta de creación (`sub_1003654A0`, `0x1003654a0`); y, si queda una instancia en estado, pasarla a la continuación. El initializer Swift conservado (`Build/ida_awdl/awdl_initializer_excerpt.txt`, `sub_100416D00` en `0x100416d00`) crea estado de `AWDLInterface` y llama a `sub_10041B1F0` (`0x10041b1f0`) para crear la interfaz companion de low latency. Si esa llamada falla, escribe “Failed to create the companion low latency interface for AWDL” y continúa con la inicialización; **esto es un error de la llamada Swift observada, no prueba de un RawSet tolerado**.
+
+La ruta de creación muestra además `sub_10040F300` (`0x10040f300`) asignando el objeto Swift y llamando a `sub_100416D00` (`Build/ida_awdl/awdl_initializer_excerpt.txt`, callers). Ninguno de estos extractos conserva el xref que liga el retorno exitoso de `APPLE80211_IOC_VIRTUAL_IF_CREATE` a un wrapper Apple80211 concreto, ni permite conocer nombre de interfaz, request ID siguiente, estructura/tamaño o interpretación de su resultado.
+
+### Tabla ordenada y estado
+
+| Orden | Request / operación | ID, tipo y tamaño | Datos / respuesta que espera el cliente | Falla y evidencia |
+|---|---|---|---|---|
+| 1 | Crear interfaz AWDL (la request del camino ya probado en hardware) | `APPLE80211_IOC_VIRTUAL_IF_CREATE`, type 94; 32 bytes | Campo `role=6` en `+12`; buffer de salida para BSD name en `+16` (hasta 16 bytes), según `Docs/ARCHITECTURE.md` (entrada 2026-10-27) y `Build/ida_awdl/core.log`, `AppleBCMWLANCore::setVIRTUAL_IF_CREATE` en `0xffffff80016788f4`. | El hardware recibió la request; con el stub de AirLayer retornó `0xe00002c7` cuatro veces y `wifip2pd` registró “Operation Not Supported” (`Docs/ARCHITECTURE.md`, sección AWDL, 2026-10-27). El comportamiento del cliente ante ese fallo sí está demostrado: informa error y no hay interfaz AWDL usable. La ruta de éxito, el string exacto escrito por `wifip2pd` y el primer ioctl posterior siguen pendientes de xref. |
+| 2 | Resolver/usar la interfaz creada; solicitud Apple80211 concreta | **PENDIENTE de verificar en IDA** | Los pseudocódigos preservados prueban que el estado de `AWDLInterface` se entrega a una continuación, pero no exponen un callsite con request ID, buffer y longitud. No afirmo que el nombre usado sea `awdl0` en cada wrapper. | **PENDIENTE de verificar en IDA**: xrefs desde `sub_10036C2B0`, `sub_1003654A0`, `sub_100416D00` y `sub_10041B1F0` hacia `Apple80211RawSet/RawGet/Set/Get` y wrappers. |
+| 3 | Crear companion de baja latencia para AWDL (`sub_10041B1F0`) | Wrapper/request ID y longitud: **PENDIENTE de verificar en IDA** | La función retorna un objeto o error Swift; al error se registra el mensaje citado y la inicialización continúa. No hay prueba conservada de qué ioctl contiene esa operación. | Error logueado e ignorado por el flujo de `sub_100416D00` (`Build/ida_awdl/awdl_initializer_excerpt.txt`, `0x100416d00`). No extrapolar ese manejo al resto de requests. |
+| 4 | `Apple80211RawSet` observado en otra rama (`sub_10004B300`) | Type 293; longitud 24, según el pseudocódigo guardado en `Build/ida_awdl/probe.log` alrededor de 0x10004b300 | El cuerpo comprueba `if_nametoindex` con nombres del contexto de esa función después del setter y procesa su resultado. | **No atribuido a AWDL**: el xref hacia la inicialización de AWDL no está conservado; no se usa como evidencia de la secuencia de esta tabla. |
+| 5+ | Gets/sets AWDL (channel sequence, sync, presence, election, encryption, peer cache, etc.) | Los handlers de Broadcom aparecen en `Docs/re/io80211_25.6.0/syms_bcm.txt:1343–1410`; IDs/longitudes de cada request no se obtienen de esos nombres | El binario del driver demuestra que existen handlers, no que `wifip2pd` los llame ni el orden/datos/resultados que espera. Véase §4. | **PENDIENTE de verificar en IDA** con xrefs de cliente; no se debe convertir el inventario de handlers en una lista de requests del cliente. |
+
+### Pseudocódigo mínimo respaldado
+
+```text
+sub_10036C2B0 (0x10036c2b0):
+    awdl = buscar_awdl_existente()
+    if awdl == nil:
+        log("No AWDL interface found. Creating AWDL interface")
+        crear_awdl_vía_tarea(sub_1003654A0, 0x1003654a0)
+    si la tarea deja awdl en estado:
+        continuar_con_awdl(awdl)
+
+sub_100416D00 (0x100416d00):
+    inicializar estado AWDL Swift
+    intentar sub_10041B1F0()  // companion low-latency; ioctl interno no resuelto
+    si hay error: loguearlo y seguir
+```
+
+El texto “awdl0” está corroborado como nombre final esperado por la evidencia previa de interfaz del sistema y por el `getBSDName()` que el driver Broadcom copia al `VIRTUAL_IF_CREATE` (`Docs/ARCHITECTURE.md`, sección AWDL; `Build/ida_awdl/core.log`, `0xffffff80016788f4`). **No hay evidencia retenida que permita afirmar a qué nombre liga cada RawGet/RawSet de `wifip2pd` ni que el primer request después del éxito use `awdl0`.**
+
+**Pendiente de verificación en la sesión IDA del usuario:** resolver los xrefs y llamadas indirectas de `Apple80211RawSet`, `Apple80211RawGet`, `Apple80211Set/Get`, `Apple80211SetWithIOCTL` desde la tarea de creación; enumerar cada request type/ID, tamaño y buffer; probar el nombre de interfaz que se pasa (en especial inmediatamente tras el éxito de type 94); leer cada rama de error para saber si aborta, reintenta o ignora `unsupported`. Hasta recibir esos resultados, no hay base para contestar “¿falla si alguna respuesta es no soportado?” de manera global.
