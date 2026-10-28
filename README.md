@@ -25,7 +25,7 @@ What does not work, and why:
 
 - **WPA2/WPA3 Enterprise (802.1X, certificates).** There is no EAP code in the driver, and I have no network to test it on.
 - **WPA/TKIP-only and WEP.** The join code refuses anything but open or CCMP/WPA2-PSK.
-- **AirDrop, wireless Sidecar, Universal Control.** They run over AWDL, which hops channels in sync with other Apple devices. The layer reports the AWDL capability so macOS tries to set it up, but the `awdl0` interface is not created, and I doubt a USB radio can do the channel timing anyway.
+- **AirDrop, wireless Sidecar, Universal Control.** They use AWDL. The layer reports the capability, so `wifip2pd` asks for a role-6 interface. IO80211's generic `createVirtualInterface` only accepts role 7 (AP); Apple creates role 6 through a private Broadcom path that builds an `AppleBCMWLANProximityInterface` with AWDL protocol state, a Taskmaster and its own Skywalk queues. I have not implemented that path. Returning success or inventing an `awdl0` name without the real interface and datapath would leave macOS with an interface it cannot operate, so the layer does not handle that request at all. AWDL-based continuity features are unavailable.
 - **AirPlay and Handoff.** They should work over the normal network without AWDL, but I have not tested them.
 - **Following an access point's channel switch (CSA).** The driver parses the announcement and moves to the new channel and width without leaving, but I could not make any of my access points announce one, so it is untested; if it fails the link drops and the layer rejoins. Roaming between bands is implemented but I have not seen it fire.
 
