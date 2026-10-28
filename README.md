@@ -11,7 +11,7 @@ Without the second kext you still get a working `enX` interface, but you have to
 
 ## Read this first
 
-I built and tested this on one setup only: a TP-Link Archer T9UH v1 (`2357:0106`) on an AMD Hackintosh with macOS 26.7.1, against one WPA2/WPA3-transition router on 5 GHz. I have not tried any other adapter, board, macOS version or access point. These are kernel extensions, so a bug can panic the machine. Keep a working copy of your EFI folder and use this at your own risk.
+I built and tested this on one setup only: a TP-Link Archer T9UH v1 (`2357:0106`) on an AMD Hackintosh with macOS 26.7.1, against one WPA2/WPA3-transition router on 5 GHz and an Android hotspot that allows WPA3-SAE only (2.4 and 5 GHz). I have not tried any other adapter, board, macOS version or access point. These are kernel extensions, so a bug can panic the machine. Keep a working copy of your EFI folder and use this at your own risk.
 
 What works on that setup:
 
@@ -19,7 +19,7 @@ What works on that setup:
 - Open, WPA2-PSK and WPA3-SAE networks, with 802.11w (protected management frames). SAE, the 4-way handshake and PMF are done in the driver (`Source/Driver/SAE.c`, `WPA2Supplicant.c`, `PMF.c`), and a WPA2/WPA3 mixed router joins as WPA3. Tested against an Android hotspot (SAE only, PMF required, 2.4 and 5 GHz) and one WPA2/WPA3-transition router. Known quirk: after a reboot without a clean leave, a PMF access point keeps the old association for 30-60 s and the first join attempt can fail; the next one works.
 - Sleep/wake and unplug/replug.
 - Location Services. macOS positions you from nearby Wi-Fi networks, and it works because the adapter shows up as a normal Wi-Fi interface.
-- About 386 Mbit/s down and 291 Mbit/s up on a 5 GHz 80 MHz link (the adapter runs at USB 2.0 High-Speed on my port).
+- About 386 Mbit/s down and 291 Mbit/s up on a WPA2 5 GHz 80 MHz link (the adapter runs at USB 2.0 High-Speed on my port). Over WPA3-SAE a 100 MB download ran at about 3.2 MB/s and the ping to the router averaged 2 ms with no stalls.
 
 What does not work, and why:
 
@@ -27,7 +27,7 @@ What does not work, and why:
 - **WPA/TKIP-only and WEP.** The join code refuses anything but open or CCMP/WPA2-PSK.
 - **AirDrop, wireless Sidecar, Universal Control.** They run over AWDL, which hops channels in sync with other Apple devices. The layer reports the AWDL capability so macOS tries to set it up, but the `awdl0` interface is not created, and I doubt a USB radio can do the channel timing anyway.
 - **AirPlay and Handoff.** They should work over the normal network without AWDL, but I have not tested them.
-- **Following an access point's channel switch (CSA).** The link drops and has to rejoin. Roaming between bands is implemented but I have not seen it fire.
+- **Following an access point's channel switch (CSA).** The driver parses the announcement and moves to the new channel and width without leaving, but I could not make any of my access points announce one, so it is untested; if it fails the link drops and the layer rejoins. Roaming between bands is implemented but I have not seen it fire.
 
 The `Info.plist` also lists USB IDs of other RTL8814AU adapters (ASUS USB-AC68, Alfa AWUS1900, Netgear A7000, Edimax EW-7833UAC, D-Link DWA-192, and others). Those come from the vendor driver and are untested.
 
@@ -73,7 +73,7 @@ That must print nothing.
  RTL8814AirLayer.kext   native interface, scan, join, link quality
               |  RTLRadioABI (internal)
  RTL8814Native.kext     compat layer, Realtek HAL/PHY, USB pipes,
-                        firmware loader, WPA2 supplicant
+                        firmware loader, WPA2/WPA3 supplicant
 ```
 
 The adapter has one bulk IN, three bulk OUT and one interrupt endpoint. Receive runs several transfers in flight on its own worker thread; transmit is queued asynchronously with hardware aggregation.
@@ -94,7 +94,7 @@ clang -Wall -O2 Tools/test_uc.c -framework IOKit -framework CoreFoundation -o To
 - [Docs/ROADMAP.md](Docs/ROADMAP.md): what is done, what is open, and why
 - [Docs/ARCHITECTURE.md](Docs/ARCHITECTURE.md): hardware notes, USB rules, and a dated log of bugs and fixes
 - [Docs/PHASE5_IO80211.md](Docs/PHASE5_IO80211.md): notes on Apple's IO80211Family and Skywalk, including vtable layouts
-- [Docs/SAE_HANDOFF.md](Docs/SAE_HANDOFF.md): WPA3-SAE, how far it got and what is still to write
+- [Docs/SAE_HANDOFF.md](Docs/SAE_HANDOFF.md): WPA3-SAE and 802.11w: how it was built, the live results and what is still to verify
 
 ## License
 
