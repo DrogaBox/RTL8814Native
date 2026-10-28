@@ -3093,6 +3093,8 @@ unsigned int OnDisassoc(_adapter *padapter, union recv_frame *precv_frame)
 	struct wifidirect_info *pwdinfo = &(padapter->wdinfo);
 #endif /* CONFIG_P2P */
 
+	if (precv_frame->u.hdr.len < WLAN_HDR_A3_LEN + 2)
+		return _SUCCESS;
 	/* check A3 */
 	if (!(_rtw_memcmp(GetAddr3Ptr(pframe), get_my_bssid(&pmlmeinfo->network), ETH_ALEN)))
 		return _SUCCESS;
