@@ -136,6 +136,9 @@ static void sae_parse_ap_rsn(_adapter *padapter, u8 *group_cipher, int *pmf_requ
 		       total - _BEACON_IE_OFFSET_);
 	if (!p || ielen < 8)
 		return;
+	/* rtw_get_ie trusts the declared length: drop an IE that runs past the stored elements */
+	if ((uint)ielen + 2 > total - _BEACON_IE_OFFSET_ - (uint)(p - (info->network.IEs + _BEACON_IE_OFFSET_)))
+		return;
 	/* p[0] id, p[1] length, p[2..3] version, p[4..7] group suite */
 	if (p[4] == 0x00 && p[5] == 0x0f && p[6] == 0xac)
 		*group_cipher = p[7];
