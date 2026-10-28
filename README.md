@@ -19,13 +19,14 @@ What works on that setup:
 - Open, WPA2-PSK and WPA3-SAE networks, with 802.11w (protected management frames). SAE, the 4-way handshake and PMF are done in the driver (`Source/Driver/SAE.c`, `WPA2Supplicant.c`, `PMF.c`), and a WPA2/WPA3 mixed router joins as WPA3. Tested against an Android hotspot (SAE only, PMF required, 2.4 and 5 GHz) and one WPA2/WPA3-transition router. Known quirk: after a reboot without a clean leave, a PMF access point keeps the old association for 30-60 s and the first join attempt can fail; the next one works.
 - Sleep/wake and unplug/replug.
 - Location Services. macOS positions you from nearby Wi-Fi networks, and it works because the adapter shows up as a normal Wi-Fi interface.
-- About 386 Mbit/s down and 291 Mbit/s up on a WPA2 5 GHz 80 MHz link (the adapter runs at USB 2.0 High-Speed on my port). Over WPA3-SAE a 100 MB download ran at about 3.2 MB/s and the ping to the router averaged 2 ms with no stalls.
+- USB 3.0. The adapter enumerates as USB 2.0, and the driver switches it to USB 3.0 when it loads; on a motherboard port it then runs at SuperSpeed (5 Gbps).
+- About 386 Mbit/s down and 291 Mbit/s up on a WPA2 5 GHz 80 MHz link. That was measured while the adapter still ran at USB 2.0 High-Speed; I have not measured it again at SuperSpeed. Over WPA3-SAE a 100 MB download ran at about 3.2 MB/s and the ping to the router averaged 2 ms with no stalls.
 
 What does not work, and why:
 
 - **WPA2/WPA3 Enterprise (802.1X, certificates).** There is no EAP code in the driver, and I have no network to test it on.
 - **WPA/TKIP-only and WEP.** The join code refuses anything but open or CCMP/WPA2-PSK.
-- **AirDrop, wireless Sidecar, Universal Control.** They use AWDL. The layer reports the capability, so `wifip2pd` asks for a role-6 interface. IO80211's generic `createVirtualInterface` only accepts role 7 (AP); Apple creates role 6 through a private Broadcom path that builds an `AppleBCMWLANProximityInterface` with AWDL protocol state, a Taskmaster and its own Skywalk queues. I have not implemented that path. Returning success or inventing an `awdl0` name without the real interface and datapath would leave macOS with an interface it cannot operate, so the layer does not handle that request at all. AWDL-based continuity features are unavailable.
+- **AirDrop, wireless Sidecar, Universal Control.** They use AWDL. The layer reports the capability, so `wifip2pd` asks for a role-6 interface. IO80211's generic `createVirtualInterface` only accepts role 7 (AP); Apple creates role 6 through a private Broadcom path that builds an `AppleBCMWLANProximityInterface` with AWDL protocol state, a Taskmaster and its own Skywalk queues. I have not implemented that path. Returning success or inventing an `awdl0` name without the real interface and datapath would leave macOS with an interface it cannot operate, so the layer does not handle that request at all. AWDL-based continuity features are unavailable. I am reverse engineering that path now: what `wifip2pd` sends and how it finds the new interface (it waits up to 30 s for an interface whose registry entry says `IO80211VirtualInterfaceRole = AirLink`), and the kernel chain from the role-6 request to that property. It is notes only so far, with no driver code; see [Docs/AWDL_ROLE6_RE.md](Docs/AWDL_ROLE6_RE.md) and the other `Docs/AWDL_*.md` files.
 - **AirPlay and Handoff.** They should work over the normal network without AWDL, but I have not tested them.
 - **Following an access point's channel switch (CSA).** The driver parses the announcement and moves to the new channel and width without leaving, but I could not make any of my access points announce one, so it is untested; if it fails the link drops and the layer rejoins. Roaming between bands is implemented but I have not seen it fire.
 
@@ -42,7 +43,7 @@ The `Info.plist` also lists USB IDs of other RTL8814AU adapters (ASUS USB-AC68, 
    ```
 3. In `config.plist`, under `Kernel -> Add`, add both kexts with `Enabled` set, and put `RTL8814AirLayer.kext` after `RTL8814Native.kext`.
 4. Add `rtlair=2` to the boot-args. Without it only the driver loads and you get the plain interface.
-5. Reboot and plug the adapter into a USB port on the motherboard (I would avoid hubs). Join your network from the Wi-Fi menu; macOS asks for the password the first time.
+5. Reboot and plug the adapter into a USB 3 port on the motherboard. Avoid hubs: behind my monitor's USB 3 hub the switch to USB 3.0 fails, and the adapter drops off the bus until you replug it (it then comes back as USB 2.0). Join your network from the Wi-Fi menu; macOS asks for the password the first time.
 
 If something goes wrong, remove both kexts and `rtlair=2` from the EFI.
 
@@ -95,6 +96,7 @@ clang -Wall -O2 Tools/test_uc.c -framework IOKit -framework CoreFoundation -o To
 - [Docs/ARCHITECTURE.md](Docs/ARCHITECTURE.md): hardware notes, USB rules, and a dated log of bugs and fixes
 - [Docs/PHASE5_IO80211.md](Docs/PHASE5_IO80211.md): notes on Apple's IO80211Family and Skywalk, including vtable layouts
 - [Docs/SAE_HANDOFF.md](Docs/SAE_HANDOFF.md): WPA3-SAE and 802.11w: how it was built, the live results and what is still to verify
+- [Docs/AWDL_ROLE6_RE.md](Docs/AWDL_ROLE6_RE.md) and the other `Docs/AWDL_*.md` files: reverse-engineering notes on how macOS creates the AWDL interface (work in progress)
 
 ## License
 
