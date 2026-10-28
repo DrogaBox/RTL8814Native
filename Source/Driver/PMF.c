@@ -84,6 +84,9 @@ static void pmf_ccm_setup(const uint8_t tk[16], const uint8_t *frame, size_t ple
     rtl_aes128_encrypt_block(tk, x, tmp);
     for (i = 0; i < 16; i++)
         x[i] = tmp[i];
+    pmf_wipe(nonce, sizeof(nonce));
+    pmf_wipe(aad, sizeof(aad));
+    pmf_wipe(b, sizeof(b));
     pmf_wipe(tmp, sizeof(tmp));
 }
 
@@ -107,6 +110,8 @@ static void pmf_ccm_tag(const uint8_t tk[16], uint8_t x[16], uint8_t ctr[16],
     rtl_aes128_encrypt_block(tk, ctr, s);
     for (i = 0; i < 8; i++)
         mic[i] = (uint8_t)(x[i] ^ s[i]);
+    pmf_wipe(tmp, sizeof(tmp));
+    pmf_wipe(s, sizeof(s));
 }
 
 /* CTR keystream over data in place, counters 1... */
@@ -124,6 +129,7 @@ static void pmf_ccm_ctr(const uint8_t tk[16], uint8_t ctr[16], uint8_t *data, si
         for (i = 0; i < n; i++)
             data[off + i] = (uint8_t)(data[off + i] ^ s[i]);
     }
+    pmf_wipe(s, sizeof(s));
 }
 
 int rtl_pmf_ccmp_decrypt_mgmt(const uint8_t tk[16], uint8_t *frame, size_t len,
@@ -150,6 +156,9 @@ int rtl_pmf_ccmp_decrypt_mgmt(const uint8_t tk[16], uint8_t *frame, size_t len,
     if (!pmf_equal(mic, data + plen, 8)) {
         /* The plaintext is garbage on failure: wipe it, the caller drops the frame. */
         pmf_wipe(data, plen);
+        pmf_wipe(x, sizeof(x));
+        pmf_wipe(ctr, sizeof(ctr));
+        pmf_wipe(mic, sizeof(mic));
         return -1;
     }
 
@@ -163,6 +172,9 @@ int rtl_pmf_ccmp_decrypt_mgmt(const uint8_t tk[16], uint8_t *frame, size_t len,
     frame[1] = (uint8_t)(frame[1] & ~PMF_FC_PROTECTED);
     if (out_len)
         *out_len = RTL_PMF_MGMT_HDR_LEN + plen;
+    pmf_wipe(x, sizeof(x));
+    pmf_wipe(ctr, sizeof(ctr));
+    pmf_wipe(mic, sizeof(mic));
     return 0;
 }
 
@@ -198,6 +210,9 @@ int rtl_pmf_ccmp_encrypt_mgmt(const uint8_t tk[16], uint8_t *frame, size_t len,
         data[plen + i] = mic[i];
     if (out_len)
         *out_len = RTL_PMF_MGMT_HDR_LEN + RTL_PMF_CCMP_HDR_LEN + plen + RTL_PMF_CCMP_MIC_LEN;
+    pmf_wipe(x, sizeof(x));
+    pmf_wipe(ctr, sizeof(ctr));
+    pmf_wipe(mic, sizeof(mic));
     return 0;
 }
 
@@ -224,8 +239,11 @@ int rtl_pmf_bip_verify(const uint8_t igtk[16], const uint8_t *frame, size_t len,
     for (i = 0; i < 8; i++)
         buf[20 + (len - RTL_PMF_MGMT_HDR_LEN) - 8 + i] = 0;
     rtl_aes128_cmac(igtk, buf, 20 + (len - RTL_PMF_MGMT_HDR_LEN), mac);
-    if (!pmf_equal(mac, mme + 10, 8))
+    if (!pmf_equal(mac, mme + 10, 8)) {
+        pmf_wipe(buf, sizeof(buf));
+        pmf_wipe(mac, sizeof(mac));
         return -1;
+    }
     if (key_id)
         *key_id = (unsigned int)(mme[2] | (mme[3] << 8));
     if (ipn) {
@@ -234,5 +252,7 @@ int rtl_pmf_bip_verify(const uint8_t igtk[16], const uint8_t *frame, size_t len,
             v |= (uint64_t)mme[4 + i] << (8 * i);
         *ipn = v;
     }
+    pmf_wipe(buf, sizeof(buf));
+    pmf_wipe(mac, sizeof(mac));
     return 0;
 }
