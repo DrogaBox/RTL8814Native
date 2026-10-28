@@ -1984,13 +1984,16 @@ sint validate_recv_mgnt_frame(PADAPTER padapter, union recv_frame *precv_frame)
 			recvframe_pull_tail(precv_frame, cut);
 			precv_frame->u.hdr.attrib.pkt_len -= cut;
 		}
-		/* a decrypted SA Query request from the AP: prove we are alive */
+#ifndef CONFIG_IEEE80211W
+		/* Without the vendor PMF dispatcher, handle decrypted AP SA Query frames here. */
 		if (plen < flen && plen >= 24 + 4) {
 			u8 *f = precv_frame->u.hdr.rx_data;
 
-			if (((f[0] >> 2) & 3) == 0 && (f[0] >> 4) == 13 && f[24] == 8 && f[25] == 0)
+			if (((f[0] >> 2) & 3) == 0 && (f[0] >> 4) == 13 &&
+			    f[24] == 8 && f[25] == 0)
 				rtl_issue_sa_query_resp(padapter, f + 10, f + 26);
 		}
+#endif
 	}
 
 #if defined(CONFIG_IEEE80211W) || defined(CONFIG_RTW_MESH)

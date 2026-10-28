@@ -3226,6 +3226,8 @@ unsigned int on_action_spct(_adapter *padapter, union recv_frame *precv_frame)
 	u8 category;
 	u8 action;
 
+	if (frame_len < sizeof(struct rtw_ieee80211_hdr_3addr) + 2)
+		goto exit;
 	psta = rtw_get_stainfo(pstapriv, get_addr2_ptr(pframe));
 
 	if (!psta)
@@ -7276,6 +7278,8 @@ unsigned int OnAction_sa_query(_adapter *padapter, union recv_frame *precv_frame
 	u16 tid;
 	/* Baron */
 
+	if (precv_frame->u.hdr.len < WLAN_HDR_A3_LEN + 4)
+		return _SUCCESS;
 	RTW_INFO("OnAction_sa_query\n");
 
 	switch (pframe[WLAN_HDR_A3_LEN + 1]) {
@@ -7288,11 +7292,14 @@ unsigned int OnAction_sa_query(_adapter *padapter, union recv_frame *precv_frame
 
 	case 1: /* SA Query rsp */
 		psta = rtw_get_stainfo(pstapriv, get_addr2_ptr(pframe));
-		if (psta != NULL)
-			_cancel_timer_ex(&psta->dot11w_expire_timer);
-
 		_rtw_memcpy(&tid, &pframe[WLAN_HDR_A3_LEN + 2], sizeof(u16));
-		RTW_INFO("OnAction_sa_query response,action=%d, tid=%04x, cancel timer\n", pframe[WLAN_HDR_A3_LEN + 1], tid);
+		if (psta != NULL && pmlmeext->sa_query_pending &&
+		    tid == pmlmeext->sa_query_pending_id) {
+			pmlmeext->sa_query_pending = 0;
+			_cancel_timer_ex(&psta->dot11w_expire_timer);
+		}
+		RTW_INFO("OnAction_sa_query response,action=%d, tid=%04x, pending=%u\n",
+			 pframe[WLAN_HDR_A3_LEN + 1], tid, pmlmeext->sa_query_pending);
 		break;
 	default:
 		break;
@@ -7445,6 +7452,8 @@ unsigned int OnAction(_adapter *padapter, union recv_frame *precv_frame)
 	unsigned char	*frame_body;
 	u8 *pframe = precv_frame->u.hdr.rx_data;
 
+	if (precv_frame->u.hdr.len < sizeof(struct rtw_ieee80211_hdr_3addr) + 2)
+		return _SUCCESS;
 	frame_body = (unsigned char *)(pframe + sizeof(struct rtw_ieee80211_hdr_3addr));
 
 	category = frame_body[0];
@@ -10097,15 +10106,20 @@ void issue_action_SA_Query(_adapter *padapter, unsigned char *raddr, unsigned ch
 
 	switch (action) {
 	case 0: /* SA Query req */
+		pmlmeext->sa_query_pending_id = pmlmeext->sa_query_seq;
+		pmlmeext->sa_query_pending = 1;
 		pframe = rtw_set_fixed_ie(pframe, 2, (unsigned char *)&pmlmeext->sa_query_seq, &pattrib->pktlen);
 		pmlmeext->sa_query_seq++;
-		/* send sa query request to AP, AP should reply sa query response in 1 second */
+		/* send sa query request to AP, AP should reply in 1 second */
 		if (pattrib->key_type == IEEE80211W_RIGHT_KEY) {
 			psta = rtw_get_stainfo(pstapriv, pwlanhdr->addr1);
 			if (psta != NULL) {
-				/* RTW_INFO("%s, %d, set dot11w_expire_timer\n", __func__, __LINE__); */
 				_set_timer(&psta->dot11w_expire_timer, 1000);
+			} else {
+				pmlmeext->sa_query_pending = 0;
 			}
+		} else {
+			pmlmeext->sa_query_pending = 0;
 		}
 		break;
 

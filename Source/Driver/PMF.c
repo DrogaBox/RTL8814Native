@@ -9,6 +9,56 @@
 
 #define PMF_FC_PROTECTED 0x40U /* bit 14 of the frame control, byte 1 */
 
+int rtl_pmf_management_body_valid(uint8_t subtype, size_t len)
+{
+    if (len < RTL_PMF_MGMT_HDR_LEN)
+        return 0;
+    if (subtype == 10 || subtype == 12)
+        return len >= RTL_PMF_MGMT_HDR_LEN + 2U;
+    if (subtype == 13)
+        return len >= RTL_PMF_MGMT_HDR_LEN + 2U;
+    return 1;
+}
+
+int rtl_pmf_unprotected_action_allowed(const uint8_t *frame, size_t len)
+{
+    if (!frame || len < RTL_PMF_MGMT_HDR_LEN + 2U)
+        return 0;
+    return !rtl_pmf_action_requires_protection(frame[RTL_PMF_MGMT_HDR_LEN]);
+}
+
+int rtl_pmf_bip_body_valid(uint8_t subtype, const uint8_t *frame, size_t len)
+{
+    if (!frame || len < RTL_PMF_MGMT_HDR_LEN)
+        return 0;
+    if (subtype == 10 || subtype == 12)
+        return len >= RTL_PMF_MGMT_HDR_LEN + 2U + RTL_PMF_MME_LEN;
+    if (subtype == 13) {
+        size_t body_len;
+        if (len < RTL_PMF_MGMT_HDR_LEN + RTL_PMF_MME_LEN)
+            return 0;
+        body_len = len - RTL_PMF_MGMT_HDR_LEN - RTL_PMF_MME_LEN;
+        return body_len >= 2U &&
+               rtl_pmf_action_requires_protection(frame[RTL_PMF_MGMT_HDR_LEN]);
+    }
+    return 1;
+}
+
+int rtl_pmf_action_requires_protection(uint8_t category)
+{
+    switch (category) {
+    case 4:  /* Public */
+    case 7:  /* HT */
+    case 11: /* Unprotected WNM */
+    case 15: /* Self-protected */
+    case 21: /* VHT */
+    case 127: /* Vendor-specific P2P */
+        return 0;
+    default:
+        return 1;
+    }
+}
+
 static int pmf_equal(const uint8_t *a, const uint8_t *b, size_t n)
 {
     uint8_t diff = 0;

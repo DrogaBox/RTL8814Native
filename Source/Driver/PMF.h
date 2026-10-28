@@ -23,6 +23,12 @@ extern "C" {
 #define RTL_PMF_CCMP_MIC_LEN 8U
 #define RTL_PMF_MME_LEN 18U
 
+/* Categories explicitly classified as non-robust by IEEE 802.11. */
+int rtl_pmf_action_requires_protection(uint8_t category);
+int rtl_pmf_unprotected_action_allowed(const uint8_t *frame, size_t len);
+int rtl_pmf_management_body_valid(uint8_t subtype, size_t len);
+int rtl_pmf_bip_body_valid(uint8_t subtype, const uint8_t *frame, size_t len);
+
 /*
  * Decrypt and authenticate a protected unicast management frame in place.
  * frame is the whole frame from the 802.11 header on (no FCS), len its length.

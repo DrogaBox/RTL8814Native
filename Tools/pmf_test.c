@@ -10,9 +10,41 @@ static int fails;
 int main(void)
 {
     unsigned char f[256];
+    unsigned char action[RTL_PMF_MGMT_HDR_LEN + 2] = {0};
+    unsigned char action_with_mme[RTL_PMF_MGMT_HDR_LEN + 2 + RTL_PMF_MME_LEN] = {0};
     size_t out = 0;
     uint64_t pn = 0;
     unsigned int kid = 0;
+
+    CHECK(rtl_pmf_action_requires_protection(0));  /* Spectrum Management */
+    CHECK(rtl_pmf_action_requires_protection(8));  /* SA Query */
+    CHECK(!rtl_pmf_action_requires_protection(4)); /* Public */
+    CHECK(!rtl_pmf_action_requires_protection(7)); /* HT */
+    CHECK(!rtl_pmf_action_requires_protection(11)); /* Unprotected WNM */
+    CHECK(!rtl_pmf_action_requires_protection(15)); /* Self-protected */
+    CHECK(!rtl_pmf_action_requires_protection(21)); /* VHT */
+    CHECK(!rtl_pmf_action_requires_protection(127)); /* P2P */
+    action[RTL_PMF_MGMT_HDR_LEN] = 4;
+    CHECK(rtl_pmf_unprotected_action_allowed(action, sizeof(action)));
+    action[RTL_PMF_MGMT_HDR_LEN] = 8;
+    CHECK(!rtl_pmf_unprotected_action_allowed(action, sizeof(action)));
+    CHECK(!rtl_pmf_unprotected_action_allowed(action, sizeof(action) - 1));
+    CHECK(!rtl_pmf_management_body_valid(10, RTL_PMF_MGMT_HDR_LEN + 1));
+    CHECK(rtl_pmf_management_body_valid(10, RTL_PMF_MGMT_HDR_LEN + 2));
+    CHECK(!rtl_pmf_management_body_valid(13, RTL_PMF_MGMT_HDR_LEN + 1));
+    CHECK(rtl_pmf_management_body_valid(13, RTL_PMF_MGMT_HDR_LEN + 2));
+    CHECK(!rtl_pmf_bip_body_valid(10, action, RTL_PMF_MGMT_HDR_LEN + 2 + RTL_PMF_MME_LEN - 1));
+    CHECK(rtl_pmf_bip_body_valid(10, action, RTL_PMF_MGMT_HDR_LEN + 2 + RTL_PMF_MME_LEN));
+    action[RTL_PMF_MGMT_HDR_LEN] = 8;
+    CHECK(!rtl_pmf_bip_body_valid(13, action, RTL_PMF_MGMT_HDR_LEN + RTL_PMF_MME_LEN - 1));
+    CHECK(rtl_pmf_bip_body_valid(13, action, RTL_PMF_MGMT_HDR_LEN + 2 + RTL_PMF_MME_LEN));
+    action[RTL_PMF_MGMT_HDR_LEN] = 4;
+    CHECK(!rtl_pmf_bip_body_valid(13, action, RTL_PMF_MGMT_HDR_LEN + 2 + RTL_PMF_MME_LEN));
+    action_with_mme[RTL_PMF_MGMT_HDR_LEN] = 4;
+    action_with_mme[sizeof(action_with_mme) - RTL_PMF_MME_LEN] = 76;
+    CHECK(!rtl_pmf_bip_body_valid(13, action_with_mme, sizeof(action_with_mme)));
+    action_with_mme[RTL_PMF_MGMT_HDR_LEN] = 8;
+    CHECK(rtl_pmf_bip_body_valid(13, action_with_mme, sizeof(action_with_mme)));
 
     memcpy(f, pmf_deauth_enc, sizeof(pmf_deauth_enc));
     CHECK(rtl_pmf_ccmp_decrypt_mgmt(pmf_tk, f, sizeof(pmf_deauth_enc), &out, &pn) == 0);

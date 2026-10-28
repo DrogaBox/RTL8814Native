@@ -490,6 +490,8 @@ struct mlme_ext_priv {
 	u16	mgnt_seq;
 #ifdef CONFIG_IEEE80211W
 	u16	sa_query_seq;
+	u16	sa_query_pending_id;
+	u8	sa_query_pending;
 #endif
 	/* struct fw_priv 	fwpriv; */
 

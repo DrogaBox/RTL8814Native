@@ -506,7 +506,9 @@ int rtl8814_wpa2_pmf_rx(u8 *frame, u32 *len)
 	u8 subtype, mc;
 	u16 reason = 0;
 
-	if (!g_wpa2.akm_sae || g_wpa2.state != WPA2_STATE_COMPLETED || n < RTL_PMF_MGMT_HDR_LEN)
+	if (!g_wpa2.akm_sae || g_wpa2.state != WPA2_STATE_COMPLETED)
+		return 1;
+	if (n < RTL_PMF_MGMT_HDR_LEN)
 		return 1;
 	if (((frame[0] >> 2) & 3) != 0)
 		return 1;
@@ -521,6 +523,10 @@ int rtl8814_wpa2_pmf_rx(u8 *frame, u32 *len)
 			uint64_t pn = 0;
 
 			if (rtl_pmf_ccmp_decrypt_mgmt(&g_wpa2.ptk[32], frame, n, &out_len, &pn) != 0) {
+				rtl8814native_jlog(JL_PMF, RTL_PMF_DEC_FAIL, subtype);
+				return 0;
+			}
+			if (!rtl_pmf_management_body_valid(subtype, out_len)) {
 				rtl8814native_jlog(JL_PMF, RTL_PMF_DEC_FAIL, subtype);
 				return 0;
 			}
@@ -541,6 +547,11 @@ int rtl8814_wpa2_pmf_rx(u8 *frame, u32 *len)
 			rtl8814native_jlog(JL_PMF, RTL_PMF_UNPROT_DROP, subtype | (reason << 8));
 			return 0;
 		}
+		if (!rtl_pmf_management_body_valid(subtype, n) ||
+		    (subtype == 13 && !rtl_pmf_unprotected_action_allowed(frame, n))) {
+			rtl8814native_jlog(JL_PMF, RTL_PMF_UNPROT_DROP, subtype);
+			return 0;
+		}
 		return 1;
 	}
 
@@ -551,9 +562,20 @@ int rtl8814_wpa2_pmf_rx(u8 *frame, u32 *len)
 		int has_mme = n >= RTL_PMF_MGMT_HDR_LEN + RTL_PMF_MME_LEN &&
 			      frame[n - RTL_PMF_MME_LEN] == 76;
 
-		if (subtype == 13 && (!has_mme || !g_wpa2.igtk_valid))
-			return 1; /* not provably protected: leave group actions alone */
+		if (subtype == 13) {
+			if (!rtl_pmf_management_body_valid(subtype, n)) {
+				rtl8814native_jlog(JL_PMF, RTL_PMF_UNPROT_DROP, subtype);
+				return 0;
+			}
+			if (!rtl_pmf_action_requires_protection(frame[RTL_PMF_MGMT_HDR_LEN]))
+				return 1; /* non-robust group actions are never BIP-protected */
+			if (!has_mme || !g_wpa2.igtk_valid) {
+				rtl8814native_jlog(JL_PMF, RTL_PMF_UNPROT_DROP, subtype);
+				return 0;
+			}
+		}
 		if (!g_wpa2.igtk_valid || !has_mme ||
+		    !rtl_pmf_bip_body_valid(subtype, frame, n) ||
 		    rtl_pmf_bip_verify(g_wpa2.igtk, frame, n, &kid, &ipn) != 0 || kid != g_wpa2.igtk_id) {
 			rtl8814native_jlog(JL_PMF, RTL_PMF_BIP_FAIL, subtype);
 			return 0;
