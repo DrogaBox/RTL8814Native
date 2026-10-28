@@ -164,6 +164,7 @@ DRIVER_SOURCES=(
     "Source/Driver/VendorProbe.c"
     "Source/Driver/WPA2Supplicant.c"
     "Source/Driver/SAE.c"
+    "Source/Driver/SAEAuth.c"
 )
 
 # Common kernel flags
