@@ -36,6 +36,16 @@ int main(void)
     }
 
     {
+        /* GTK KDE (22 bytes incl. header 2 -> 24) followed by a single 0xdd pad byte */
+        uint8_t kde[25] = {0xdd,22,0x00,0x0f,0xac,0x01,0x02,0x00,0xdd};
+        struct rtl_security_key_data parsed;
+        memset(kde + 8, 0x11, 16);
+        kde[8 + 16] = 0xdd;
+        CHECK(rtl_security_parse_key_data(kde, 25, 0, &parsed) == 0);
+        CHECK(parsed.has_gtk && parsed.gtk_len == 16);
+    }
+
+    {
         uint8_t kde[24] = {0xdd,22,0x00,0x0f,0xac,0x01,0x02,0x00};
         struct rtl_security_key_data parsed;
         memset(kde + 8, 0x5a, 16);

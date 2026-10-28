@@ -109,8 +109,12 @@ int rtl_security_parse_key_data(const uint8_t *data, size_t data_len,
     while (pos < data_len) {
         size_t element_len;
         const uint8_t *body;
-        if (data_len - pos < 2)
+        if (data_len - pos < 2) {
+            /* a single trailing byte is the 0xdd pad of the key data */
+            if (data[pos] == 0xdd || data[pos] == 0x00)
+                break;
             goto malformed;
+        }
         element_len = data[pos + 1];
         if (element_len > data_len - pos - 2)
             goto malformed;

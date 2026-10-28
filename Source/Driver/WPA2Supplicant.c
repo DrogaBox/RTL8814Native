@@ -1010,11 +1010,11 @@ int rtl8814_wpa2_rx_eapol(_adapter *padapter, struct sk_buff *skb)
 							gtk_key_id = parsed.gtk_key_id == 0xff ? gtk_key_id : parsed.gtk_key_id;
 							gtk_len = (u32)parsed.gtk_len;
 							_rtw_memcpy(gtk_buf, parsed.gtk, gtk_len);
+						}
+						if (g_wpa2.akm_sae)
+							wpa2_take_igtk(&parsed);
+						_rtw_memset(&parsed, 0, sizeof(parsed));
 					}
-					if (g_wpa2.akm_sae)
-						wpa2_take_igtk(&parsed);
-					_rtw_memset(&parsed, 0, sizeof(parsed));
-				}
 				}
 				rtw_mfree(plain, n * 8);
 			}
