@@ -17,8 +17,11 @@
 #include "SAE.h"
 #include "PMF.h"
 #include "SecurityIE.h"
+#include "ReplayCheck.h"
 
 extern netdev_tx_t _rtw_xmit_entry(_pkt *pkt, _nic_hdl pnetdev);
+
+static void wpa2_secure_zero(void *memory, size_t length);
 
 /* ======================================================================
  * 1. FIPS 180-4 SHA-1 & RFC 2104 HMAC-SHA1
@@ -143,6 +146,7 @@ static void sha1_final(struct sha1_ctx *ctx, u8 digest[20])
 		digest[i * 4 + 2] = (u8)(ctx->state[i] >> 8);
 		digest[i * 4 + 3] = (u8)(ctx->state[i]);
 	}
+	wpa2_secure_zero(len_be, sizeof(len_be));
 }
 
 static void hmac_sha1(const u8 *key, size_t key_len,
@@ -154,10 +158,12 @@ static void hmac_sha1(const u8 *key, size_t key_len,
 	u8 tk[20];
 	u8 inner[20];
 
+	_rtw_memset(tk, 0, sizeof(tk));
 	if (key_len > 64) {
 		sha1_init(&ctx);
 		sha1_update(&ctx, key, key_len);
 		sha1_final(&ctx, tk);
+		wpa2_secure_zero(&ctx, sizeof(ctx));
 		key = tk;
 		key_len = 20;
 	}
@@ -178,6 +184,11 @@ static void hmac_sha1(const u8 *key, size_t key_len,
 	sha1_update(&ctx, k_opad, 64);
 	sha1_update(&ctx, inner, 20);
 	sha1_final(&ctx, mac);
+	wpa2_secure_zero(&ctx, sizeof(ctx));
+	wpa2_secure_zero(k_ipad, sizeof(k_ipad));
+	wpa2_secure_zero(k_opad, sizeof(k_opad));
+	wpa2_secure_zero(tk, sizeof(tk));
+	wpa2_secure_zero(inner, sizeof(inner));
 }
 
 /* ======================================================================
@@ -250,6 +261,8 @@ static void wpa2_prf_ptk(const u8 pmk[32], const u8 aa[6], const u8 spa[6],
 		else
 			_rtw_memcpy(ptk + 40, hash, 8);
 	}
+	wpa2_secure_zero(buf, sizeof(buf));
+	wpa2_secure_zero(hash, sizeof(hash));
 }
 
 /* ======================================================================
@@ -298,6 +311,13 @@ static const u8 aes_rcon[10] = {
 	0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x1b, 0x36
 };
 
+static void wpa2_secure_zero(void *memory, size_t length)
+{
+	volatile u8 *p = (volatile u8 *)memory;
+	while (length--)
+		*p++ = 0;
+}
+
 static void aes128_expand_key(const u8 key[16], u8 rk[176])
 {
 	_rtw_memcpy(rk, (void *)key, 16);
@@ -314,6 +334,7 @@ static void aes128_expand_key(const u8 key[16], u8 rk[176])
 		}
 		for (int j = 0; j < 4; j++)
 			rk[i * 4 + j] = rk[(i - 4) * 4 + j] ^ temp[j];
+		wpa2_secure_zero(temp, sizeof(temp));
 	}
 }
 
@@ -373,15 +394,29 @@ static void aes128_decrypt_block(const u8 rk[176], const u8 in[16], u8 out[16])
 
 	for (int i = 0; i < 16; i++)
 		out[i] = aes_inv_sbox[t[i]] ^ rk[i];
+
+	wpa2_secure_zero(s, sizeof(s));
+	wpa2_secure_zero(t, sizeof(t));
+
 }
 
 /* RFC 3394 AES-128 Key Unwrap: cipher is (n + 1) * 8 bytes, plain is n * 8 bytes */
+static int wpa2_equal(const u8 *a, const u8 *b, size_t length)
+{
+	u8 diff = 0;
+	size_t i;
+	for (i = 0; i < length; i++)
+		diff = (u8)(diff | (a[i] ^ b[i]));
+	return diff == 0;
+}
+
 static int aes128_unwrap(const u8 kek[16], int n, const u8 *cipher, u8 *plain)
 {
-	u8 rk[176];
-	u8 a[8], b[16];
+	u8 rk[176] = {0};
+	u8 a[8] = {0}, b[16] = {0};
+	int valid = 1;
 
-	if (n < 1)
+	if (n < 1 || !kek || !cipher || !plain)
 		return -1;
 
 	aes128_expand_key(kek, rk);
@@ -403,11 +438,12 @@ static int aes128_unwrap(const u8 kek[16], int n, const u8 *cipher, u8 *plain)
 		}
 	}
 
-	for (int i = 0; i < 8; i++) {
-		if (a[i] != 0xA6)
-			return -1;
-	}
-	return 0;
+	for (int i = 0; i < 8; i++)
+		valid &= (a[i] == 0xA6);
+	wpa2_secure_zero(rk, sizeof(rk));
+	wpa2_secure_zero(a, sizeof(a));
+	wpa2_secure_zero(b, sizeof(b));
+	return valid ? 0 : -1;
 }
 
 /* ======================================================================
@@ -430,6 +466,8 @@ static struct {
 	int  igtk_valid;
 	u64  igtk_ipn;   /* highest group management IPN accepted */
 	u64  mgmt_pn;    /* highest unicast management PN accepted */
+	struct rtl_replay_state replay;
+	int  replay_last_message; /* 1=M1 base, 3=M3 accepted, 4=Group M1 accepted */
 } g_wpa2 = {0};
 
 /*
@@ -877,6 +915,31 @@ int rtl8814_wpa2_rx_eapol(_adapter *padapter, struct sk_buff *skb)
 
 	/* --- Case 1: 4-Way Handshake Message 1/4 (Pairwise + Ack, !MIC) --- */
 	if (is_pairwise && is_ack && !is_mic) {
+		enum rtl_replay_result replay_result = rtl_replay_check(&g_wpa2.replay, replay_counter);
+		if (g_wpa2.state != WPA2_STATE_WAIT_MSG1 &&
+		    g_wpa2.state != WPA2_STATE_WAIT_MSG3 &&
+		    g_wpa2.state != WPA2_STATE_COMPLETED)
+			return 1;
+		if (g_wpa2.replay.valid && replay_result != RTL_REPLAY_NEW) {
+			int same_anonce = _rtw_memcmp(g_wpa2.anonce, key_nonce, 32) == _TRUE;
+			if (replay_result == RTL_REPLAY_REPEAT &&
+			    g_wpa2.replay_last_message == 1 && same_anonce &&
+			    (g_wpa2.state == WPA2_STATE_WAIT_MSG3 ||
+			     g_wpa2.state == WPA2_STATE_COMPLETED)) {
+				u16 reply_info = key_ver | 0x0008 | 0x0100;
+				rtl8814native_jlog(JL_WPA2_REPLAY, 0x101, RTL_REPLAY_REPEAT);
+				wpa2_send_eapol_key(padapter, aa, desc_type, reply_info,
+				                    replay_counter, g_wpa2.snonce,
+				                    g_wpa2.rsn_ie, (u16)g_wpa2.rsn_ie_len);
+				return 1;
+			}
+			if (same_anonce) {
+				rtl8814native_jlog(JL_WPA2_REPLAY, 1, (int)replay_result);
+				return 1;
+			}
+			/* A different ANonce starts a new handshake, so the M1 below
+			 * replaces the saved replay-counter base even if it moved backwards. */
+		}
 		_rtw_memcpy(g_wpa2.anonce, (void *)key_nonce, 32);
 		if (g_wpa2.akm_sae) {
 			/* the SNonce protects the PTK: no xorshift here */
@@ -895,7 +958,8 @@ int rtl8814_wpa2_rx_eapol(_adapter *padapter, struct sk_buff *skb)
 		wpa2_send_eapol_key(padapter, aa, desc_type, reply_info,
 		                    replay_counter, g_wpa2.snonce,
 		                    g_wpa2.rsn_ie, (u16)g_wpa2.rsn_ie_len);
-
+		rtl_replay_begin(&g_wpa2.replay, replay_counter);
+		g_wpa2.replay_last_message = 1;
 		g_wpa2.state = WPA2_STATE_WAIT_MSG3;
 		rtl8814native_jlog(JL_WPA2, WPA2_STATE_WAIT_MSG3, 0);
 		rtl_printk("RTL8814Native: [WPA2] RX EAPOL Msg 1/4 -> Sent Msg 2/4 (AP %02x:%02x:%02x:%02x:%02x:%02x)\n",
@@ -905,6 +969,17 @@ int rtl8814_wpa2_rx_eapol(_adapter *padapter, struct sk_buff *skb)
 
 	/* --- Case 2: 4-Way Handshake Message 3/4 (Pairwise + Ack + MIC) --- */
 	if (is_pairwise && is_ack && is_mic) {
+		enum rtl_replay_result replay_result = rtl_replay_check(&g_wpa2.replay, replay_counter);
+		int duplicate_m3 = replay_result == RTL_REPLAY_REPEAT &&
+		                   g_wpa2.replay_last_message == 3 &&
+		                   g_wpa2.state == WPA2_STATE_COMPLETED;
+		if (replay_result != RTL_REPLAY_NEW && !duplicate_m3) {
+			rtl8814native_jlog(JL_WPA2_REPLAY, 3, (int)replay_result);
+			return 1;
+		}
+		if (g_wpa2.state != WPA2_STATE_WAIT_MSG3 && !duplicate_m3)
+			return 1;
+
 		/* Verify MIC over EAPOL frame with key_mic zeroed */
 		u32 tot_eapol = 4 + eapol_body_len;
 		u8 *tmp = (u8 *)rtw_malloc(tot_eapol);
@@ -915,15 +990,30 @@ int rtl8814_wpa2_rx_eapol(_adapter *padapter, struct sk_buff *skb)
 
 		u8 calc_mic[20];
 		wpa2_calc_mic(tmp, tot_eapol, calc_mic);
+		wpa2_secure_zero(tmp, tot_eapol);
 		rtw_mfree(tmp, tot_eapol);
 
-		if (_rtw_memcmp(calc_mic, key_mic, 16) == _FALSE) {
+		if (!wpa2_equal(calc_mic, key_mic, 16)) {
+			if (duplicate_m3) {
+				rtl8814native_jlog(JL_WPA2_REPLAY, 3, RTL_REPLAY_REPEAT);
+				wpa2_secure_zero(calc_mic, sizeof(calc_mic));
+				return 1;
+			}
 			rtl_printk("RTL8814Native: [WPA2] ERROR: Msg 3/4 MIC verification failed (wrong password?)\n");
 			g_wpa2.state = WPA2_STATE_FAILED;
 			rtl8814native_jlog(JL_WPA2, WPA2_STATE_FAILED, 0);
+			wpa2_secure_zero(calc_mic, sizeof(calc_mic));
 			return 1;
 		}
 
+		if (duplicate_m3) {
+			u16 reply_info = key_ver | 0x0008 | 0x0100 | (is_secure ? 0x0200 : 0);
+			rtl8814native_jlog(JL_WPA2_REPLAY, 0x103, RTL_REPLAY_REPEAT);
+			wpa2_send_eapol_key(padapter, aa, desc_type, reply_info,
+			                    replay_counter, NULL, NULL, 0);
+			wpa2_secure_zero(calc_mic, sizeof(calc_mic));
+			return 1;
+		}
 		/* Unwrap Encrypted Key Data (RFC 3394 AES-128 Key Unwrap) to extract GTK */
 		u8 gtk_buf[32] = {0};
 		u32 gtk_len = 0;
@@ -935,7 +1025,7 @@ int rtl8814_wpa2_rx_eapol(_adapter *padapter, struct sk_buff *skb)
 			if (plain) {
 				if (aes128_unwrap(&g_wpa2.ptk[16], n, key_data, plain) == 0) {
 					int plain_len = n * 8;
-					struct rtl_security_key_data parsed;
+					struct rtl_security_key_data parsed = {0};
 					if (rtl_security_parse_key_data(plain, (size_t)plain_len, 0, &parsed) == 0) {
 						if (parsed.has_gtk) {
 							gtk_key_id = parsed.gtk_key_id;
@@ -944,11 +1034,12 @@ int rtl8814_wpa2_rx_eapol(_adapter *padapter, struct sk_buff *skb)
 						}
 						if (g_wpa2.akm_sae)
 							wpa2_take_igtk(&parsed);
-						_rtw_memset(&parsed, 0, sizeof(parsed));
 					}
+					wpa2_secure_zero(&parsed, sizeof(parsed));
 				} else {
 					rtl_printk("RTL8814Native: [WPA2] Warning: AES Key Unwrap failed on Msg 3/4\n");
 				}
+				wpa2_secure_zero(plain, (size_t)n * 8U);
 				rtw_mfree(plain, n * 8);
 			}
 		}
@@ -960,6 +1051,10 @@ int rtl8814_wpa2_rx_eapol(_adapter *padapter, struct sk_buff *skb)
 
 		/* Install Pairwise Key (TK) and Group Key (GTK) and unblock 802.1X port */
 		wpa2_install_keys(padapter, aa, gtk_len ? gtk_buf : NULL, gtk_len, gtk_key_id, true);
+		wpa2_secure_zero(gtk_buf, sizeof(gtk_buf));
+		wpa2_secure_zero(calc_mic, sizeof(calc_mic));
+		rtl_replay_accept(&g_wpa2.replay, replay_counter);
+		g_wpa2.replay_last_message = 3;
 		g_wpa2.state = WPA2_STATE_COMPLETED;
 		rtl8814native_jlog(JL_WPA2, WPA2_STATE_COMPLETED, 0);
 		if (g_wpa2.akm_sae) {
@@ -979,6 +1074,13 @@ int rtl8814_wpa2_rx_eapol(_adapter *padapter, struct sk_buff *skb)
 
 	/* --- Case 3: Group Key Handshake Message 1/2 (!Pairwise + Ack + MIC) --- */
 	if (!is_pairwise && is_ack && is_mic) {
+		enum rtl_replay_result replay_result = rtl_replay_check(&g_wpa2.replay, replay_counter);
+		if (replay_result != RTL_REPLAY_NEW || g_wpa2.state != WPA2_STATE_COMPLETED) {
+			if (replay_result != RTL_REPLAY_NEW)
+				rtl8814native_jlog(JL_WPA2_REPLAY, 4, (int)replay_result);
+			return 1;
+		}
+
 		u32 tot_eapol = 4 + eapol_body_len;
 		u8 *tmp = (u8 *)rtw_malloc(tot_eapol);
 		if (!tmp)
@@ -988,10 +1090,13 @@ int rtl8814_wpa2_rx_eapol(_adapter *padapter, struct sk_buff *skb)
 
 		u8 calc_mic[20];
 		wpa2_calc_mic(tmp, tot_eapol, calc_mic);
+		wpa2_secure_zero(tmp, tot_eapol);
 		rtw_mfree(tmp, tot_eapol);
 
-		if (_rtw_memcmp(calc_mic, key_mic, 16) == _FALSE)
+		if (!wpa2_equal(calc_mic, key_mic, 16)) {
+			wpa2_secure_zero(calc_mic, sizeof(calc_mic));
 			return 1;
+		}
 
 		u8 gtk_buf[32] = {0};
 		u32 gtk_len = 0;
@@ -1004,7 +1109,7 @@ int rtl8814_wpa2_rx_eapol(_adapter *padapter, struct sk_buff *skb)
 			u8 *plain = (u8 *)rtw_zmalloc(n * 8);
 			if (plain) {
 				if (aes128_unwrap(&g_wpa2.ptk[16], n, key_data, plain) == 0) {
-					struct rtl_security_key_data parsed;
+					struct rtl_security_key_data parsed = {0};
 					if (rtl_security_parse_key_data(plain, (size_t)(n * 8), 1, &parsed) == 0) {
 						if (parsed.has_gtk) {
 							gtk_key_id = parsed.gtk_key_id == 0xff ? gtk_key_id : parsed.gtk_key_id;
@@ -1013,9 +1118,10 @@ int rtl8814_wpa2_rx_eapol(_adapter *padapter, struct sk_buff *skb)
 						}
 						if (g_wpa2.akm_sae)
 							wpa2_take_igtk(&parsed);
-						_rtw_memset(&parsed, 0, sizeof(parsed));
 					}
+					wpa2_secure_zero(&parsed, sizeof(parsed));
 				}
+				wpa2_secure_zero(plain, (size_t)n * 8U);
 				rtw_mfree(plain, n * 8);
 			}
 		}
@@ -1026,6 +1132,10 @@ int rtl8814_wpa2_rx_eapol(_adapter *padapter, struct sk_buff *skb)
 		u16 reply_info = key_ver | 0x0100 | (is_secure ? 0x0200 : 0);
 		wpa2_send_eapol_key(padapter, aa, desc_type, reply_info,
 		                    replay_counter, NULL, NULL, 0);
+		wpa2_secure_zero(gtk_buf, sizeof(gtk_buf));
+		wpa2_secure_zero(calc_mic, sizeof(calc_mic));
+		rtl_replay_accept(&g_wpa2.replay, replay_counter);
+		g_wpa2.replay_last_message = 4;
 		rtl_printk("RTL8814Native: [WPA2] Group Key Handshake Msg 1/2 -> Sent Msg 2/2\n");
 		return 1;
 	}

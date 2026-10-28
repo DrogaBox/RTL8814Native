@@ -44,6 +44,7 @@ KNOWN = {
     "dd232e96b47245c0ee8cb9e01aed9199": "RTL8814Native 4.30 (4.29 + live knobs via test_uc knob, Block Ack action log)",
     "2ed1b245cb833da0283ddcde452bb9bf": "RTL8814Native 4.31 (4.30 + AP RSN IE length checked against the stored elements)",
     "fa5831dbcc78837b46349e4cceedae04": "RTL8814Native 4.32 (bounded RSN and GTK/IGTK KDE parsing)",
+    "d4a8f111bd2acdad906686bcea6442c2": "RTL8814Native 4.33 (EAPOL replay counter checks and WPA2 key wiping)",
     "04402631c59a4a756e356d299f8fd7e2": "RTL8814AirLayer 0.1 (superseded, do not use)",
     "206cf1337b555a57e7b6975301d1fa47": "RTL8814AirLayer 0.2 (superseded, do not use)",
     "92c7d5df31b667590564f8cd95af943c": "RTL8814AirLayer 0.3 (superseded, do not use)",

@@ -9,6 +9,7 @@ Current (2026-10-28): driver 4.29 and layer 0.31 are in my EFI. WPA3-SAE works e
 - SAE (group 19), the 4-way handshake for AKM 8 and protected management frames (CCMP, IGTK, BIP, SA Query) all run in the driver. Checked live against an SAE-only Android hotspot (2.4 and 5 GHz) and my WPA2/WPA3 router. Details and logs are in the notes at the end of this file.
 - The layer advertises capability 75 (SAE) and PMF, and carries the passphrase to the radio (ABI 2). Layer 0.31 is the code to keep.
 - Not verified yet: a clean reconnect without a reboot, the group key rekey and `BIP ok` after more than an hour connected, and a protected deauth coming from the AP. Channel switch following (4.29) has not met a real AP.
+- EAPOL replay-counter checks and WPA2 key-buffer cleanup are in the local 4.33 build and pass the offline tests; I have not loaded that build or checked replay handling against a live AP.
 - Known quirk: after a reboot without a clean leave, a PMF AP keeps the old association for 30 to 60 s and the first join can fail. The next one works.
 - Not started: WPA2/WPA3 Enterprise, AWDL.
 

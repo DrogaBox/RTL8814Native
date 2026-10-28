@@ -53,6 +53,7 @@ int main(void)
 
     /* A fresh M1 starts a new exchange and resets the base below prior state. */
     rtl_replay_begin(&state, high32); /* prior handshake */
+    CHECK(rtl_replay_check(&state, c0) == RTL_REPLAY_OLD);
     rtl_replay_begin(&state, c0); /* M1 unconditionally resets the handshake base. */
     CHECK(rtl_replay_check(&state, c0) == RTL_REPLAY_REPEAT);
     CHECK(rtl_replay_check(&state, c1) == RTL_REPLAY_NEW);
