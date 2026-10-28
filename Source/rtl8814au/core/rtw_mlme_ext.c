@@ -3004,6 +3004,8 @@ unsigned int OnDeAuth(_adapter *padapter, union recv_frame *precv_frame)
 	struct wifidirect_info *pwdinfo = &(padapter->wdinfo);
 #endif /* CONFIG_P2P */
 
+	if (precv_frame->u.hdr.len < WLAN_HDR_A3_LEN + 2)
+		return _SUCCESS;
 	/* check A3 */
 	if (!(_rtw_memcmp(GetAddr3Ptr(pframe), get_my_bssid(&pmlmeinfo->network), ETH_ALEN)))
 		return _SUCCESS;
@@ -3182,19 +3184,24 @@ unsigned int on_action_spct_ch_switch(_adapter *padapter, struct sta_info *psta,
 			FUNC_NDEV_ARG(padapter->pnetdev), MAC_ARG(psta->cmn.mac_addr));
 
 		for_each_ie(ie, ies, ies_len) {
-			if (ie->id == WLAN_EID_CHANNEL_SWITCH) {
+			uint ie_len = (uint)(((u8 *)ie) - ies);
+			uint remaining = ies_len - ie_len;
+
+			if (remaining < 2 || ie->len > remaining - 2)
+				break;
+			if (ie->id == WLAN_EID_CHANNEL_SWITCH && ie->len >= 3) {
 				ch_switch_mode = ie->data[0];
 				ch = ie->data[1];
 				ch_switch_cnt = ie->data[2];
 				RTW_INFO("ch_switch_mode:%d, ch:%d, ch_switch_cnt:%d\n",
 					 ch_switch_mode, ch, ch_switch_cnt);
-			} else if (ie->id == WLAN_EID_SECONDARY_CHANNEL_OFFSET) {
+			} else if (ie->id == WLAN_EID_SECONDARY_CHANNEL_OFFSET && ie->len >= 1) {
 				ch_offset = secondary_ch_offset_to_hal_ch_offset(ie->data[0]);
 				RTW_INFO("ch_offset:%d\n", ch_offset);
 			}
 		}
 
-		if (ch == -1)
+		if (ch == -1 || ies_len < sizeof(struct ieee80211_info_element))
 			return _SUCCESS;
 
 		if (ch_offset == -1)
