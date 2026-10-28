@@ -39,6 +39,7 @@ KNOWN = {
     "8b133d44df48d2ab7aff021f4c05b5d5": "RTL8814Native 4.25 (4.24 + 802.11w: CCMP check of protected unicast mgmt frames, BIP group frames, IGTK)",
     "cf719208eecbe2ff7208bd9484825197": "RTL8814Native 4.26 (4.25 + no open-auth fallback after a cancelled SAE join, retry after status 30)",
     "592d6c18b948573918e1cfd0f5228599": "RTL8814Native 4.27 (4.26 + protected deauth on leave, so a PMF AP drops the association)",
+    "b284deba7c704f803a920d20b5f05393": "RTL8814Native 4.28 (4.27 + every unicast deauth/disassoc/robust action protected, answers SA Query)",
     "04402631c59a4a756e356d299f8fd7e2": "RTL8814AirLayer 0.1 (superseded, do not use)",
     "206cf1337b555a57e7b6975301d1fa47": "RTL8814AirLayer 0.2 (superseded, do not use)",
     "92c7d5df31b667590564f8cd95af943c": "RTL8814AirLayer 0.3 (superseded, do not use)",

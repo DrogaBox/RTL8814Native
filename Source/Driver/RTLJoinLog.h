@@ -48,7 +48,8 @@ enum {
 	RTL_PMF_UNPROT_DROP,    /* unprotected deauth/disassoc dropped, b: subtype | reason << 8 */
 	RTL_PMF_BIP_OK,         /* group frame verified, b: subtype */
 	RTL_PMF_BIP_FAIL,       /* group frame failed BIP or has no MME, b: subtype */
-	RTL_PMF_TX_PROTECTED    /* our deauth/disassoc went out protected, b: subtype */
+	RTL_PMF_TX_PROTECTED,   /* a deauth/disassoc/robust action went out protected, b: subtype | category << 8 */
+	RTL_PMF_SA_QUERY        /* answered an SA Query request, b: transaction id */
 };
 
 struct rtl_jlog_ev {

@@ -550,28 +550,45 @@ int rtl8814_wpa2_pmf_rx(u8 *frame, u32 *len)
 }
 
 /*
- * Protect our own unicast deauthentication/disassociation to the AP of the last
- * finished SAE link. Without it a PMF AP ignores the frame and keeps the
- * association, then answers the next join with status 30. Returns 1 when the
- * frame (header plus 2-byte body, 16 bytes spare after it) was protected.
+ * Protect our own unicast deauth, disassoc and robust action frames to the AP of
+ * the last finished SAE link, in place (16 bytes spare after the frame). A PMF AP
+ * ignores them otherwise: it keeps the association after a leave and then answers
+ * the next join with status 30, and it never sees our BlockAck responses.
+ * Returns 1 when the frame was protected.
  */
 int rtl8814_wpa2_pmf_protect_tx(u8 *frame, u32 *len)
 {
 	size_t out_len = 0;
-	u8 subtype;
+	u8 subtype, cat;
 
 	if (!g_pmf_tx.valid || *len < RTL_PMF_MGMT_HDR_LEN || ((frame[0] >> 2) & 3) != 0)
 		return 0;
 	subtype = (u8)(frame[0] >> 4);
-	if ((subtype != 10 && subtype != 12) || frame[1] & 0x40)
+	if ((subtype != 10 && subtype != 12 && subtype != 13) || frame[1] & 0x40)
 		return 0;
 	if (_rtw_memcmp(&frame[4], g_pmf_tx.bssid, 6) != _TRUE)
 		return 0;
+	if (subtype == 13) {
+		/* only robust action categories are protected: spectrum, QoS, DLS, Block Ack,
+		 * radio measurement, fast BSS transition, SA Query, protected dual, WNM, TDLS, mesh */
+		static const u8 robust[] = { 0, 1, 2, 3, 5, 6, 8, 9, 10, 12, 13, 14 };
+		u32 i;
+		u8 ok = 0;
+
+		if (*len < RTL_PMF_MGMT_HDR_LEN + 1)
+			return 0;
+		for (i = 0; i < sizeof(robust); i++)
+			if (frame[RTL_PMF_MGMT_HDR_LEN] == robust[i])
+				ok = 1;
+		if (!ok)
+			return 0;
+	}
+	cat = subtype == 13 ? frame[RTL_PMF_MGMT_HDR_LEN] : 0;
 	g_pmf_tx.pn++;
 	if (rtl_pmf_ccmp_encrypt_mgmt(g_pmf_tx.tk, frame, *len, g_pmf_tx.pn, &out_len) != 0)
 		return 0;
 	*len = (u32)out_len;
-	rtl8814native_jlog(JL_PMF, RTL_PMF_TX_PROTECTED, subtype);
+	rtl8814native_jlog(JL_PMF, RTL_PMF_TX_PROTECTED, subtype | (cat << 8));
 	return 1;
 }
 

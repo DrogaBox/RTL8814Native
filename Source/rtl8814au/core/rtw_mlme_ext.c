@@ -7677,6 +7677,23 @@ void update_mgntframe_attrib_addr(_adapter *padapter, struct xmit_frame *pmgntfr
 #endif /* defined(CONFIG_BEAMFORMING) || defined(CONFIG_ANTENNA_DIVERSITY) */
 }
 
+/*
+ * RTL8814Native: on an SAE link the AP only honours protected unicast robust
+ * management frames (deauth, disassoc, robust actions such as BlockAck and
+ * SA Query), so every management frame passes here just before it is handed to the
+ * hardware.
+ */
+static void rtl_pmf_protect_mgnt(struct xmit_frame *pmgntframe)
+{
+	struct pkt_attrib *pattrib = &pmgntframe->attrib;
+	u32 plen = pattrib->last_txcmdsz;
+
+	if (rtl8814_wpa2_pmf_protect_tx((u8 *)(pmgntframe->buf_addr) + TXDESC_OFFSET, &plen)) {
+		pattrib->pktlen = plen;
+		pattrib->last_txcmdsz = plen;
+	}
+}
+
 void dump_mgntframe(_adapter *padapter, struct xmit_frame *pmgntframe)
 {
 	if (RTW_CANNOT_RUN(padapter)) {
@@ -7685,6 +7702,7 @@ void dump_mgntframe(_adapter *padapter, struct xmit_frame *pmgntframe)
 		return;
 	}
 
+	rtl_pmf_protect_mgnt(pmgntframe);
 	rtw_hal_mgnt_xmit(padapter, pmgntframe);
 }
 
@@ -7705,6 +7723,7 @@ s32 dump_mgntframe_and_wait(_adapter *padapter, struct xmit_frame *pmgntframe, i
 	rtw_sctx_init(&sctx, timeout_ms);
 	pxmitbuf->sctx = &sctx;
 
+	rtl_pmf_protect_mgnt(pmgntframe);
 	ret = rtw_hal_mgnt_xmit(padapter, pmgntframe);
 
 	if (ret == _SUCCESS)
@@ -7735,6 +7754,7 @@ s32 dump_mgntframe_and_wait_ack_timeout(_adapter *padapter, struct xmit_frame *p
 	pxmitpriv->seq_no = seq_no++;
 	pmgntframe->ack_report = 1;
 	rtw_sctx_init(&(pxmitpriv->ack_tx_ops), timeout_ms);
+	rtl_pmf_protect_mgnt(pmgntframe);
 	if (rtw_hal_mgnt_xmit(padapter, pmgntframe) == _SUCCESS)
 		ret = rtw_sctx_wait(&(pxmitpriv->ack_tx_ops), __func__);
 
@@ -9817,13 +9837,6 @@ static int _issue_deauth(_adapter *padapter, unsigned char *da, unsigned short r
 	reason = cpu_to_le16(reason);
 	pframe = rtw_set_fixed_ie(pframe, _RSON_CODE_ , (unsigned char *)&reason, &(pattrib->pktlen));
 
-	/* RTL8814Native: a PMF AP only honours a protected deauth */
-	{
-		u32 plen = pattrib->pktlen;
-
-		if (rtl8814_wpa2_pmf_protect_tx((u8 *)pwlanhdr, &plen))
-			pattrib->pktlen = plen;
-	}
 	pattrib->last_txcmdsz = pattrib->pktlen;
 
 
@@ -9836,6 +9849,54 @@ static int _issue_deauth(_adapter *padapter, unsigned char *da, unsigned short r
 
 exit:
 	return ret;
+}
+
+/*
+ * RTL8814Native: answer an SA Query request (action category 8, action 0) with the
+ * same transaction id. dump_mgntframe protects it, as the AP requires.
+ */
+void rtl_issue_sa_query_resp(_adapter *padapter, const u8 *da, const u8 *txid)
+{
+	struct xmit_frame *pmgntframe;
+	struct pkt_attrib *pattrib;
+	u8 *pframe;
+	struct rtw_ieee80211_hdr *pwlanhdr;
+	struct xmit_priv *pxmitpriv = &(padapter->xmitpriv);
+	struct mlme_ext_priv *pmlmeext = &(padapter->mlmeextpriv);
+	struct mlme_ext_info *pmlmeinfo = &(pmlmeext->mlmext_info);
+	u8 act_body[4] = { 8, 1, txid[0], txid[1] };
+	u16 *fctrl;
+
+	rtl8814native_jlog(JL_PMF, RTL_PMF_SA_QUERY, txid[0] | (txid[1] << 8));
+	if (rtw_rfctl_is_tx_blocked_by_ch_waiting(adapter_to_rfctl(padapter)))
+		return;
+	pmgntframe = alloc_mgtxmitframe(pxmitpriv);
+	if (pmgntframe == NULL)
+		return;
+
+	pattrib = &pmgntframe->attrib;
+	update_mgntframe_attrib(padapter, pattrib);
+	pattrib->retry_ctrl = _FALSE;
+	_rtw_memset(pmgntframe->buf_addr, 0, WLANHDR_OFFSET + TXDESC_OFFSET);
+
+	pframe = (u8 *)(pmgntframe->buf_addr) + TXDESC_OFFSET;
+	pwlanhdr = (struct rtw_ieee80211_hdr *)pframe;
+	fctrl = &(pwlanhdr->frame_ctl);
+	*(fctrl) = 0;
+	_rtw_memcpy(pwlanhdr->addr1, (void *)da, ETH_ALEN);
+	_rtw_memcpy(pwlanhdr->addr2, adapter_mac_addr(padapter), ETH_ALEN);
+	_rtw_memcpy(pwlanhdr->addr3, get_my_bssid(&(pmlmeinfo->network)), ETH_ALEN);
+	SetSeqNum(pwlanhdr, pmlmeext->mgnt_seq);
+	pmlmeext->mgnt_seq++;
+	set_frame_sub_type(pframe, WIFI_ACTION);
+
+	pframe += sizeof(struct rtw_ieee80211_hdr_3addr);
+	pattrib->pktlen = sizeof(struct rtw_ieee80211_hdr_3addr);
+	_rtw_memcpy(pframe, act_body, sizeof(act_body));
+	pattrib->pktlen += sizeof(act_body);
+	pattrib->last_txcmdsz = pattrib->pktlen;
+
+	dump_mgntframe(padapter, pmgntframe);
 }
 
 int issue_deauth(_adapter *padapter, unsigned char *da, unsigned short reason)
