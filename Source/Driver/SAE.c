@@ -1204,6 +1204,31 @@ int rtl_sae_p256_finish(struct rtl_sae_p256 *sae,
     return 0;
 }
 
+int rtl_sae_build_rsn_ie(uint8_t group_cipher, int pmf_required,
+                         const uint8_t pmkid[RTL_SAE_PMKID_LEN],
+                         uint8_t *output, size_t output_capacity)
+{
+    uint8_t rsn[RTL_SAE_RSN_IE_LEN] = {
+        0x30, 0x2a, 0x01, 0x00, 0x00, 0x0f, 0xac, 0x00,
+        0x01, 0x00, 0x00, 0x0f, 0xac, 0x04,
+        0x01, 0x00, 0x00, 0x0f, 0xac, 0x08,
+        0x80, 0x00, 0x01, 0x00,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0x00, 0x0f, 0xac, 0x06
+    };
+    if (!pmkid || !output || output_capacity < sizeof(rsn))
+        return -1;
+    rsn[7] = group_cipher;
+    if (pmf_required)
+        rsn[20] |= 0x40;
+    for (size_t i = 0; i < RTL_SAE_PMKID_LEN; i++)
+        rsn[24 + i] = pmkid[i];
+    for (size_t i = 0; i < sizeof(rsn); i++)
+        output[i] = rsn[i];
+    sae_secure_zero(rsn, sizeof(rsn));
+    return 0;
+}
+
 void rtl_sae_p256_clear(struct rtl_sae_p256 *sae)
 {
     if (sae)

@@ -34,6 +34,7 @@ enum {
 	JL_REGS,                /* at each link timer: a: TXPAUSE | MSR << 8 | beacons from
 	                         * the BSSID since clnt join << 16, b: RCR */
 	JL_FLUSH_SCANQ,         /* a: ms since the last leave, b: 0 */
+	JL_SAE_AUTH_RX,         /* a: SAE transaction sequence, b: exact status */
 };
 
 struct rtl_jlog_ev {

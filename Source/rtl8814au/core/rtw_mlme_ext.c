@@ -1280,6 +1280,24 @@ void mgt_dispatcher(_adapter *padapter, union recv_frame *precv_frame)
 		return;
 	}
 
+	/* RTL8814Native: record each complete SAE auth response from the target
+	 * before duplicate filtering or state checks. Only sequence/status, never
+	 * the authentication body. */
+	{
+		struct mlme_ext_info *jinfo = &padapter->mlmeextpriv.mlmext_info;
+		if (get_frame_sub_type(pframe) == WIFI_AUTH &&
+		    precv_frame->u.hdr.len >= WLAN_HDR_A3_LEN + 6 &&
+		    !GetPrivacy(pframe) &&
+		    _rtw_memcmp(GetAddr1Ptr(pframe), adapter_mac_addr(padapter), ETH_ALEN) &&
+		    _rtw_memcmp(get_addr2_ptr(pframe), get_my_bssid(&jinfo->network), ETH_ALEN) &&
+		    _rtw_memcmp(GetAddr3Ptr(pframe), get_my_bssid(&jinfo->network), ETH_ALEN) &&
+		    pframe[WLAN_HDR_A3_LEN] == 3 && pframe[WLAN_HDR_A3_LEN + 1] == 0) {
+			u16 seq = pframe[WLAN_HDR_A3_LEN + 2] | (pframe[WLAN_HDR_A3_LEN + 3] << 8);
+			u16 status = pframe[WLAN_HDR_A3_LEN + 4] | (pframe[WLAN_HDR_A3_LEN + 5] << 8);
+			rtl8814native_jlog(JL_SAE_AUTH_RX, seq, status);
+		}
+	}
+
 	/* RTL8814Native: join event log, frames from the BSS being joined */
 	{
 		struct mlme_ext_info *jinfo = &padapter->mlmeextpriv.mlmext_info;

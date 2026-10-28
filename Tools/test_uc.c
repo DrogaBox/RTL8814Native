@@ -541,7 +541,7 @@ static void show_joinlog(io_connect_t connect) {
         "?", "radio join", "radio leave", "do_join", "select", "survey for join", "clnt join",
         "auth rx", "assoc rx", "deauth rx", "disassoc rx", "link timer", "join res",
         "joinbss evt", "join timeout", "disconnect hdl", "indicate disc", "wpa2", "survey done",
-	        "auth tx", "mgmt rx", "regs", "flush scanq",
+	        "auth tx", "mgmt rx", "regs", "flush scanq", "SAE auth rx",
 	    };
     static struct rtl_jlog log;
     size_t sz = sizeof(log);
@@ -557,7 +557,14 @@ static void show_joinlog(io_connect_t connect) {
     for (uint32_t k = log.next - n; k < log.next; k++) {
         struct rtl_jlog_ev *e = &log.e[k % RTL_JLOG_N];
         const char *nm = e->ev < sizeof(names) / sizeof(names[0]) ? names[e->ev] : "?";
-        printf("%8u  %-16s a=%-8d (0x%x) b=%d\n", e->t_ms - t0, nm, e->a, (unsigned)e->a, e->b);
+        if (e->ev == JL_SAE_AUTH_RX) {
+            const char *note = e->b == 126 ? " (H2E)" : e->b == 127 ? " (SAE-PK)" : "";
+            const char *seq = e->a == 1 ? "commit" : e->a == 2 ? "confirm" : "unknown";
+            printf("%8u  %-16s seq=%d (%s) status=%d%s\n", e->t_ms - t0,
+                   nm, e->a, seq, e->b, note);
+        } else {
+            printf("%8u  %-16s a=%-8d (0x%x) b=%d\n", e->t_ms - t0, nm, e->a, (unsigned)e->a, e->b);
+        }
     }
 }
 

@@ -130,6 +130,14 @@ int main(void)
     uint8_t peer_pmk[RTL_SAE_PMK_LEN], peer_pmkid[RTL_SAE_PMKID_LEN];
     size_t commit_len = 0, retry_len = 0;
     struct test_rng rng = {0, 0};
+    uint8_t rsn[RTL_SAE_RSN_IE_LEN];
+    const uint8_t rsn_expected[RTL_SAE_RSN_IE_LEN] = {
+        0x30,0x2a,0x01,0x00,0x00,0x0f,0xac,0x04,
+        0x01,0x00,0x00,0x0f,0xac,0x04,0x01,0x00,0x00,0x0f,0xac,0x08,
+        0xc0,0x00,0x01,0x00,
+        0x40,0xa0,0x9b,0x60,0x17,0xce,0xbf,0x00,0x72,0x84,0x3b,0x53,0x52,0xaa,0x2b,0x4f,
+        0x00,0x0f,0xac,0x06
+    };
     int failed = 0;
 
     memset(&sae, 0, sizeof(sae));
@@ -199,6 +207,15 @@ int main(void)
         failed |= check("exported PMKID", pmkid, expected_pmkid, sizeof(expected_pmkid)) < 0;
     }
     REQUIRE(zeroed(&sae, sizeof(sae)), "finish wipes exchange state");
+    REQUIRE(rtl_sae_build_rsn_ie(4, 1, pmkid, rsn, sizeof(rsn)) == 0 &&
+            memcmp(rsn, rsn_expected, sizeof(rsn)) == 0,
+            "SAE RSN IE: CCMP, PMF required, PMKID and BIP-CMAC-128");
+    REQUIRE(rtl_sae_build_rsn_ie(4, 0, pmkid, rsn, sizeof(rsn)) == 0 &&
+            rsn[20] == 0x80, "SAE RSN IE: PMF capable without required");
+    REQUIRE(rtl_sae_build_rsn_ie(4, 1, pmkid, rsn, sizeof(rsn) - 1) < 0 &&
+            rtl_sae_build_rsn_ie(4, 1, NULL, rsn, sizeof(rsn)) < 0,
+            "SAE RSN IE rejects invalid input");
+    wipe(rsn, sizeof(rsn));
     wipe(pmk, sizeof(pmk));
     wipe(pmkid, sizeof(pmkid));
     REQUIRE(rtl_sae_p256_start(&sae, (const uint8_t *)"mekmitasdigoat", 14,

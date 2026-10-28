@@ -27,6 +27,7 @@ extern "C" {
 #define RTL_SAE_TOKEN_MAX_LEN 256U
 #define RTL_SAE_PASSWORD_MAX_LEN 63U
 #define RTL_SAE_PASSWORD_ID_MAX_LEN 254U
+#define RTL_SAE_RSN_IE_LEN 44U
 
 typedef int (*rtl_sae_random_fn)(void *context, uint8_t *output, size_t length);
 
@@ -112,6 +113,13 @@ int rtl_sae_p256_check_confirm(struct rtl_sae_p256 *sae,
 int rtl_sae_p256_finish(struct rtl_sae_p256 *sae,
                         uint8_t pmk[RTL_SAE_PMK_LEN],
                         uint8_t pmkid[RTL_SAE_PMKID_LEN]);
+
+/* Build an SAE/CCMP association RSN IE with one PMKID and BIP-CMAC-128.
+ * group_cipher is the AP's RSN group-data cipher suite type. MFPC is set;
+ * MFPR is set when pmf_required is nonzero. */
+int rtl_sae_build_rsn_ie(uint8_t group_cipher, int pmf_required,
+                         const uint8_t pmkid[RTL_SAE_PMKID_LEN],
+                         uint8_t *output, size_t output_capacity);
 
 /* Erase the complete exchange state, including password-derived values. */
 void rtl_sae_p256_clear(struct rtl_sae_p256 *sae);
