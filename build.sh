@@ -168,6 +168,7 @@ DRIVER_SOURCES=(
     "Source/Driver/SAEJoin.c"
     "Source/Driver/PMF.c"
     "Source/Driver/SecurityIE.c"
+    "Source/Driver/ReplayCheck.c"
     "Source/Driver/CSA.c"
 )
 

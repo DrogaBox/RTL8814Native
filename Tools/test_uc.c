@@ -542,7 +542,7 @@ static void show_joinlog(io_connect_t connect) {
         "?", "radio join", "radio leave", "do_join", "select", "survey for join", "clnt join",
         "auth rx", "assoc rx", "deauth rx", "disassoc rx", "link timer", "join res",
         "joinbss evt", "join timeout", "disconnect hdl", "indicate disc", "wpa2", "survey done",
-	        "auth tx", "mgmt rx", "regs", "flush scanq", "SAE auth rx", "SAE auth tx", "SAE step", "PMF", "CSA", "BA",
+	        "auth tx", "mgmt rx", "regs", "flush scanq", "SAE auth rx", "SAE auth tx", "SAE step", "PMF", "CSA", "BA", "WPA2 replay",
 	    };
     static struct rtl_jlog log;
     size_t sz = sizeof(log);
@@ -558,6 +558,16 @@ static void show_joinlog(io_connect_t connect) {
     for (uint32_t k = log.next - n; k < log.next; k++) {
         struct rtl_jlog_ev *e = &log.e[k % RTL_JLOG_N];
         const char *nm = e->ev < sizeof(names) / sizeof(names[0]) ? names[e->ev] : "?";
+        if (e->ev == JL_WPA2_REPLAY) {
+            const char *msg = (e->a & 0xff) == 1 ? "M1" :
+                              (e->a & 0xff) == 3 ? "M3" :
+                              (e->a & 0xff) == 4 ? "Group M1" : "unknown";
+            const char *action = (e->a & 0x100) ? "response resent" : "dropped";
+            const char *result = e->b == RTL_REPLAY_OLD ? "old" :
+                                 e->b == RTL_REPLAY_REPEAT ? "repeated" : "new";
+            printf("%8u  %-16s %s: %s (counter %s)\n", e->t_ms - t0, nm, msg, action, result);
+            continue;
+        }
         if (e->ev == JL_SAE_STEP) {
             static const char *steps[] = { "?", "prepare", "start", "commit tx", "token",
                 "peer commit", "confirm tx", "peer confirm", "keys", "assoc", "retry",

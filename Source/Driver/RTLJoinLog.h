@@ -41,6 +41,7 @@ enum {
 	JL_CSA,                 /* a: RTL_CSA_* kind, b: channel | bw << 8 | count << 16 */
 	JL_BA,                  /* Block Ack action from the AP. a: action | tid << 8 | initiator << 16,
 	                         * b: ADDBA req: buffer size | timeout << 16; DELBA: reason; ADDBA resp: status */
+	JL_WPA2_REPLAY          /* a: 1=M1, 3=M3, 4=Group M1, bit 8=response resent; b: -1=old, 0=repeat */
 };
 
 enum {
