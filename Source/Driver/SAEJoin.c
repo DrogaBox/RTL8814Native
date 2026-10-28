@@ -82,17 +82,24 @@ static void sae_step(int step, int result)
 	rtl8814native_jlog(JL_SAE_STEP, step, (u32)result);
 }
 
-static void sae_wipe_worker(void)
+/* Drop the exchange context but keep the passphrase copy: the start event has
+ * just filled it and the exchange is about to be built from it. */
+static void sae_drop_ctx(void)
 {
 	if (w_sae.ctx) {
 		rtl_sae_p256_clear(w_sae.ctx);
 		rtw_mfree(w_sae.ctx, sizeof(*w_sae.ctx));
 		w_sae.ctx = NULL;
 	}
-	_rtw_memset(w_sae.pw, 0, sizeof(w_sae.pw));
-	w_sae.pw_len = 0;
 	_rtw_memset(&w_sae.last, 0, sizeof(w_sae.last));
 	w_sae.phase = SAE_PH_IDLE;
+}
+
+static void sae_wipe_worker(void)
+{
+	sae_drop_ctx();
+	_rtw_memset(w_sae.pw, 0, sizeof(w_sae.pw));
+	w_sae.pw_len = 0;
 }
 
 static void sae_wipe_shared_locked(void)
@@ -222,7 +229,7 @@ static void sae_handle_start(_adapter *padapter)
 	u32 t0;
 	int rc;
 
-	sae_wipe_worker();
+	sae_drop_ctx();
 	w_sae.ctx = rtw_zmalloc(sizeof(*w_sae.ctx));
 	if (!w_sae.ctx) {
 		sae_fail(padapter, WLAN_STATUS_UNSPECIFIED_FAILURE);
