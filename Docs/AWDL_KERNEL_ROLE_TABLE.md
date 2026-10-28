@@ -64,3 +64,26 @@ Sobre xrefs de código a las tablas y al string: el código referencia los liter
 - Direcciones de funciones: `syms.txt` del proyecto + `procedure_address`/`procedure_pseudo_code` del adaptador rea/IDA (upstream ida-pro-mcp 1.30.0, base `BootKernelExtensions.kc`).
 - Tablas y strings: leídos del propio `.kc` con el mapeo `VA = 0xffffff8000100000 + (qword & 0xFFFFFFFF)` para los fixups (validado contra tus dos anclas); las entradas de claves roles 3–4 (`0x246bde8`, `0x246bdf0`) y el target del slot `0xffffff80024572B8` quedan `?`.
 - `withOptions`/`init`/`setInterfaceRole`/`IO80211VirtualInterface::init` decompilados completos; `createProxInterface` (`0xffffff800165dcbe`, doc previa) y `createVirtualInterface` no decompilados en esta pasada.
+
+## 6) Cierre de los `?` de §2 y §3 (lectura directa del archivo, 2026-10-28)
+
+Ambos puntos verificados releyendo `BootKernelExtensions.kc` desde el archivo (md5 re-verificado `f489ff8be80e6013a1bf47561dcaef45`), con el mapeo ya validado: `fileoff = VA − 0xffffff8000100000` y fixups `VA = 0xffffff8000100000 + (qword & 0xFFFFFFFF)`. Control de la pasada: la entrada de nombres del rol 6 (`0x246bdb0`) decodifica a `AirLink` y los strings en `0x231dbc0`/`0x231dbc8` se leen exactos, igual que tus observaciones del IDB.
+
+### Claves de los roles 3 y 4 — la tabla de claves queda completa y uniforme
+
+| rol | entrada (VA) | fileoff | qword crudo | low32 → VA del string | string |
+|---:|---|---|---|---|---|
+| 3 | `0xffffff800246bde8` | `0x236bde8` | `0x004000000231dbab` | `0x231dbab` → `0xffffff800241dbab` | `IO80211InterfaceRole` |
+| 4 | `0xffffff800246bdf0` | `0x236bdf0` | `0x004000000231dbab` | `0x231dbab` → `0xffffff800241dbab` | `IO80211InterfaceRole` |
+
+Mismo qword byte a byte que las entradas de roles 1, 2 y 5 (`0x246bdd8`, `0x246bde0`, `0x246bdf8`, releídas como control en esta pasada: idénticas). **No queda ninguna entrada sin leer: roles 1–5 → `IO80211InterfaceRole` (`0xffffff800241dbab`), roles 6–10 → `IO80211VirtualInterfaceRole` (`0xffffff800241dbc8`); el corte del nombre de property es exactamente por clase de rol, sin excepciones.**
+
+### Target del slot `off_FFFFFF80024572B8` — confirmado por fixup directo, no por inferencia
+
+- Qword crudo en `0xffffff80024572b8` (fileoff `0x23572b8`): **`0x00400000022305f8`** → low32 `0x22305f8` → **VA `0xffffff80023305f8`** — cae exactamente en la entrada conocida de `IO80211VirtualInterface::init` (§3.4), no en un punto medio de función. Los primeros bytes en el fileoff decodificado son un prólogo x86_64 estándar (`55 48 89 e5 41 57 41 56 53 48 83 ec 18 41 89 cf`), coherente con una entrada de función de 5 argumentos.
+- El símbolo en esa dirección es `__ZN23IO80211VirtualInterface4initEP17IO80211ControllerP10ether_addrjPKc` (`Docs/re/io80211_25.6.0/syms.txt:15779`).
+- Confirmación independiente del IDB: `xrefs` de rea/IDA hacia `0xffffff80023305f8` lista `0xffffff80024572b8` como referencia de datos, junto a otros 8 slots equivalentes (`0xffffff80017f53e0`, `0xffffff80017f69e0`, `0xffffff80017f7d00`, `0xffffff80017f9128` en `__const` del kext Broadcom; `0xffffff800246f1e8`, `0xffffff80024739f0`, `0xffffff8002477dc0`, `0xffffff800247ad30` en datos de IO80211Family). La consulta inversa (`xrefs` al slot) devolvió vacía en el adaptador; la referencia se observa desde el lado de la función.
+
+**Conclusión:** la llamada de `0xffffff8001718e09` dentro de `AppleBCMWLANProximityInterface::init` ejecuta **`IO80211VirtualInterface::init` (`0xffffff80023305f8`)**, que en `0xffffff800233064b` llama `setInterfaceRole(this, role)` con el rol sin transformar. Contexto adicional: el slot `0xffffff80024572b8` cae dentro de `__ZTV19IO80211AWDLProtocol` (símbolo en `0xffffff8002456440`, extendiéndose hasta `__ZTVN19IO80211AWDLProtocol9MetaClassE` en `0xffffff8002457618`), a +0xE78 del símbolo; su valor (la init heredada de `IO80211VirtualInterface`, no una override de `IO80211AWDLProtocol`) indica que esa clase no pisa `init`, y el despacho por slot de vtable en vez de call directa es el estilo de compilación kext. Por qué la init de `AppleBCMWLANProximityInterface` usa precisamente la vtable de `IO80211AWDLProtocol` y no su propia vtable no se verificó (relación de herencia exacta no vista en esta pasada, `?`). Con esto la cadena de §3 queda cerrada punta a punta con evidencia de archivo: rol 6 → `AppleBCMWLANProximityInterface::init` → (slot `0x24572b8`) → `IO80211VirtualInterface::init` → `setInterfaceRole` → `IO80211VirtualInterfaceRole = AirLink`.
+
+Nota sobre §3.3: el decode previo registrado allí (`0xffffff8002305f8`) salió del mapeo viejo, anterior a fijar la base `0xffffff8000100000`; la lectura cruda de esta pasada da exactamente `0xffffff80023305f8`.
