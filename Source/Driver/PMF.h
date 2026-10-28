@@ -35,6 +35,17 @@ int rtl_pmf_ccmp_decrypt_mgmt(const uint8_t tk[16], uint8_t *frame, size_t len,
                               size_t *out_len, uint64_t *pn);
 
 /*
+ * Protect an outgoing unicast management frame in place: frame holds the
+ * 24-byte header and the plain body (len bytes) and must have 16 spare bytes
+ * after it. pn is the next 48-bit packet number (non-zero, larger than any
+ * used before under this TK). On success the Protected bit is set, the CCMP
+ * header goes in, the body is encrypted, the MIC is appended and *out_len is
+ * len + 16. Returns 0, or -1 for a bad argument.
+ */
+int rtl_pmf_ccmp_encrypt_mgmt(const uint8_t tk[16], uint8_t *frame, size_t len,
+                              uint64_t pn, size_t *out_len);
+
+/*
  * Verify the BIP-CMAC-128 Management MIC element at the end of a
  * group-addressed management frame. Returns 0 when it verifies (then *key_id
  * and *ipn hold its fields), -1 when it is missing or wrong.

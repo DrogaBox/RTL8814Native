@@ -49,6 +49,9 @@ int rtl8814_wpa2_get_state(void);
  * on group-addressed ones. Returns 1 to keep the frame, 0 to drop it. */
 int rtl8814_wpa2_pmf_rx(u8 *frame, u32 *len);
 
+/* Protect our own deauth/disassoc to the AP of the last SAE link (CCMP, in place). */
+int rtl8814_wpa2_pmf_protect_tx(u8 *frame, u32 *len);
+
 /* Intercepts incoming Ethernet frames; returns 1 if EAPOL (0x888E) consumed */
 int rtl8814_wpa2_rx_eapol(_adapter *padapter, struct sk_buff *skb);
 

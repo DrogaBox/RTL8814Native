@@ -47,7 +47,8 @@ enum {
 	RTL_PMF_REPLAY,         /* unicast PN or IPN not newer, b: subtype */
 	RTL_PMF_UNPROT_DROP,    /* unprotected deauth/disassoc dropped, b: subtype | reason << 8 */
 	RTL_PMF_BIP_OK,         /* group frame verified, b: subtype */
-	RTL_PMF_BIP_FAIL        /* group frame failed BIP or has no MME, b: subtype */
+	RTL_PMF_BIP_FAIL,       /* group frame failed BIP or has no MME, b: subtype */
+	RTL_PMF_TX_PROTECTED    /* our deauth/disassoc went out protected, b: subtype */
 };
 
 struct rtl_jlog_ev {

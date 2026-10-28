@@ -41,6 +41,20 @@ int main(void)
     memcpy(f, pmf_deauth_enc, sizeof(pmf_deauth_enc));
     CHECK(rtl_pmf_ccmp_decrypt_mgmt(pmf_tk, f, 30, &out, &pn) != 0);
 
+    /* Encrypting the plain vectors must give exactly the independent ciphertexts. */
+    memset(f, 0, sizeof(f));
+    memcpy(f, pmf_deauth_plain, sizeof(pmf_deauth_plain));
+    CHECK(rtl_pmf_ccmp_encrypt_mgmt(pmf_tk, f, sizeof(pmf_deauth_plain), 0x0102030405a6ULL, &out) == 0);
+    CHECK(out == sizeof(pmf_deauth_enc));
+    CHECK(memcmp(f, pmf_deauth_enc, sizeof(pmf_deauth_enc)) == 0);
+    memset(f, 0, sizeof(f));
+    memcpy(f, pmf_action_plain, sizeof(pmf_action_plain));
+    CHECK(rtl_pmf_ccmp_encrypt_mgmt(pmf_tk, f, sizeof(pmf_action_plain), 0xffULL, &out) == 0);
+    CHECK(out == sizeof(pmf_action_enc));
+    CHECK(memcmp(f, pmf_action_enc, sizeof(pmf_action_enc)) == 0);
+    CHECK(rtl_pmf_ccmp_encrypt_mgmt(pmf_tk, f, sizeof(pmf_action_plain), 0, &out) != 0);
+    CHECK(rtl_pmf_ccmp_encrypt_mgmt(pmf_tk, f, sizeof(pmf_action_plain), 1ULL << 48, &out) != 0);
+
     CHECK(rtl_pmf_bip_verify(pmf_igtk, pmf_bip, sizeof(pmf_bip), &kid, &pn) == 0);
     CHECK(kid == 4 && pn == 0x0a0b0cULL);
     memcpy(f, pmf_bip, sizeof(pmf_bip));

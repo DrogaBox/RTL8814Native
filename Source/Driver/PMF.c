@@ -25,25 +25,17 @@ static void pmf_wipe(uint8_t *p, size_t n)
         *v++ = 0;
 }
 
-/* CCM with L = 2 and an 8-byte tag (IEEE 802.11 12.5.3). */
-int rtl_pmf_ccmp_decrypt_mgmt(const uint8_t tk[16], uint8_t *frame, size_t len,
-                              size_t *out_len, uint64_t *pn)
+/*
+ * CCM with L = 2 and an 8-byte tag (IEEE 802.11 12.5.3). The nonce and the AAD
+ * come from the header and the CCMP header already in the frame; x ends up as
+ * the CBC-MAC state after B0 and the two AAD blocks, ctr as counter block A0.
+ */
+static void pmf_ccm_setup(const uint8_t tk[16], const uint8_t *frame, size_t plen,
+                          uint8_t x[16], uint8_t ctr[16])
 {
-    uint8_t nonce[13], aad[24], b[16], x[16], ctr[16], s[16], mic[8], tmp[16];
-    uint8_t *ccmp, *data;
-    size_t plen, off, i, n, aad_len;
-    uint32_t counter;
-
-    if (!tk || !frame || len < RTL_PMF_MGMT_HDR_LEN + RTL_PMF_CCMP_HDR_LEN + RTL_PMF_CCMP_MIC_LEN)
-        return -1;
-    if (!(frame[1] & PMF_FC_PROTECTED))
-        return -1;
-    ccmp = frame + RTL_PMF_MGMT_HDR_LEN;
-    if (!(ccmp[3] & 0x20U)) /* Ext IV must be set for CCMP */
-        return -1;
-
-    plen = len - RTL_PMF_MGMT_HDR_LEN - RTL_PMF_CCMP_HDR_LEN - RTL_PMF_CCMP_MIC_LEN;
-    data = ccmp + RTL_PMF_CCMP_HDR_LEN;
+    const uint8_t *ccmp = frame + RTL_PMF_MGMT_HDR_LEN;
+    uint8_t nonce[13], aad[22], b[16], tmp[16];
+    size_t i;
 
     /* Nonce = flags || A2 || PN (PN5..PN0). flags: priority 0, Management bit set. */
     nonce[0] = 0x10U;
@@ -59,14 +51,14 @@ int rtl_pmf_ccmp_decrypt_mgmt(const uint8_t tk[16], uint8_t *frame, size_t len,
         aad[2 + i] = frame[4 + i];
     aad[20] = (uint8_t)(frame[22] & 0x0FU);
     aad[21] = 0;
-    aad_len = 22;
 
-    /* Counter blocks: A0 for the tag, A1.. for the data. */
     ctr[0] = 0x01U;
     for (i = 0; i < 13; i++)
         ctr[1 + i] = nonce[i];
+    ctr[14] = 0;
+    ctr[15] = 0;
 
-    /* Authentication: CBC-MAC over B0 || len(aad)+aad (padded) || plaintext (padded). */
+    /* B0, then the AAD: two-byte length || first 14 bytes, then the last 8 padded. */
     b[0] = (uint8_t)(0x40U | (((8U - 2U) / 2U) << 3) | 0x01U);
     for (i = 0; i < 13; i++)
         b[1 + i] = nonce[i];
@@ -74,11 +66,10 @@ int rtl_pmf_ccmp_decrypt_mgmt(const uint8_t tk[16], uint8_t *frame, size_t len,
     b[15] = (uint8_t)plen;
     rtl_aes128_encrypt_block(tk, b, x);
 
-    /* AAD blocks: two-byte length || first 14 bytes, then the last 8 bytes padded. */
     for (i = 0; i < 16; i++)
         b[i] = 0;
-    b[0] = (uint8_t)(aad_len >> 8);
-    b[1] = (uint8_t)aad_len;
+    b[0] = 0;
+    b[1] = (uint8_t)sizeof(aad);
     for (i = 0; i < 14; i++)
         b[2 + i] = aad[i];
     for (i = 0; i < 16; i++)
@@ -93,8 +84,38 @@ int rtl_pmf_ccmp_decrypt_mgmt(const uint8_t tk[16], uint8_t *frame, size_t len,
     rtl_aes128_encrypt_block(tk, x, tmp);
     for (i = 0; i < 16; i++)
         x[i] = tmp[i];
+    pmf_wipe(tmp, sizeof(tmp));
+}
 
-    /* Decrypt in place, feeding the plaintext to the CBC-MAC block by block. */
+/* CBC-MAC over data (plaintext), then the tag = MAC ^ E(A0). */
+static void pmf_ccm_tag(const uint8_t tk[16], uint8_t x[16], uint8_t ctr[16],
+                        const uint8_t *plain, size_t plen, uint8_t mic[8])
+{
+    uint8_t tmp[16], s[16];
+    size_t off, n, i;
+
+    for (off = 0; off < plen; off += 16) {
+        n = plen - off < 16 ? plen - off : 16;
+        for (i = 0; i < 16; i++)
+            x[i] = (uint8_t)(x[i] ^ (i < n ? plain[off + i] : 0));
+        rtl_aes128_encrypt_block(tk, x, tmp);
+        for (i = 0; i < 16; i++)
+            x[i] = tmp[i];
+    }
+    ctr[14] = 0;
+    ctr[15] = 0;
+    rtl_aes128_encrypt_block(tk, ctr, s);
+    for (i = 0; i < 8; i++)
+        mic[i] = (uint8_t)(x[i] ^ s[i]);
+}
+
+/* CTR keystream over data in place, counters 1... */
+static void pmf_ccm_ctr(const uint8_t tk[16], uint8_t ctr[16], uint8_t *data, size_t plen)
+{
+    uint8_t s[16];
+    size_t off, n, i;
+    uint32_t counter;
+
     for (off = 0, counter = 1; off < plen; off += 16, counter++) {
         ctr[14] = (uint8_t)(counter >> 8);
         ctr[15] = (uint8_t)counter;
@@ -102,18 +123,30 @@ int rtl_pmf_ccmp_decrypt_mgmt(const uint8_t tk[16], uint8_t *frame, size_t len,
         n = plen - off < 16 ? plen - off : 16;
         for (i = 0; i < n; i++)
             data[off + i] = (uint8_t)(data[off + i] ^ s[i]);
-        for (i = 0; i < 16; i++)
-            x[i] = (uint8_t)(x[i] ^ (i < n ? data[off + i] : 0));
-        rtl_aes128_encrypt_block(tk, x, tmp);
-        for (i = 0; i < 16; i++)
-            x[i] = tmp[i];
     }
+}
 
-    ctr[14] = 0;
-    ctr[15] = 0;
-    rtl_aes128_encrypt_block(tk, ctr, s);
-    for (i = 0; i < 8; i++)
-        mic[i] = (uint8_t)(x[i] ^ s[i]);
+int rtl_pmf_ccmp_decrypt_mgmt(const uint8_t tk[16], uint8_t *frame, size_t len,
+                              size_t *out_len, uint64_t *pn)
+{
+    uint8_t x[16], ctr[16], mic[8];
+    uint8_t *ccmp, *data;
+    size_t plen, i;
+
+    if (!tk || !frame || len < RTL_PMF_MGMT_HDR_LEN + RTL_PMF_CCMP_HDR_LEN + RTL_PMF_CCMP_MIC_LEN)
+        return -1;
+    if (!(frame[1] & PMF_FC_PROTECTED))
+        return -1;
+    ccmp = frame + RTL_PMF_MGMT_HDR_LEN;
+    if (!(ccmp[3] & 0x20U)) /* Ext IV must be set for CCMP */
+        return -1;
+
+    plen = len - RTL_PMF_MGMT_HDR_LEN - RTL_PMF_CCMP_HDR_LEN - RTL_PMF_CCMP_MIC_LEN;
+    data = ccmp + RTL_PMF_CCMP_HDR_LEN;
+
+    pmf_ccm_setup(tk, frame, plen, x, ctr);
+    pmf_ccm_ctr(tk, ctr, data, plen);
+    pmf_ccm_tag(tk, x, ctr, data, plen, mic);
     if (!pmf_equal(mic, data + plen, 8)) {
         /* The plaintext is garbage on failure: wipe it, the caller drops the frame. */
         pmf_wipe(data, plen);
@@ -130,6 +163,41 @@ int rtl_pmf_ccmp_decrypt_mgmt(const uint8_t tk[16], uint8_t *frame, size_t len,
     frame[1] = (uint8_t)(frame[1] & ~PMF_FC_PROTECTED);
     if (out_len)
         *out_len = RTL_PMF_MGMT_HDR_LEN + plen;
+    return 0;
+}
+
+int rtl_pmf_ccmp_encrypt_mgmt(const uint8_t tk[16], uint8_t *frame, size_t len,
+                              uint64_t pn, size_t *out_len)
+{
+    uint8_t x[16], ctr[16], mic[8];
+    uint8_t *ccmp, *data;
+    size_t plen, i;
+
+    if (!tk || !frame || len < RTL_PMF_MGMT_HDR_LEN || pn == 0 || pn >> 48)
+        return -1;
+    plen = len - RTL_PMF_MGMT_HDR_LEN;
+    ccmp = frame + RTL_PMF_MGMT_HDR_LEN;
+    data = ccmp + RTL_PMF_CCMP_HDR_LEN;
+
+    for (i = plen; i-- > 0;)
+        data[i] = ccmp[i];
+    ccmp[0] = (uint8_t)pn;
+    ccmp[1] = (uint8_t)(pn >> 8);
+    ccmp[2] = 0;
+    ccmp[3] = 0x20U; /* Ext IV, key id 0 */
+    ccmp[4] = (uint8_t)(pn >> 16);
+    ccmp[5] = (uint8_t)(pn >> 24);
+    ccmp[6] = (uint8_t)(pn >> 32);
+    ccmp[7] = (uint8_t)(pn >> 40);
+    frame[1] = (uint8_t)(frame[1] | PMF_FC_PROTECTED);
+
+    pmf_ccm_setup(tk, frame, plen, x, ctr);
+    pmf_ccm_tag(tk, x, ctr, data, plen, mic);
+    pmf_ccm_ctr(tk, ctr, data, plen);
+    for (i = 0; i < 8; i++)
+        data[plen + i] = mic[i];
+    if (out_len)
+        *out_len = RTL_PMF_MGMT_HDR_LEN + RTL_PMF_CCMP_HDR_LEN + plen + RTL_PMF_CCMP_MIC_LEN;
     return 0;
 }
 

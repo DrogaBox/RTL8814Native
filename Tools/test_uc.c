@@ -568,7 +568,7 @@ static void show_joinlog(io_connect_t connect) {
         if (e->ev == JL_PMF) {
             static const char *kinds[] = { "?", "IGTK installed", "unicast verified",
                 "unicast CCMP FAIL", "replay drop", "unprotected deauth dropped",
-                "group BIP ok", "group BIP FAIL" };
+                "group BIP ok", "group BIP FAIL", "sent protected" };
             unsigned k = (unsigned)e->a;
             if (k == RTL_PMF_DEC_OK || k == RTL_PMF_UNPROT_DROP)
                 printf("%8u  %-16s %s subtype=%d reason=%d\n", e->t_ms - t0, nm, kinds[k],

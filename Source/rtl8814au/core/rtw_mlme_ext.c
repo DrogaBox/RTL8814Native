@@ -20,6 +20,7 @@
 #endif /* CONFIG_IOCTL_CFG80211 */
 #include <hal_data.h>
 #include "../../Driver/SAEJoin.h"
+#include "../../Driver/WPA2Supplicant.h"
 
 
 struct mlme_handler mlme_sta_tbl[] = {
@@ -9816,6 +9817,13 @@ static int _issue_deauth(_adapter *padapter, unsigned char *da, unsigned short r
 	reason = cpu_to_le16(reason);
 	pframe = rtw_set_fixed_ie(pframe, _RSON_CODE_ , (unsigned char *)&reason, &(pattrib->pktlen));
 
+	/* RTL8814Native: a PMF AP only honours a protected deauth */
+	{
+		u32 plen = pattrib->pktlen;
+
+		if (rtl8814_wpa2_pmf_protect_tx((u8 *)pwlanhdr, &plen))
+			pattrib->pktlen = plen;
+	}
 	pattrib->last_txcmdsz = pattrib->pktlen;
 
 

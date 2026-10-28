@@ -431,6 +431,18 @@ static struct {
 	u64  mgmt_pn;    /* highest unicast management PN accepted */
 } g_wpa2 = {0};
 
+/*
+ * Key kept for our own protected management frames (the leave deauth). The
+ * supplicant state is wiped as soon as the radio is told to leave, but the
+ * deauth goes out later from the command thread, so it needs its own copy.
+ */
+static struct {
+	int  valid;
+	u8   tk[16];
+	u8   bssid[6];
+	u64  pn;
+} g_pmf_tx = {0};
+
 /* Take the IGTK KDE (00-0F-AC type 9: key id, IPN, key) out of decrypted key data */
 static void wpa2_take_igtk(const u8 *kde, int len)
 {
@@ -537,6 +549,32 @@ int rtl8814_wpa2_pmf_rx(u8 *frame, u32 *len)
 	return 1;
 }
 
+/*
+ * Protect our own unicast deauthentication/disassociation to the AP of the last
+ * finished SAE link. Without it a PMF AP ignores the frame and keeps the
+ * association, then answers the next join with status 30. Returns 1 when the
+ * frame (header plus 2-byte body, 16 bytes spare after it) was protected.
+ */
+int rtl8814_wpa2_pmf_protect_tx(u8 *frame, u32 *len)
+{
+	size_t out_len = 0;
+	u8 subtype;
+
+	if (!g_pmf_tx.valid || *len < RTL_PMF_MGMT_HDR_LEN || ((frame[0] >> 2) & 3) != 0)
+		return 0;
+	subtype = (u8)(frame[0] >> 4);
+	if ((subtype != 10 && subtype != 12) || frame[1] & 0x40)
+		return 0;
+	if (_rtw_memcmp(&frame[4], g_pmf_tx.bssid, 6) != _TRUE)
+		return 0;
+	g_pmf_tx.pn++;
+	if (rtl_pmf_ccmp_encrypt_mgmt(g_pmf_tx.tk, frame, *len, g_pmf_tx.pn, &out_len) != 0)
+		return 0;
+	*len = (u32)out_len;
+	rtl8814native_jlog(JL_PMF, RTL_PMF_TX_PROTECTED, subtype);
+	return 1;
+}
+
 /* EAPOL-Key MIC: HMAC-SHA1 for PSK, AES-128-CMAC for SAE (16 bytes either way) */
 static void wpa2_calc_mic(const u8 *data, u32 len, u8 mic[20])
 {
@@ -604,6 +642,7 @@ int rtl8814_wpa2_get_state(void)
 void rtl8814_wpa2_configure(_adapter *padapter, const char *ssid, u32 ssid_len,
                             const char *psk, u32 psk_len, u32 auth_mode)
 {
+	_rtw_memset(&g_pmf_tx, 0, sizeof(g_pmf_tx)); /* a join that is not SAE: no protected leave */
 	if (!padapter)
 		return;
 
@@ -690,6 +729,7 @@ void rtl8814_wpa2_start_sae(_adapter *padapter, const u8 pmk[32],
 	g_wpa2.rsn_ie_len = rsn_len;
 	g_wpa2.grp_cipher = grp_cipher;
 	g_wpa2.akm_sae = 1;
+	_rtw_memset(&g_pmf_tx, 0, sizeof(g_pmf_tx));
 	g_wpa2.active = 1;
 	g_wpa2.state = WPA2_STATE_WAIT_MSG1;
 	rtl8814native_jlog(JL_WPA2, WPA2_STATE_WAIT_MSG1, 1);
@@ -934,6 +974,12 @@ int rtl8814_wpa2_rx_eapol(_adapter *padapter, struct sk_buff *skb)
 		wpa2_install_keys(padapter, aa, gtk_len ? gtk_buf : NULL, gtk_len, gtk_key_id, true);
 		g_wpa2.state = WPA2_STATE_COMPLETED;
 		rtl8814native_jlog(JL_WPA2, WPA2_STATE_COMPLETED, 0);
+		if (g_wpa2.akm_sae) {
+			_rtw_memcpy(g_pmf_tx.tk, &g_wpa2.ptk[32], 16);
+			_rtw_memcpy(g_pmf_tx.bssid, aa, 6);
+			g_pmf_tx.pn = ((u64)rtw_get_current_time()) << 12;
+			g_pmf_tx.valid = 1;
+		}
 
 		struct net_device *ndev = padapter->pnetdev ? padapter->pnetdev : rtl8814native_get_netdev();
 		if (ndev)
