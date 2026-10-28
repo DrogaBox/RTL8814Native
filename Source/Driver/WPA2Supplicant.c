@@ -16,6 +16,7 @@
 #include <linux/random.h>
 #include "SAE.h"
 #include "PMF.h"
+#include "SecurityIE.h"
 
 extern netdev_tx_t _rtw_xmit_entry(_pkt *pkt, _nic_hdl pnetdev);
 
@@ -443,36 +444,16 @@ static struct {
 	u64  pn;
 } g_pmf_tx = {0};
 
-/* Take the IGTK KDE (00-0F-AC type 9: key id, IPN, key) out of decrypted key data */
-static void wpa2_take_igtk(const u8 *kde, int len)
+/* Take a validated IGTK KDE out of decrypted key data. */
+static void wpa2_take_igtk(const struct rtl_security_key_data *parsed)
 {
-	int pos = 0, i;
-
-	while (pos + 2 <= len) {
-		u8 id = kde[pos];
-		u8 elen = kde[pos + 1];
-
-		if (id == 0xdd && elen == 0) {
-			pos += 2;
-			continue;
-		}
-		if (pos + 2 + elen > len)
-			break;
-		if (id == 0xdd && elen == 28 && kde[pos + 2] == 0x00 && kde[pos + 3] == 0x0f &&
-		    kde[pos + 4] == 0xac && kde[pos + 5] == 0x09) {
-			u64 ipn = 0;
-
-			for (i = 0; i < 6; i++)
-				ipn |= (u64)kde[pos + 8 + i] << (8 * i);
-			g_wpa2.igtk_id = (u16)(kde[pos + 6] | (kde[pos + 7] << 8));
-			_rtw_memcpy(g_wpa2.igtk, (void *)&kde[pos + 14], 16);
-			g_wpa2.igtk_ipn = ipn;
-			g_wpa2.igtk_valid = 1;
-			rtl8814native_jlog(JL_PMF, RTL_PMF_IGTK, g_wpa2.igtk_id);
-			return;
-		}
-		pos += 2 + elen;
-	}
+	if (!parsed->has_igtk)
+		return;
+	g_wpa2.igtk_id = parsed->igtk_id;
+	_rtw_memcpy(g_wpa2.igtk, parsed->igtk, sizeof(g_wpa2.igtk));
+	g_wpa2.igtk_ipn = parsed->igtk_ipn;
+	g_wpa2.igtk_valid = 1;
+	rtl8814native_jlog(JL_PMF, RTL_PMF_IGTK, g_wpa2.igtk_id);
 }
 
 /*
@@ -635,14 +616,12 @@ static u8 detect_ap_rsn_group_cipher(_adapter *padapter, const char *ssid, u32 s
 		    _rtw_memcmp(pnet->network.Ssid.Ssid, ssid, ssid_len) == _TRUE) {
 			u32 ies_len = pnet->network.IELength;
 			if (ies_len > 12) {
-				uint rsn_len = 0;
-				u8 *rsn = rtw_get_ie(pnet->network.IEs + 12, _RSN_IE_2_, &rsn_len, ies_len - 12);
-				if (rsn && rsn_len >= 8) {
-					/* rsn[0]=0x30, rsn[1]=len, rsn[2..3]=ver, rsn[4..7]=group cipher suite */
-					if (rsn[4] == 0x00 && rsn[5] == 0x0f && rsn[6] == 0xac) {
-						grp = rsn[7];
-						break;
-					}
+				u8 ap_group = 0x04;
+				int pmf_required = 0;
+				if (rtl_security_parse_rsn(pnet->network.IEs + 12, ies_len - 12,
+							   &ap_group, &pmf_required) == 0) {
+					grp = ap_group;
+					break;
 				}
 			}
 		}
@@ -956,32 +935,17 @@ int rtl8814_wpa2_rx_eapol(_adapter *padapter, struct sk_buff *skb)
 			if (plain) {
 				if (aes128_unwrap(&g_wpa2.ptk[16], n, key_data, plain) == 0) {
 					int plain_len = n * 8;
-					int pos = 0;
-					while (pos + 2 <= plain_len) {
-						u8 id = plain[pos];
-						u8 elen = plain[pos + 1];
-						if (id == 0xdd && elen == 0) {
-							pos += 2;
-							continue;
+					struct rtl_security_key_data parsed;
+					if (rtl_security_parse_key_data(plain, (size_t)plain_len, 0, &parsed) == 0) {
+						if (parsed.has_gtk) {
+							gtk_key_id = parsed.gtk_key_id;
+							gtk_len = (u32)parsed.gtk_len;
+							_rtw_memcpy(gtk_buf, parsed.gtk, gtk_len);
 						}
-						if (pos + 2 + elen > plain_len)
-							break;
-						/* GTK KDE: 0xdd, len, 00:0f:ac:01, key_info(1), res(1), gtk(...) */
-						if (id == 0xdd && elen >= 6 &&
-						    plain[pos + 2] == 0x00 &&
-						    plain[pos + 3] == 0x0f &&
-						    plain[pos + 4] == 0xac &&
-						    plain[pos + 5] == 0x01) {
-							gtk_key_id = plain[pos + 6] & 0x03;
-							gtk_len = (u32)(elen - 6);
-							if (gtk_len > sizeof(gtk_buf))
-								gtk_len = sizeof(gtk_buf);
-							_rtw_memcpy(gtk_buf, &plain[pos + 8], gtk_len);
-						}
-						pos += 2 + elen;
+						if (g_wpa2.akm_sae)
+							wpa2_take_igtk(&parsed);
+						_rtw_memset(&parsed, 0, sizeof(parsed));
 					}
-					if (g_wpa2.akm_sae)
-						wpa2_take_igtk(plain, plain_len);
 				} else {
 					rtl_printk("RTL8814Native: [WPA2] Warning: AES Key Unwrap failed on Msg 3/4\n");
 				}
@@ -1040,22 +1004,17 @@ int rtl8814_wpa2_rx_eapol(_adapter *padapter, struct sk_buff *skb)
 			u8 *plain = (u8 *)rtw_zmalloc(n * 8);
 			if (plain) {
 				if (aes128_unwrap(&g_wpa2.ptk[16], n, key_data, plain) == 0) {
-					int plain_len = n * 8;
-					/* RSN Group Key Handshake uses GTK KDE or raw GTK */
-					if (plain_len >= 8 && plain[0] == 0xdd &&
-					    plain[2] == 0x00 && plain[3] == 0x0f &&
-					    plain[4] == 0xac && plain[5] == 0x01) {
-						gtk_key_id = plain[6] & 0x03;
-						gtk_len = (u32)(plain[1] - 6);
-						if (gtk_len > sizeof(gtk_buf))
-							gtk_len = sizeof(gtk_buf);
-						_rtw_memcpy(gtk_buf, &plain[8], gtk_len);
-						if (g_wpa2.akm_sae)
-							wpa2_take_igtk(plain, plain_len);
-					} else if (plain_len >= 16) {
-						gtk_len = (plain_len >= 32) ? 32 : 16;
-						_rtw_memcpy(gtk_buf, plain, gtk_len);
+					struct rtl_security_key_data parsed;
+					if (rtl_security_parse_key_data(plain, (size_t)(n * 8), 1, &parsed) == 0) {
+						if (parsed.has_gtk) {
+							gtk_key_id = parsed.gtk_key_id == 0xff ? gtk_key_id : parsed.gtk_key_id;
+							gtk_len = (u32)parsed.gtk_len;
+							_rtw_memcpy(gtk_buf, parsed.gtk, gtk_len);
 					}
+					if (g_wpa2.akm_sae)
+						wpa2_take_igtk(&parsed);
+					_rtw_memset(&parsed, 0, sizeof(parsed));
+				}
 				}
 				rtw_mfree(plain, n * 8);
 			}

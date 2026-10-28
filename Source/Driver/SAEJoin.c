@@ -16,6 +16,7 @@
 #include <linux/random.h>
 #include "RTLJoinLog.h"
 #include "SAE.h"
+#include "SecurityIE.h"
 #include "SAEAuth.h"
 #include "SAEJoin.h"
 #include "WPA2Supplicant.h"
@@ -124,39 +125,13 @@ static void sae_wipe_shared_locked(void)
 static void sae_parse_ap_rsn(_adapter *padapter, u8 *group_cipher, int *pmf_required)
 {
 	struct mlme_ext_info *info = &padapter->mlmeextpriv.mlmext_info;
-	int ielen = 0;
-	u8 *p;
-	uint total = info->network.IELength;
 
-	*group_cipher = 4;      /* CCMP */
+	*group_cipher = 4;		/* CCMP */
 	*pmf_required = 0;
-	if (total <= _BEACON_IE_OFFSET_)
-		return;
-	p = rtw_get_ie(info->network.IEs + _BEACON_IE_OFFSET_, _RSN_IE_2_, &ielen,
-		       total - _BEACON_IE_OFFSET_);
-	if (!p || ielen < 8)
-		return;
-	/* rtw_get_ie trusts the declared length: drop an IE that runs past the stored elements */
-	if ((uint)ielen + 2 > total - _BEACON_IE_OFFSET_ - (uint)(p - (info->network.IEs + _BEACON_IE_OFFSET_)))
-		return;
-	/* p[0] id, p[1] length, p[2..3] version, p[4..7] group suite */
-	if (p[4] == 0x00 && p[5] == 0x0f && p[6] == 0xac)
-		*group_cipher = p[7];
-	{
-		/* offsets into the IE body: version 0, group 2, pairwise count 6 */
-		int pos = 6, n;
-		if (pos + 2 > ielen)
-			return;
-		n = p[2 + pos] | (p[2 + pos + 1] << 8);
-		pos += 2 + 4 * n;           /* now at the AKM count */
-		if (n > 16 || pos + 2 > ielen)
-			return;
-		n = p[2 + pos] | (p[2 + pos + 1] << 8);
-		pos += 2 + 4 * n;           /* now at the RSN capabilities */
-		if (n > 16 || pos + 2 > ielen)
-			return;
-		*pmf_required = (p[2 + pos] & 0x40) != 0;
-	}
+	(void)rtl_security_parse_rsn(info->network.IEs + _BEACON_IE_OFFSET_,
+		info->network.IELength > _BEACON_IE_OFFSET_ ?
+		info->network.IELength - _BEACON_IE_OFFSET_ : 0,
+		group_cipher, pmf_required);
 }
 
 static int sae_stale(_adapter *padapter)
