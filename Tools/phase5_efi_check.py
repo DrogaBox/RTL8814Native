@@ -37,6 +37,7 @@ KNOWN = {
     "613d9d9d9d4d88312f2a8d412e06778f": "RTL8814Native 4.23.3 (4.23.2 + SAE association RSN IE length and PMF-required parsing fixed)",
     "9eca28a115b051ed5341d3cf5c281eb8": "RTL8814Native 4.24 (4.23.3 + 4-way handshake for AKM 8: KDF-SHA256 PTK, AES-128-CMAC MIC)",
     "8b133d44df48d2ab7aff021f4c05b5d5": "RTL8814Native 4.25 (4.24 + 802.11w: CCMP check of protected unicast mgmt frames, BIP group frames, IGTK)",
+    "cf719208eecbe2ff7208bd9484825197": "RTL8814Native 4.26 (4.25 + no open-auth fallback after a cancelled SAE join, retry after status 30)",
     "04402631c59a4a756e356d299f8fd7e2": "RTL8814AirLayer 0.1 (superseded, do not use)",
     "206cf1337b555a57e7b6975301d1fa47": "RTL8814AirLayer 0.2 (superseded, do not use)",
     "92c7d5df31b667590564f8cd95af943c": "RTL8814AirLayer 0.3 (superseded, do not use)",

@@ -43,6 +43,8 @@ static struct {
 	_adapter *padapter;
 	u32 gen;
 	u8 active;
+	u8 armed;       /* prepared and not yet finished: a cancel now aborts the join */
+	u8 aborted;     /* the join was cancelled mid-flight: it must not fall back to open auth */
 	u8 pw[RTL_SAE_PASSWORD_MAX_LEN];
 	u8 pw_len;
 	u8 ev_start;
@@ -183,6 +185,7 @@ static void sae_fail(_adapter *padapter, u16 status)
 	ours = g_sae.active && g_sae.gen == w_sae.gen;
 	if (ours) {
 		g_sae.active = 0;
+		g_sae.armed = 0;
 		sae_wipe_shared_locked();
 	}
 	_exit_critical_bh(&g_sae.lock, &irqL);
@@ -312,6 +315,7 @@ static void sae_complete(_adapter *padapter)
 	g_sae.assoc_ie_len = (u8)ielen;
 	g_sae.assoc_ready = 1;
 	g_sae.active = 0;       /* the exchange is over; keys stay for step 4 */
+	g_sae.armed = 0;
 	_exit_critical_bh(&g_sae.lock, &irqL);
 	/* The AP can send message 1 right after the association response, so
 	 * the handshake has to be armed before the association request goes out. */
@@ -544,6 +548,8 @@ int rtl_sae_join_prepare(_adapter *padapter, const uint8_t *password, uint32_t p
 	g_sae.pw_len = (u8)password_len;
 	g_sae.padapter = padapter;
 	g_sae.active = 1;
+	g_sae.armed = 1;
+	g_sae.aborted = 0;
 	_exit_critical_bh(&g_sae.lock, &irqL);
 
 	/* Give the join an RSN IE slot; the association hook replaces its
@@ -632,11 +638,38 @@ void rtl_sae_join_cancel(_adapter *padapter)
 	_enter_critical_bh(&g_sae.lock, &irqL);
 	g_sae.gen++;
 	g_sae.active = 0;
+	g_sae.aborted = g_sae.armed;
+	g_sae.armed = 0;
 	sae_wipe_shared_locked();
 	/* wake the worker so it drops its own copy of the exchange */
 	g_sae.ev_timeout = 1;
 	_exit_critical_bh(&g_sae.lock, &irqL);
 	rtl_schedule_work(&g_sae.work);
+}
+
+int rtl_sae_join_aborted(_adapter *padapter)
+{
+	_irqL irqL;
+	int aborted;
+
+	(void)padapter;
+	if (!g_sae.inited)
+		return 0;
+	_enter_critical_bh(&g_sae.lock, &irqL);
+	aborted = g_sae.aborted;
+	_exit_critical_bh(&g_sae.lock, &irqL);
+	return aborted;
+}
+
+void rtl_sae_join_clear_abort(void)
+{
+	_irqL irqL;
+
+	if (!g_sae.inited)
+		return;
+	_enter_critical_bh(&g_sae.lock, &irqL);
+	g_sae.aborted = 0;
+	_exit_critical_bh(&g_sae.lock, &irqL);
 }
 
 int rtl_sae_join_assoc_rsn(_adapter *padapter, uint8_t *out, uint32_t *len)

@@ -1110,6 +1110,7 @@ int rtl8814native_radio_join(struct rtl_radio_join *j)
 	if (!g_padapter || !g_padapter->bup)
 		return -ENODEV;
 	rtl_sae_join_cancel(g_padapter);
+	rtl_sae_join_clear_abort();
 	rtl8814native_jlog(JL_RADIO_JOIN, _rtw_memcmp((void *)j->bssid, (void *)zero_bssid, 6) != _TRUE,
 			   get_fwstate(&g_padapter->mlmepriv));
 

@@ -63,6 +63,13 @@ void rtl_sae_join_timeout(_adapter *padapter);
 /* Leave, or any join that is not SAE: drop the exchange and all secrets. */
 void rtl_sae_join_cancel(_adapter *padapter);
 
+/* start_clnt_auth(): the SAE join was cancelled while it was starting; the
+ * caller must fail the join instead of sending an open authentication. */
+int rtl_sae_join_aborted(_adapter *padapter);
+
+/* A join that is not SAE is starting: forget an earlier abort. */
+void rtl_sae_join_clear_abort(void);
+
 /* issue_assocreq(): the RSN IE to send instead of the AP's own, once SAE has
  * produced the PMKID. Returns 1 and fills out/len when it is ready. */
 int rtl_sae_join_assoc_rsn(_adapter *padapter, uint8_t *out, uint32_t *len);

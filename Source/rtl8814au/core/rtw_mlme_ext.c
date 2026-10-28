@@ -2835,6 +2835,34 @@ unsigned int OnAssocRsp(_adapter *padapter, union recv_frame *precv_frame)
 	/* status */
 	status = le16_to_cpu(*(unsigned short *)(pframe + WLAN_HDR_A3_LEN + 2));
 	rtl8814native_jlog(JL_ASSOC_RX, status, 0);
+	if (status == 30 && pmlmeinfo->reassoc_count < REASSOC_LIMIT) {
+		/* RTL8814Native: rejected temporarily (the AP still holds our old association and
+		 * wants an SA Query). Its Timeout Interval IE carries the comeback time: ask
+		 * again after it, the link timer re-sends the association request. */
+		uint ie_pos;
+		u32 wait_ms = 1000;
+
+		for (ie_pos = 6 + WLAN_HDR_A3_LEN; ie_pos + 2 <= pkt_len;) {
+			u8 eid = pframe[ie_pos], elen = pframe[ie_pos + 1];
+
+			if (ie_pos + 2 + elen > pkt_len)
+				break;
+			if (eid == 56 && elen == 5 && pframe[ie_pos + 2] == 3) {
+				u32 tu = le32_to_cpu(*(u32 *)(pframe + ie_pos + 3));
+
+				wait_ms = tu < 2000 ? (tu * 1024 / 1000) : 2000;
+				break;
+			}
+			ie_pos += 2 + elen;
+		}
+		if (wait_ms < 300)
+			wait_ms = 300;
+		if (wait_ms > 2000)
+			wait_ms = 2000;
+		rtl8814native_jlog(JL_ASSOC_RX, status, wait_ms);
+		set_link_timer(pmlmeext, wait_ms);
+		return _SUCCESS;
+	}
 	if (status > 0) {
 		RTW_INFO("assoc reject, status code: %d\n", status);
 		pmlmeinfo->state = WIFI_FW_NULL_STATE;
@@ -11382,6 +11410,12 @@ no_external_auth:
 	/* RTL8814Native: an SAE join runs its own exchange instead of the open auth frame */
 	if (rtl_sae_join_active(padapter)) {
 		rtl_sae_join_start(padapter);
+		return;
+	}
+	if (rtl_sae_join_aborted(padapter)) {
+		/* cancelled mid-flight: never fall back to an open authentication */
+		pmlmeinfo->state = WIFI_FW_NULL_STATE;
+		report_join_res(padapter, -1, WLAN_STATUS_UNSPECIFIED_FAILURE);
 		return;
 	}
 
