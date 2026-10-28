@@ -4,12 +4,15 @@ Notes for whoever picks this up. Everything below was checked on my one setup (T
 
 ## State
 
-- Driver 4.22 and layer 0.30 are what is in my EFI right now. The layer is the 0.28 code plus three capability bits (`Source/AirLayer/RTLAirLayer.cpp`, `getCARD_CAPABILITIES`): `p[13] |= 0x08` (capability 75, SAE), `p[10] |= 0x10` (PMF), on top of the AWDL bits.
-- With those bits macOS offers SAE on WPA3 networks, and `setWCL_ASSOCIATE` runs. For a WPA3-only hotspot it receives:
-  - `key + 4` (key length) = the passphrase length, and the passphrase bytes at `key + 16`. For WPA2 it was always 32 (a PMK).
-  - `req + 16` = 1 and `req + 20` = 0x1000 (open-system lower auth, SAE upper auth).
-- In the deployed layer the join still fails because it only accepts a 32-byte PMK. The step 1 build below carries the passphrase but intentionally returns unsupported at the radio. `RTLAirLastAssoc` in ioreg keeps the header of the last request (no key bytes).
-- Side effect: macOS now also tries SAE on my WPA2/WPA3 mixed router, and that join fails. Layer 0.28 (`Backups/airlayer_0.28`, md5 `7066099f...`) does not have the bits and keeps the router working. To go back, point `LAYER_SRC`/`LAYER_MD5` in `Tools/phase5_deploy.sh` at it and deploy.
+Current (2026-10-28): driver 4.29 and layer 0.31 are in my EFI. WPA3-SAE works end to end, with 802.11w. Release `v4.29-layer0.31` has both kexts.
+
+- SAE (group 19), the 4-way handshake for AKM 8 and protected management frames (CCMP, IGTK, BIP, SA Query) all run in the driver. Checked live against an SAE-only Android hotspot (2.4 and 5 GHz) and my WPA2/WPA3 router. Details and logs are in the notes at the end of this file.
+- The layer advertises capability 75 (SAE) and PMF, and carries the passphrase to the radio (ABI 2). Layer 0.31 is the code to keep.
+- Not verified yet: a clean reconnect without a reboot, the group key rekey and `BIP ok` after more than an hour connected, and a protected deauth coming from the AP. Channel switch following (4.29) has not met a real AP.
+- Known quirk: after a reboot without a clean leave, a PMF AP keeps the old association for 30 to 60 s and the first join can fail. The next one works.
+- Not started: WPA2/WPA3 Enterprise, AWDL.
+
+Everything from "What the vendor code gives us" down is the history of how it was built, in the order it happened. It describes earlier states (driver 4.22, fail-closed SAE, "not connected to the radio yet"); those statements are no longer true. The last section has the live results.
 
 ## What the vendor code gives us
 
