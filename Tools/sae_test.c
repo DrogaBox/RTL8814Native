@@ -191,6 +191,11 @@ int main(void)
     }
     REQUIRE(rtl_sae_p256_check_confirm(&sae, peer_confirm, sizeof(peer_confirm)) < 0,
             "reject replayed peer confirm");
+    memcpy(bad_confirm, peer_confirm, sizeof(bad_confirm));
+    bad_confirm[0] = 0;
+    bad_confirm[1] = 0;
+    REQUIRE(rtl_sae_p256_check_confirm(&sae, bad_confirm, sizeof(bad_confirm)) < 0,
+            "reject older peer confirm");
     REQUIRE(rtl_sae_p256_write_confirm(&sae, confirm) == 0 &&
             confirm[0] == 2 && confirm[1] == 0,
             "advance send-confirm counter");
@@ -265,6 +270,27 @@ int main(void)
             memcmp(pmkid, peer_pmkid, sizeof(pmkid)) == 0 &&
             zeroed(&sae, sizeof(sae)) && zeroed(&peer, sizeof(peer)),
             "confirm both sides, agree on keys, and wipe state");
+
+    /* A valid duplicate Confirm is rejected as replay, without damaging the
+     * exchange: a later strictly newer Confirm can still finish it. */
+    REQUIRE(rtl_sae_p256_start_fixed(&sae, (const uint8_t *)"mekmitasdigoat", 14,
+                                     addr1, addr2, NULL, 0, local_rand, local_mask) == 0 &&
+            rtl_sae_p256_start_fixed(&peer, (const uint8_t *)"mekmitasdigoat", 14,
+                                     addr2, addr1, NULL, 0, local_mask, local_rand) == 0 &&
+            rtl_sae_p256_write_commit(&sae, commit, sizeof(commit), &commit_len) == 0 &&
+            rtl_sae_p256_write_commit(&peer, retry, sizeof(retry), &retry_len) == 0 &&
+            rtl_sae_p256_process_commit(&sae, retry, retry_len, 0) == 0 &&
+            rtl_sae_p256_process_commit(&peer, commit, commit_len, 0) == 0 &&
+            rtl_sae_p256_write_confirm(&sae, confirm) == 0 &&
+            rtl_sae_p256_write_confirm(&peer, peer_reply) == 0 &&
+            rtl_sae_p256_check_confirm(&sae, peer_reply, sizeof(peer_reply)) == 0 &&
+            rtl_sae_p256_check_confirm(&sae, peer_reply, sizeof(peer_reply)) < 0 &&
+            rtl_sae_p256_write_confirm(&peer, peer_reply) == 0 &&
+            rtl_sae_p256_check_confirm(&sae, peer_reply, sizeof(peer_reply)) == 0 &&
+            rtl_sae_p256_check_confirm(&peer, confirm, sizeof(confirm)) == 0 &&
+            rtl_sae_p256_finish(&sae, pmk, pmkid) == 0 &&
+            rtl_sae_p256_finish(&peer, peer_pmk, peer_pmkid) == 0,
+            "reject confirm replay while allowing a newer counter to complete");
 
     /* AES-128-CMAC, the four examples of RFC 4493 section 4 */
     {

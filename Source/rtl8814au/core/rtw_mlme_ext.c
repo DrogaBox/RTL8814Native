@@ -2349,6 +2349,10 @@ unsigned int OnAuthClient(_adapter *padapter, union recv_frame *precv_frame)
 
 	RTW_INFO("%s\n", __FUNCTION__);
 
+	/* The management header is used by get_da()/GetPrivacy below. */
+	if (pkt_len < WLAN_HDR_A3_LEN)
+		return _SUCCESS;
+
 #ifdef CONFIG_IOCTL_CFG80211
 	if (GET_CFG80211_REPORT_MGMT(adapter_wdev_data(padapter), IEEE80211_STYPE_AUTH) == _TRUE) {
 		if (rtw_sec_chk_auth_type(padapter, NL80211_AUTHTYPE_SAE)) {
@@ -2372,6 +2376,9 @@ normal:
 		return _SUCCESS;
 
 	offset = (GetPrivacy(pframe)) ? 4 : 0;
+	/* Algorithm, sequence and status are six fixed bytes after any privacy IV. */
+	if (pkt_len < WLAN_HDR_A3_LEN + offset + 6)
+		return _SUCCESS;
 
 	algthm	= le16_to_cpu(*(unsigned short *)((SIZE_PTR)pframe + WLAN_HDR_A3_LEN + offset));
 	seq	= le16_to_cpu(*(unsigned short *)((SIZE_PTR)pframe + WLAN_HDR_A3_LEN + offset + 2));
