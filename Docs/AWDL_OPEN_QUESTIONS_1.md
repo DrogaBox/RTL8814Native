@@ -218,6 +218,49 @@ cambios de estado. `?` consumidores del bit `+1667` fuera de esta función.
 
 ## 3. Bytes sin nombre: sync params `+21..+23` y secuencia de canales `+5..+8`
 
-Pendiente `?`: el análisis se interrumpió antes de cerrar este apartado. Pista sin verificar: la
-traza de `parseAwdlSyncParamsTlv` imprime los bytes de extensión con el formato `ext:%u/%u/%u/%u`,
-lo que sugiere cuatro longitudes de extensión de ventana consecutivas a partir de `+20`.
+### 3.1 Sync params (tipo 4), bytes `+20..+23`
+
+En `parseAwdlSyncParamsTlv` (`0xffffff80021b4ba6`) sólo `+20` se almacena: `mov al,[r15+14h]` /
+`mov [rcx+5ACh],al` (`0xffffff80021b4eb7`/`0xffffff80021b4ebb`, peer `+1452`). Los bytes `+21`,
+`+22` y `+23` no se guardan en el peer; únicamente se leen para la traza
+`"   sn=%u ext(%u/%u/%u/%u) dc=%u rem=%u tchan=%u mchan=%u pm=%u sync_contention:%u"` (cadena cargada en
+`0xffffff80021b503a`), en este orden de argumentos: `+20` (`0xffffff80021b4fec`), `+23`
+(`0xffffff80021b4ff1`), `+21` (`0xffffff80021b4ff6`) y `+22` (`0xffffff80021b4fff`).
+
+El orden de los campos ya verificados encaja uno a uno con el cuerpo de sync params de la
+especificación abierta de AWDL (OWL): `+3` next/tx channel, `+4` tx counter, `+6` master channel,
+`+14` `aw_ext_length` (16), `+18` remaining AW length, `+24` master address, `+30` presence mode,
+`+32` AW sequence number. Con esa correspondencia, los cuatro bytes de `+20` son los límites de
+extensión de la ventana:
+
+| Offset | Nombre (OWL) | Uso en el kernel |
+|---:|---|---|
+| `+20` | `min_ext` | peer `+1452`; primer valor de `ext(...)` |
+| `+21` | `max_ext_multicast` `?` | sólo traza (tercer valor) |
+| `+22` | `max_ext_unicast` `?` | sólo traza (cuarto valor) |
+| `+23` | `max_ext_af` `?` | sólo traza (segundo valor) |
+
+Los nombres de `+21..+23` proceden de la especificación externa (`?`); el kernel no les da otro uso
+en esta función. Por la misma correspondencia, `+7` sería `guard_time`, `+8` `aw_period`, `+10`
+`af_period`, `+12` flags y `+16` `aw_common_length` (`?`, nombres no presentes en el binario).
+
+### 3.2 Secuencia de canales (tipo 18), bytes `+5..+8`
+
+`parseAwdlChanSeqFromChanSeqTLV` (`0xffffff80021b5a08`) copia la cabecera al `awdl_chan_seq_info2`:
+`+4` → `info2[1]` (`0xffffff80021b5b05`), `+5` → `info2[2]` (`0xffffff80021b5b0c`), `+6` →
+`info2[3]` (`0xffffff80021b5b13`) y el `u16` de `+7` → `info2+4` (`0xffffff80021b5b1a`/
+`0xffffff80021b5b1e`). `updateAwdlChanSeq` (`0xffffff80021ab7e4`) los consume así:
+
+| TLV | `info2` | Destino en el peer | Nombre (OWL) | Uso verificado |
+|---:|---:|---|---|---|
+| `+4` | `[1]` | `+908` (`0xffffff80021ab91c`) | `encoding` | 3 = pares {canal, clase operativa} |
+| `+5` | `[2]` | `+911` (`0xffffff80021ab928`) | `duplicate_count` | multiplicador de la longitud expandida |
+| `+6` | `[3]` | `+910` (`0xffffff80021ab911`) | `step_count` | multiplicador de la longitud expandida |
+| `+7..+8` | `+4` (u16) | `+916` (`0xffffff80021ab934`) | `fill_channel` `?` | sólo se almacena en esta función |
+
+La longitud efectiva de la secuencia se calcula como `(dup + 1) · n · (step + 1)` y se guarda en
+peer `+906` (`0xffffff80021ab946`); si no queda en `1..512` (comparación con `0xFE00` en
+`0xffffff80021ab95c`) la función devuelve `-2` y la secuencia se descarta. Más adelante en la
+misma función se vuelven a leer `+906` (`0xffffff80021abc43`) y `+910` (`0xffffff80021abc74`).
+Para un driver basta con `dup = 0`, `step = 0`, de modo que la longitud efectiva es `n`; el valor
+de relleno no afecta a esa comprobación (`?` sobre otros consumidores de peer `+916`).
