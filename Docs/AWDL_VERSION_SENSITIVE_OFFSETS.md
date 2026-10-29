@@ -193,6 +193,11 @@ script: si una ranura se movió en el volcado, las filas de patrón cuyo desplaz
 ranura (`FF ?? C0 09 00 00` para `0x9C0`, etc.) deben dejar de casar — el informe puede marcar esa fila
 como «explicada por la deriva de la ranura» en lugar de «no encontrada».
 
+**`awdl_recheck_offsets.py`.** Implementa este diseño sobre `Tools/awdl_offsets_25G241.tsv` (una fila por acceso, patrón con `??`
+sobre modrm/sib/registro y desplazamiento literal). Uso: `python3 Tools/awdl_recheck_offsets.py <BootKernelExtensions.kc> [--va-hint]`.
+Sin `--va-hint` las filas de funciones sin símbolo se omiten (`SKIPPED`); con él se buscan en la VA de 25G241 y sólo valen contra ese
+build. Contra 25G241 el resultado es 61 filas, 61 `OK` con `--va-hint` (48 `OK` y 13 `SKIPPED` sin él); salida 0 sin deriva, 1 con deriva, 2 de uso.
+
 **Correspondencia riesgo→acción.** `MOVED` en una fila de riesgo *silencio* de las §1–§2 (RegInfo y
 eparams) bloquea el gate para ese build; `MOVED` en filas de §3–§5 (ifnet/ifclassq/netif_llink) sólo
 obliga a regenerar las predicciones de T3; `NOT-FOUND` siempre pide relectura manual en la IDB.
