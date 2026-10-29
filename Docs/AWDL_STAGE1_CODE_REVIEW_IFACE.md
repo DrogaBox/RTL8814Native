@@ -1,6 +1,6 @@
 # Revisión de código — `AWDLInterface.cpp` / `AWDLInterface.h` (etapa 1)
 
-Nota de verificación: el hallazgo 1 se aplicó (`rtl_vif_start` declarado `bool`). El hallazgo 2 queda cerrado por `AWDL_STAGE1_PENDING_CHECKS.md` §3 (el `free` de la interfaz ya desregistra; la llamada explícita no es necesaria). El hallazgo 6 no procede: `AWDL_STAGE1_LOG_STRINGS_AUDIT.md` confirma que el literal real es `awdl: registerEthernetInterface 0x%x` y la guía de pruebas lo busca así. El hallazgo 3 (orden de celdas de la vtable) sigue abierto y se verifica aparte.
+Nota de verificación: el hallazgo 1 se aplicó (`rtl_vif_start` declarado `bool`). El hallazgo 2 queda cerrado por `AWDL_STAGE1_PENDING_CHECKS.md` §3 (el `free` de la interfaz ya desregistra; la llamada explícita no es necesaria). El hallazgo 6 no procede: `AWDL_STAGE1_LOG_STRINGS_AUDIT.md` confirma que el literal real es `awdl: registerEthernetInterface 0x%x` y la guía de pruebas lo busca así. El hallazgo 3 (orden de celdas de la vtable) queda cerrado: el volcado de `__ZTV23IO80211VirtualInterface` en el kernelcache coincide celda a celda con la cabecera en los 27 métodos (`0xE68`-`0xF38`), `setMacAddress` puro (`0xF40`) y los 16 reservados (`0xF48`-`0xFC0`), y los 63 slots `0xFC8`-`0x11B8` de `__ZTV30AppleBCMWLANProximityInterface` coinciden por nombre y posición con los 63 declarados (0 discrepancias).
 
 Revisión línea a línea de `Source/AirLayer/AWDLInterface.cpp` (311 líneas) y
 `Source/AirLayer/AWDLInterface.h` (412 líneas) contra
