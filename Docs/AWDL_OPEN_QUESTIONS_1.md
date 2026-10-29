@@ -30,6 +30,7 @@ Funciones de referencia nuevas:
 | `IO80211AWDLPeerManager::reportDataPathEvents` | `0xffffff80021dd8f4` | eventos 41/42/43: número de AW y slot |
 | `IO80211AWDLPeerManager::monitorTimeline` | `0xffffff80021e11ca` | contraste del `FwAwStartTime` del evento 41 |
 | `IO80211AWDLPeerManager::logAWStart` | `0xffffff80021e1b42` | log de arranque de ventana y copia del tiempo |
+| `IO80211AWDLPeerManager::getAwStartFwTimeUsec` | `0xffffff8002234f5e` | lector de `ivars+796` (con byteswap) |
 
 ## 1. TLV de parámetros de elección v2 (tipo 24): ruta de parseo y cuerpo
 
@@ -172,10 +173,12 @@ es 2^20 µs = 1024 TU (16 ventanas de 64 TU), y la aritmética intermedia es de 
 
 Estado del manager que usa:
 
-- `currAwNum` = retorno de la celda 95 de la vtable del manager (offset `+0x2F8`),
-  `getCurrentAWSeqNum` (`0xffffff800223507a`), que lee el u32 en ivars AWDL `+16104`;
-- `currAwStartFwTime` = `byteswap(*(u32*)(ivars+796))` (almacenado **big-endian**) menos **3500 µs**
-  de guarda.
+- `currAwNum` = retorno de la celda 95 de la vtable del manager (offset `+0x2F8`, llamada en
+  `0xffffff80021b8769`), `getCurrentAWSeqNum` (`0xffffff800223507a`, lectura de `ivars+16104` en
+  `0xffffff8002235082`);
+- `currAwStartFwTime` = `byteswap(*(u32*)(ivars+796))` (carga en `0xffffff80021b8771`, `bswap` en
+  `0xffffff80021b877c`) menos **3500 µs** de guarda (`add r13d, 0FFFFF254h` en
+  `0xffffff80021b877f`).
 
 Fórmula verificada en el descompilado (`tlv` = puntero al TLV de sync params con cabecera):
 
@@ -207,10 +210,14 @@ línea 4185) y diferencia 0.
 
 ### 2.3 Uso de la diferencia en `monitorPeersTimeline` (`0xffffff80021b86ec`)
 
-- Guarda de entrada: cursor del TLV ≥ `0x2A` (42 B) y no nulo; en caso contrario traza
+- Guarda de entrada: cursor del TLV ≥ `0x2A` (42 B) y no nulo (comparación en
+  `0xffffff80021b8728`); en caso contrario traza
   `"%s::%s() Peer %02X:...: Invalid sync params\n"` y no se toca el peer.
-- `peer+192` (dword) = diferencia devuelta (µs, con el centrado modular descrito).
-- Umbral: `0x199A` = **6554 µs** (≈ 6,55 ms ≈ 1/10 de la ventana de 65,536 ms):
+- `peer+192` (dword) = diferencia devuelta (µs, con el centrado modular descrito; store en
+  `0xffffff80021b87b3`).
+- Umbral: `0x199A` = **6554 µs** (≈ 6,55 ms ≈ 1/10 de la ventana de 65,536 ms); el valor absoluto y
+  la comparación están en `0xffffff80021b87bc` (`neg`/`cmovs`) y `0xffffff80021b87c3`
+  (`cmp r15d, 199Ah`):
   - Con |shift| ≥ 6554 y bit 0 del byte `peer+1667` a 1 (estaba sincronizado): traza
     `"%s::%s() Peer ...: currAwNum = %d, currAwStartFwTime = %u, afReceiveFwTime = %u, afAwNum = %d, downCounter = %d"`
     (con `afAwNum = sn` y `downCounter = dc << 10`), traza
@@ -235,19 +242,30 @@ analizadas).
 
 - `ivars+16104` (`currAwNum`): el manejador del evento 41
   (`APPLE80211_M_AWDL_AVAILABILITY_WINDOW_START`) dentro de `reportDataPathEvents` hace
-  `ivars+16104 = *(u32*)(payload+0)`; el `AwNumber` debe ir en los 16 bits bajos `?` sobre los 16
-  bits altos. Del mismo número deriva el slot: con `n = ivars+42820` (canales de la secuencia) y
-  `s = ivars+42867`, `slot = (awNum % ((s+1)·n)) / (s+1)` con tope 15, escrito en `ivars+16128`.
-- `FwAwStartTime`: viaja **big-endian** en `payload+20` del evento 41. `monitorTimeline`
-  (`0xffffff80021e11ca`) lo lee con `_byteswap_ulong` y lo contrasta con el valor almacenado
-  (`ivars+796`, también big-endian); `logAWStart` (`0xffffff80021e1b42`) lo re-guarda convertido en
-  `ivars+42668` y emite el log canónico `"start:/Start:%u.%03u[fw:%u.%03u.%03u] sn=%03u/%02u ch=%3u
-  ... [RLFC:%u HC:%u Rmet:%u SMet:%u SLFC:%u] nC:%u R:%u O:%u NR:%u pkt %u"` (RLFC = `+37243`, HC =
-  `+37290`, Rmet = `+37294`, SMet = `+37298`, SLFC = `+37560`).
-- El escritor de `ivars+796` no se ha localizado en las funciones analizadas (barrido de
-  desplazamientos `0x31C` en la región del IO80211Family incluido) `?`; el valor que ahí reposa es
-  el que `monitorPeersTimeline` usa como arranque de la ventana actual, de modo que el driver debe
-  garantizar que el evento 41 y ese estado (quien lo alimente) describan la misma ventana.
+  `ivars+16104 = *(u32*)(payload+0)` (store en `0xffffff80021dfbb5`); el `AwNumber` debe ir en los
+  16 bits bajos `?` sobre los 16 bits altos. Del mismo número deriva el slot: con
+  `n = ivars+42820` (canales de la secuencia) y `s = ivars+42867`,
+  `slot = (awNum % ((s+1)·n)) / (s+1)` con tope 15, escrito en `ivars+16128` (`0xffffff80021e0226`).
+- `currAwStartFwTime` (`ivars+796`): **la escribe `monitorTimeline`**. Al terminar (etiqueta común
+  del final, stores en `0xffffff80021e18ee` .. `0xffffff80021e191f`) copia el payload del evento 41
+  **en bruto** a `ivars+776..811` (`payload+0` → `+776`, `payload+8` → `+784`, `payload+16` →
+  `+792`, `payload+24` → `+800`, `payload+32` → `+808`); así `FwAwStartTime` (`payload+20`,
+  **big-endian**) queda en `+796` tal cual lo entregó el driver. Los lectores le aplican
+  `_byteswap_ulong`: `monitorPeersTimeline` (`0xffffff80021b8771`: carga `[ivars+31Ch]` y `bswap`
+  en `0xffffff80021b877c`), `getAwStartFwTimeUsec` (`0xffffff8002234f5e`, lectura en
+  `0xffffff8002234f66`) y el propio `monitorTimeline` (`0xffffff80021e126a`).
+- `monitorTimeline` además valida el reporte: con el número de AW recibido y el slot calculado
+  deduce un arranque esperado (`stored + slots·16384 µs`, cada slot = 16 TU = 16384 µs, producto
+  `<< 14`) y si la desviación contra el `FwAwStartTime` recibido alcanza `0x1401` (5121 µs) registra
+  `"%s::%s() Detected AW start time inaccuracy: expetedAwStartFwTime = %u, currAwStartFwTime = %u,
+  delta = %d [usec]\n"` (línea de fuente 32402); también detecta saltos de número de AW sin cambio
+  de maestro (`"Detected AW Number discontinuity..."`). Es decir, el reloj de ventanas que el driver
+  reporta debe avanzar de forma continua y coherente con la secuencia de canales programada.
+- `logAWStart` (`0xffffff80021e1b42`) re-guarda el valor ya convertido (`byteswap(payload+20)`) en
+  `ivars+42668` (`0xffffff80021e1b8f`) y emite el log canónico
+  `"start:/Start:%u.%03u[fw:%u.%03u.%03u] sn=%03u/%02u ch=%3u ... [RLFC:%u HC:%u Rmet:%u SMet:%u
+  SLFC:%u] nC:%u R:%u O:%u NR:%u pkt %u"` (RLFC = `+37243`, HC = `+37290`, Rmet = `+37294`,
+  SMet = `+37298`, SLFC = `+37560`).
 
 ### 2.5 Qué debe rellenar un driver sin firmware AWDL
 
@@ -342,6 +360,12 @@ misma estructura cuatro posiciones después: en `parseAwdlChanSeqFromSyncParamsT
   trazas e histogramas). Un driver sin firmware debe estampar los tres tiempos de forma coherente
   con su `FwAwStartTime` del evento 41 si quiere pares sincronizados; a cero, el par queda
   permanentemente no sincronizado.
+- El estado que alimenta la línea temporal viaja por el evento 41: `reportDataPathEvents` escribe
+  `ivars+16104` (número de AW, payload+0) y `ivars+16128` (slot), y `monitorTimeline` copia el
+  payload en bruto a `ivars+776..811`, de modo que el `FwAwStartTime` big-endian de `payload+20`
+  queda en `ivars+796`, que es el valor que `monitorPeersTimeline` usa (con byteswap) como arranque
+  de la ventana actual; el reporte debe ser continuo y preciso (desviaciones ≥ 5121 µs se registran
+  como "AW start time inaccuracy").
 - De los bytes sin nombre: `+20..+23` de sync params sólo se imprimen (orden `+20, +23, +21, +22`)
   y `+20` va a `peer+1452` sin consumidor conocido; `+5..+8` de la secuencia de canales son los
   factores del periodo (`+5+1` repeticiones, `+6+1` ventanas por canal, producto ≤ 512 slots) y un
