@@ -1,0 +1,97 @@
+diff --git a/Source/AirLayer/AWDLInterface.h b/Source/AirLayer/AWDLInterface.h
+--- a/Source/AirLayer/AWDLInterface.h
++++ b/Source/AirLayer/AWDLInterface.h
+@@ -306,6 +306,8 @@
+ 	uintptr_t setMacAddress(ether_addr &) override { return kIOReturnSuccess; }
+ 	uintptr_t enable(unsigned int opts) override;
+ 	uintptr_t disable(unsigned int opts) override;
++	/* Stage 2: installs rtlAwdOutput as the ifnet output handler (cell 0x8E0). */
++	uintptr_t initBSDInterfaceParameters(ifnet_init_eparams *params, sockaddr_dl **lladdr) override;
+ 
+ #define AWDL_STUB(name, type) \
+ 	IOReturn name(type *) override { return kIOReturnUnsupported; }
+diff --git a/Source/AirLayer/AWDLInterface.cpp b/Source/AirLayer/AWDLInterface.cpp
+--- a/Source/AirLayer/AWDLInterface.cpp
++++ b/Source/AirLayer/AWDLInterface.cpp
+@@ -17,6 +17,9 @@
+ #include <IOKit/IOLib.h>
+ #include <IOKit/IOWorkLoop.h>
+ #include <net/ethernet.h>
++#include <sys/kpi_mbuf.h>
++#include <libkern/OSAtomic.h>
++#include <pexpert/pexpert.h>
+ 
+ /* airLog() of RTLAirLayer.cpp, exposed by the hook patch so these lines land
+  * in the RTLAirLayerLog array of the RTL8814Native node. */
+@@ -328,8 +331,71 @@
+ 	void *qs[3] = { _txSubQ, _rxCompQ, _txCompQ };
+ 	rtlAwdSetQueues(qs, false);
+ 	return kIOReturnSuccess;
++}
++
++/*
++ * Stage 2: own ifnet output handler.
++ *
++ * The family never exposes the ifnet output slot, and ifnet_set_output_handler
++ * does not link from a kext (Docs/AWDL_STAGE1_OUTPUT_HANDLER_LINK.md). The
++ * ifnet is born from ifnet_init_eparams, whose +0x40 field the alta copies to
++ * ifp+0x260 and ifp+0x258 (the output slot), so the handler goes in through
++ * initBSDInterfaceParameters (vtable cell 0x8E0), after the base filled the
++ * rest. Offsets are those of 25G241 (Docs/AWDL_VERSION_SENSITIVE_OFFSETS.md
++ * §2-§3); with any other build the gate keeps this layer inert.
++ *
++ * Stage 2a, this file: the handler counts the mbufs the stack hands to awdl0
++ * and, by default, forwards them to the handler the ifnet was born with
++ * (ifp+0x5A0), so the data path is the one of stage 1. Boot-arg rtlawdl_out=1
++ * drops instead. The mbuf to Skywalk packet conversion and the
++ * packetSubmission kick (Docs/AWDL_STAGE1_STAGE2_PUSH_DESIGN.md §6, steps 3-4)
++ * belong to stage 2b and need the hardware results of T3.
++ */
++#define AWDL_EPARAMS_OUTPUT     0x40    /* ifnet_init_eparams: output handler  */
++#define AWDL_IFNET_DEF_OUTPUT   0x5A0   /* ifnet: handler the ifnet was born with */
++
++typedef int (*rtl_output_fn)(struct __ifnet *, mbuf_t);
++
++static volatile SInt64 gAwdOutCount;
++static volatile SInt64 gAwdOutDropped;
++static bool gAwdOutDrop;
++
++static int rtlAwdOutput(struct __ifnet *ifp, mbuf_t m)
++{
++	SInt64 n = OSIncrementAtomic64(&gAwdOutCount) + 1;
++	if (n <= 8 || (n & 0xFF) == 0)
++		LOG("awdl: output #%lld len %lu", n, m ? (unsigned long)mbuf_pkthdr_len(m) : 0UL);
++	if (gAwdOutDrop) {
++		OSIncrementAtomic64(&gAwdOutDropped);
++		if (m)
++			mbuf_freem(m);
++		return 0;
++	}
++	rtl_output_fn def = *(rtl_output_fn *)((char *)ifp + AWDL_IFNET_DEF_OUTPUT);
++	if (!def || def == (rtl_output_fn)&rtlAwdOutput) {
++		if (m)
++			mbuf_freem(m);
++		return 0;
++	}
++	return def(ifp, m);
+ }
+ 
++uintptr_t RTLAwdInterface::initBSDInterfaceParameters(ifnet_init_eparams *params,
++                                                      sockaddr_dl **lladdr)
++{
++	uintptr_t r = IO80211SkywalkInterface::initBSDInterfaceParameters(params, lladdr);
++	if (r != 0) {
++		LOG("awdl: base initBSDInterfaceParameters 0x%lx", (unsigned long)r);
++		return r;
++	}
++	uint32_t mode = 0;
++	PE_parse_boot_argn("rtlawdl_out", &mode, sizeof(mode));
++	gAwdOutDrop = (mode == 1);
++	*(void **)((char *)params + AWDL_EPARAMS_OUTPUT) = (void *)&rtlAwdOutput;
++	LOG("awdl: output handler installed (mode %u)", mode);
++	return r;
++}
++
+ /* Publishes the interface on the controller, so getAwdlInterface() answers it.
+  * The handler calls it once the start succeeded; NULL unpublishes. */
+ IOReturn rtlAwdlPublish(IO80211Controller *ctrl, RTLAwdInterface *awdl)
