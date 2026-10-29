@@ -129,6 +129,14 @@ bool RTLAwdInterface::initWithController(RTLAirController *ctrl, const uint8_t m
  * attached: stage 1 does not move packets. Each queue joins the interface work
  * queue, the same queue IO80211VirtualInterface::start installs.
  */
+/* The completion queues run this from checkForWork when work is pending; a null
+ * action would be called unchecked. Nothing is ever pending in stage 1, so it
+ * reports zero packets completed. */
+static unsigned int rtlAwdIdleAction(OSObject *, void *, void **, unsigned int, void *)
+{
+	return 0;
+}
+
 bool RTLAwdInterface::createDatapath()
 {
 	rtl_awdl_pool_options o;
@@ -146,8 +154,8 @@ bool RTLAwdInterface::createDatapath()
 	}
 	_txSubQ = rtl_txsub_withPool(_txPool, 128, 0, this,
 	                             (void *)&RTLAwdInterface::txNoop, nullptr, 0);
-	_txCompQ = rtl_txcomp_withPool(_txPool, 128, 0, this, nullptr, nullptr, 0);
-	_rxCompQ = rtl_rxcomp_withPool(_rxPool, 128, 0, this, nullptr, nullptr, 0);
+	_txCompQ = rtl_txcomp_withPool(_txPool, 128, 0, this, (void *)&rtlAwdIdleAction, nullptr, 0);
+	_rxCompQ = rtl_rxcomp_withPool(_rxPool, 128, 0, this, (void *)&rtlAwdIdleAction, nullptr, 0);
 	if (!_txSubQ || !_txCompQ || !_rxCompQ) {
 		LOG("awdl: packet queue alloc failed");
 		return false;
