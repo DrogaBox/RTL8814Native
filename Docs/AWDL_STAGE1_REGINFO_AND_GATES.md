@@ -7,10 +7,10 @@ encontró nada.
 
 ## 1. El flag que devuelve 6: `*(iop+128h)+52h` bit 0
 
-El byte es el indicador de terminación del objeto que la interfaz guarda en `+0x128`. Se escribe en
-`IO80211VirtualInterface::init` y lo usan las rutinas de bpf, lo que identifica el objeto como el
-conjunto de recursos bpf de la interfaz. No se ha localizado el nombre de su clase (`?`; búsqueda:
-referencias al almacén `[x+128h]` en el rango `0xffffff800232f000`-`0xffffff8002334000`).
+El byte es el indicador de terminación de un bloque de estado privado de la interfaz, guardado en
+`+0x128`. No es un objeto de clase: `IO80211VirtualInterface::init` lo reserva con
+`IOMallocTypeImpl(kalloc_type_view_341)` (`0xffffff8002330630`), una reserva tipada que vuelve a cero,
+y guarda el puntero en `0xffffff8002330635`. Lo usan además las rutinas de bpf.
 
 | VA | Función | Instrucción | Efecto |
 |---|---|---|---|
@@ -23,9 +23,8 @@ referencias al almacén `[x+128h]` en el rango `0xffffff800232f000`-`0xffffff800
 
 Consecuencia: el 6 no es un rechazo de capacidad ni de rol; significa que la interfaz ya entró en
 terminación. Se pone en `terminate` y en `stop`, y no hay ningún `mov byte ptr [..+52h], 0` en el
-rango `0xffffff8002200000`-`0xffffff8002400000` que lo borre; el borrado debe ocurrir al crear el
-objeto, antes de `init` (`?`; búsqueda: instrucciones que escriben un byte en `[reg+52h]` en todas
-las funciones con `IO80211` en el nombre).
+rango `0xffffff8002200000`-`0xffffff8002400000` que lo borre: el bit empieza a cero por la reserva
+de `init` y sólo pasa a 1 en `terminate` o `stop`.
 
 Para la etapa 1: no llamar `stop` ni `terminate` sobre `awdl0` antes de que wifip2pd termine su
 secuencia; un 6 persistente en los ioctls apunta a ese bit, no al despacho.
@@ -52,16 +51,26 @@ con `"en"` por defecto, `+0x38` con la unit, `+0x44 = 46` y `+0x48`/`+0x4C = 150
 `copyRegistrationInfo` (`0xffffff8002b109f0`) aloca 0x130 bytes con `kalloc_type_view_142`
 (`0xffffff8002b45fc0`), guarda el bloque en `*(this+0x118)`, copia los 0x130 con `memmove` y después
 fija `IOMACAddress` desde `+0x108` por el índice 81 de la vtable. Los dos campos no se copian a
-ivars propios: cualquier lector tendría que ir por `*(this+0x118)+off`. `?` Ese barrido de lectores
-no se ha hecho; búsqueda ejecutada: decompilación completa de las dos funciones.
+ivars propios: cualquier lector tendría que ir por `*(this+0x118)+off`.
+
+Barrido de lectores: en todas las funciones `IOSkywalk*`/`IO80211*` de
+`0xffffff8002200000`-`0xffffff8002400000` y `0xffffff8002a00000`-`0xffffff8002c00000`, una carga de
+`[reg+118h]` seguida en 10 instrucciones de una lectura de `[reg+10h]` o `[reg+40h]` sólo aparece en
+`IOSkywalkEthernetInterface::free` (`0xffffff8002b10896`) y en
+`IOSkywalkEthernetInterface::ioctl_multicast` (`0xffffff8002b1127c`, `0xffffff8002b112a7`,
+`0xffffff8002b112c6`, `0xffffff8002b1131a`, `0xffffff8002b1134b`). En esos dos métodos el `+0x10`
+leído es el lock del objeto, no el campo del `RegistrationInfo`.
+
+`?` Ningún lector de `RegInfo+0x10` ni de `RegInfo+0x40` ha aparecido; búsqueda ejecutada: el barrido
+descrito, con ventana de 10 instrucciones y offsets `+8`, `+0xC`, `+0x10` y `+0x40`.
 
 ## 3. `RegInfo+0x10`
 
 El valor de partida es 0: `initRegistrationInfo` lo deja así por el `bzero` y el camino de rol 6
 documentado en `AWDL_INTERFACE_BIRTH.md` §2.2 no lo toca. El camino STA escribe 1. Tampoco aparece
-lectura de `+0x10` en las cuatro funciones de §2. `?` El significado del campo sigue sin
-identificar; búsqueda ejecutada: `initRegistrationInfo`, `copyRegistrationInfo` y las cuatro
-funciones de registro.
+lectura de `+0x10` en las cuatro funciones de §2 ni en el barrido de §2. `?` El significado del campo
+sigue sin identificar; búsqueda ejecutada: `initRegistrationInfo`, `copyRegistrationInfo`, las cuatro
+funciones de registro y el barrido de lectores de `*(this+0x118)`.
 
 ## 4. `ifm_current`
 
@@ -74,9 +83,18 @@ Del cuerpo decompilado se fijan además dos detalles: el descriptor de medios es
 y su recuento en `+0x14`; la tabla se rellena por el slot `+0x948`; y la copia al `ifmediareq` del
 usuario se hace bajo el lock de `*(this+0xC0)+0x10`.
 
-`?` Qué entrada de la tabla acaba en `ifm_current` (`ifmediareq+0x10`) y qué escritores tiene el
-ivar después del alta no se ha cerrado. Búsqueda ejecutada: decompilación completa de `ioctl_gifmedia`;
-las únicas apariciones de `+0x10` en el cuerpo son el lock, no el campo del usuario.
+El slot `+0x948` es `getSupportedMediaArray(unsigned *, unsigned *)`. En
+`__ZTV23IO80211SkywalkInterface` (`0xffffff800246af00`) y `__ZTV23IO80211VirtualInterface`
+(`0xffffff8002472b78`) apunta a `IO80211SkywalkInterface::getSupportedMediaArray` (`0xffffff80022f8e5e`);
+en `__ZTV25IOSkywalkNetworkInterface` (`0xffffff8002b3d2b8`) a la versión base
+`IOSkywalkNetworkInterface::getSupportedMediaArray` (`0xffffff8002b0b5f2`). El cuerpo de `0xffffff80022f8e5e` pide al core
+(`*(this+0x120)+0x30`) la colección por su slot `+0x890`, la recorre con `OSCollectionIterator` y
+escribe en la tabla el valor que devuelve el slot `+0x120` de cada objeto de la colección.
+
+Los medios no salen del `RegistrationInfo` ni de un ivar por interfaz: salen de la colección de
+medios del core. `?` Qué entrada de esa colección acaba en `ifm_current` (`ifmediareq+0x10`) y qué
+escritores tiene la colección después del alta no se ha cerrado; búsqueda ejecutada: decompilación de
+`ioctl_gifmedia` y de `getSupportedMediaArray` (`0xffffff80022f8e5e`).
 
 ## 5. Gate del 94
 
@@ -117,17 +135,9 @@ ejecuta `ioctlHandler` y `processBSDCommand` dentro de `runAction`, con ese gate
 | Punto | Búsqueda | Resultado |
 |---|---|---|
 | flag `+0x52` | byte ops con carga previa de `[x+128h]` en funciones `IO80211*` | 5 sitios, tabla de §1 |
-| clase de `+0x128` | referencias a `[x+128h]` en `0xffffff800232f000`-`0xffffff8002334000` | sólo bpf; clase sin nombre (`?`) |
 | lectores de `RegInfo` | pseudocódigo de las 4 funciones de registro | sin lecturas de `+0x10`/`+0x40` |
-| medio actual | `ioctl_gifmedia` completo | tabla de medios vía slot `+0x948`, lock en `+0x10` del descriptor; entrada actual sin fijar (`?`) |
-| `RegInfo+0x10`/`+0x40` | `initRegistrationInfo` + `copyRegistrationInfo` | ambos quedan a 0 en el init; copia íntegra a `*(this+0x118)` |
+| medio actual | `getSupportedMediaArray` de `+0x948` | tabla desde la colección de medios del core; entrada actual sin fijar (`?`) |
+| `RegInfo+0x10`/`+0x40` | barrido de lectores sobre `*(this+0x118)` | sólo `free` (`0xffffff8002b10896`) y `ioctl_multicast` (`0xffffff8002b1127c` …), y leen un lock; sin lectores (`?`) |
+| slot `+0x948` | vtables de Skywalk/Virtual/IOSkywalkNetworkInterface | `getSupportedMediaArray` (`0xffffff80022f8e5e`, `0xffffff8002b0b5f2`) |
+| bloque de `+0x128` | instrucciones previas a `0xffffff8002330635` | `IOMallocTypeImpl(kalloc_type_view_341)` en `0xffffff8002330630`: struct privado, no clase |
 | objeto de `client+0x90` | almacén en `IOSkywalkBSDClient::start` + vtable `+0x1C8` | `IOCommandGate` (`0xffffff8002afd443`), slot `+0x1C8` = `runAction` |
-
-## 8. Qué cambió respecto de `9f2be38`
-
-| Punto | Antes | Ahora |
-|---|---|---|
-| `RegInfo+0x10`/`+0x40` | sin recorrer | `initRegistrationInfo` los deja a cero y `copyRegistrationInfo` copia el bloque entero a `*(this+0x118)`; no hay ivars propios |
-| `ioctl_gifmedia` | sólo el slot `+0x948` | descriptor en `*(this+0xC0)`, recuento en `+0x14`, copia bajo `lck_mtx` |
-| `client+0x90` | sin escritor | `IOCommandGate` creado en `IOSkywalkBSDClient::start` (`0xffffff8002afd443`); `+0x1C8` = `runAction` |
-| gate de `en2` | abierto | `runAction` del `IOCommandGate` del cliente BSD; `performGatedCommandIOCTL` no toma gate propio |
