@@ -289,17 +289,36 @@ void RTLAwdInterface::free()
 	IO80211VirtualInterface::free();
 }
 
-/* The family brings the interface up and down through these; stage 1 only
- * records them and leaves the queues alone (nothing is transmitted). */
+/* The family brings the interface up and down through these. The queues are
+ * born disabled (IOSkywalkPacketQueue::initWithPool clears IOEventSource::
+ * enabled) and packetSubmission refuses a disabled queue, so enable() turns
+ * them on, as the Broadcom enableDatapath does, and disable() turns them off. */
+static void rtlAwdSetQueues(void *const qs[3], bool on)
+{
+	for (int i = 0; i < 3; i++) {
+		IOEventSource *q = (IOEventSource *)qs[i];
+		if (!q)
+			continue;
+		if (on)
+			q->enable();
+		else
+			q->disable();
+	}
+}
+
 uintptr_t RTLAwdInterface::enable(unsigned int opts)
 {
 	LOG("awdl: enable 0x%x", opts);
+	void *qs[3] = { _txCompQ, _rxCompQ, _txSubQ };
+	rtlAwdSetQueues(qs, true);
 	return kIOReturnSuccess;
 }
 
 uintptr_t RTLAwdInterface::disable(unsigned int opts)
 {
 	LOG("awdl: disable 0x%x", opts);
+	void *qs[3] = { _txSubQ, _rxCompQ, _txCompQ };
+	rtlAwdSetQueues(qs, false);
 	return kIOReturnSuccess;
 }
 
