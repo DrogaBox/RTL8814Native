@@ -1,0 +1,228 @@
+diff --git a/Source/AirLayer/RTLAirLayer.hpp b/Source/AirLayer/RTLAirLayer.hpp
+--- a/Source/AirLayer/RTLAirLayer.hpp
++++ b/Source/AirLayer/RTLAirLayer.hpp
+@@ -27,6 +27,7 @@
+ #include "RTLRadioABI.h"
+ 
+ class RTLAirController;
++class RTLAwdInterface;
+ 
+ /* Matches RTL8814Native and publishes the IO80211WorkQueue as its work loop;
+  * RTLAirController matches on it. IONetworkController::start calls
+@@ -95,6 +96,8 @@
+ 	IOReturn getWCL_LOW_LATENCY_INFO(apple80211_low_latency_info *info) override;
+ 	IOReturn getWCL_EXTENDED_BSS_INFO(apple80211_extended_bss_info *info) override;
+ 	IOReturn setWCL_UPDATE_FAST_LANE(apple80211_fastlane *fl) override;
++	/* VIRTUAL_IF_CREATE (type 94, slot 556): role 6 creates awdl0. */
++	IOReturn setVIRTUAL_IF_CREATE(apple80211_virt_if_create_data *req) override;
+ 	uintptr_t setMacAddress(mloAddrArray &addrs) override;
+ 
+ 	/* getters */
+@@ -175,6 +178,11 @@
+ 	bool dataPathEnabled() const { return _dataHooked; }
+ 	RTLAirInterface *staInterface() const { return _iface; }
+ 	bool joinAllowed() const { return _armed >= 2; }
++	/* AWDL stage 1: inert unless the boot-arg rtlawdl is set. */
++	bool awdlAllowed() const { return _awdlArmed; }
++	RTLAwdInterface *awdlInterface() const { return _awdl; }
++	IOReturn createAwdlInterface(const uint8_t mac[6], char out[16]);
++	void destroyAwdlInterface();
+ 	/* Radio status, but only while this layer owns the link: the radio may be
+ 	 * linked through en2 alone, which WCL must not see as an association. */
+ 	IOReturn linkStatus(struct rtl_radio_status *st);
+@@ -184,6 +192,9 @@
+ private:
+ 	IOService *_radio;
+ 	RTLAirInterface *_iface;
++	RTLAwdInterface *_awdl;        /* role 6, created by VIRTUAL_IF_CREATE */
++	IOLock *_awdlLock;
++	bool _awdlArmed;               /* boot-arg rtlawdl */
+ 	uint8_t _mac[6];
+ 	uint32_t _power;
+ 	uint32_t _armed;                /* boot-arg rtlair: 1 control plane, 2 + data path */
+diff --git a/Source/AirLayer/RTLAirLayer.cpp b/Source/AirLayer/RTLAirLayer.cpp
+--- a/Source/AirLayer/RTLAirLayer.cpp
++++ b/Source/AirLayer/RTLAirLayer.cpp
+@@ -14,6 +14,7 @@
+ #include <pexpert/pexpert.h>
+ #include <sys/errno.h>
+ #include <net/ethernet.h>
++#include "AWDLInterface.h"
+ 
+ /*
+  * IOLog does not reach `log show` on this system and dmesg rotates within
+@@ -56,6 +57,18 @@
+ 
+ #define LOG(fmt, ...) airLog(fmt, ##__VA_ARGS__)
+ 
++/* Logger of this unit, for AWDLInterface.cpp: same buffer, same ring. */
++void rtlAirLog(const char *fmt, ...) __printflike(1, 2);
++void rtlAirLog(const char *fmt, ...)
++{
++	char buf[192];
++	va_list ap;
++	va_start(ap, fmt);
++	vsnprintf(buf, sizeof(buf), fmt, ap);
++	va_end(ap);
++	airLog("%s", buf);
++}
++
+ /* Refuses to start on a macOS whose IO80211 / Skywalk structure or build was
+  * not validated (airGateOpen). */
+ #include "VersionGate.h"
+@@ -554,6 +567,26 @@
+ 	RTLAirInterfaceStubs::free();
+ }
+ 
++/* ---- AWDL (stage 1) ---- */
++
++/*
++ * VIRTUAL_IF_CREATE (type 94, slot 556). Only the AWDL role gets past this
++ * point; every other role keeps the answer of the generated stub, so a
++ * system without rtlawdl behaves exactly as before.
++ */
++IOReturn RTLAirInterface::setVIRTUAL_IF_CREATE(apple80211_virt_if_create_data *req)
++{
++	if (!req)
++		return kIOReturnBadArgument;
++	if (req->role != 6) {
++		LOG("awdl: invalid role %u", req->role);
++		return req->role == 7 ? kIOReturnUnsupported : (IOReturn)0xE0000001;
++	}
++	if (!_ctrl->awdlAllowed())
++		return kIOReturnUnsupported;
++	return _ctrl->createAwdlInterface(req->mac, req->ifname);
++}
++
+ /* ---- WCL requests ---- */
+ 
+ /* apple80211ScanRequest: +88 channel entries (12 B), +84 count. The radio
+@@ -1416,7 +1449,11 @@
+ 	PE_parse_boot_argn("rtlairstep", &step, sizeof(step));
+ 	/* Everything allocated before IO80211Controller::start is released by free(). */
+ 	_armed = armed;
+-	LOG("start 0.32, rtlair=%u rtlairstep=%u", armed, step);
++	/* AWDL stage 1: the 94 handler creates awdl0 only with rtlawdl set. */
++	uint32_t awdl = 0;
++	PE_parse_boot_argn("rtlawdl", &awdl, sizeof(awdl));
++	_awdlArmed = awdl != 0;
++	LOG("start 0.32, rtlair=%u rtlairstep=%u rtlawdl=%u", armed, step, awdl);
+ 	if (step == 1) {
+ 		LOG("rtlairstep 1: nub only");
+ 		return false;
+@@ -1444,11 +1481,13 @@
+ 		_mac[0] |= 0x02;
+ 	_lock = IOLockAlloc();
+ 	_rxLock = IOLockAlloc();
++	_awdlLock = IOLockAlloc();
+ 	_poll = thread_call_allocate(&RTLAirController::pollEntry, this);
+ 	_rxDrain = thread_call_allocate(&RTLAirController::rxDrainEntry, this);
+ 	_scan = (struct rtl_radio_bss *)IOMalloc(sizeof(*_scan) * kScanMax);
+ 	_regInfo = (uint8_t *)IOMalloc(REGINFO_SIZE);
+-	if (!_symTx || !_lock || !_rxLock || !_poll || !_rxDrain || !_scan || !_regInfo) {
++	if (!_symTx || !_lock || !_rxLock || !_awdlLock || !_poll || !_rxDrain ||
++	    !_scan || !_regInfo) {
+ 		LOG("allocation failed");
+ 		_radio = nullptr;
+ 		return false;
+@@ -1546,6 +1585,7 @@
+ 
+ void RTLAirController::stop(IOService *provider)
+ {
++	destroyAwdlInterface();
+ 	quiesce();
+ 	if (_iface) {
+ 		_iface->terminate();
+@@ -1580,6 +1620,10 @@
+ 	if (_rxLock) {
+ 		IOLockFree(_rxLock);
+ 		_rxLock = nullptr;
++	}
++	if (_awdlLock) {
++		IOLockFree(_awdlLock);
++		_awdlLock = nullptr;
+ 	}
+ 	OSSafeReleaseNULL(_symTx);
+ 	OSSafeReleaseNULL(_ioFault);
+@@ -1720,7 +1764,61 @@
+ 	if (!addr)
+ 		return kIOReturnBadArgument;
+ 	memcpy(addr->bytes, _mac, 6);
++	return kIOReturnSuccess;
++}
++
++/*
++ * awdl0 (role 6). Created, started and published under _awdlLock: a second
++ * 94 for the same role answers EEXIST with the name of the interface that
++ * is already there.
++ */
++IOReturn RTLAirController::createAwdlInterface(const uint8_t mac[6], char out[16])
++{
++	if (!_awdlLock)
++		return kIOReturnNotReady;
++	IOLockLock(_awdlLock);
++	if (_awdl) {
++		strlcpy(out, _awdl->bsdName(), 16);
++		IOLockUnlock(_awdlLock);
++		return (IOReturn)EEXIST;
++	}
++	RTLAwdInterface *awdl = OSTypeAlloc(RTLAwdInterface);
++	if (!awdl) {
++		IOLockUnlock(_awdlLock);
++		LOG("awdl: alloc failed");
++		return kIOReturnNoMemory;
++	}
++	if (!awdl->initWithController(this, mac) || !awdl->startWithRegistration(this)) {
++		LOG("awdl: init failed");
++		awdl->terminate();
++		awdl->release();
++		IOLockUnlock(_awdlLock);
++		return (IOReturn)0xE00002BC;
++	}
++	_awdl = awdl;
++	rtlAwdlPublish(this, awdl);
++	strlcpy(out, awdl->bsdName(), 16);
++	IOLockUnlock(_awdlLock);
++	LOG("awdl: created %s", out);
+ 	return kIOReturnSuccess;
++}
++
++/* Unpublishes and drops awdl0. Idempotent: stop() and a failed start both
++ * end here, and nothing is left pointing at the released object. */
++void RTLAirController::destroyAwdlInterface()
++{
++	if (!_awdlLock)
++		return;
++	IOLockLock(_awdlLock);
++	RTLAwdInterface *awdl = _awdl;
++	_awdl = nullptr;
++	if (awdl) {
++		rtlAwdlPublish(this, nullptr);
++		awdl->terminate();
++		awdl->release();
++		LOG("awdl: teardown");
++	}
++	IOLockUnlock(_awdlLock);
+ }
+ 
+ bool RTLAirController::isCommandProhibited(int)
+diff --git a/build_airlayer.sh b/build_airlayer.sh
+--- a/build_airlayer.sh
++++ b/build_airlayer.sh
+@@ -37,6 +37,7 @@
+ # builds from Tools/airlayer_builds.txt).
+ python3 -I Tools/airlayer_gate.py gen
+ clang++ $CXXFLAGS -c Source/AirLayer/RTLAirLayer.cpp -o "$OBJ/RTLAirLayer.o"
++clang++ $CXXFLAGS -c Source/AirLayer/AWDLInterface.cpp -o "$OBJ/AWDLInterface.o"
+ 
+ cat << KMOD_EOF > "$OBJ/info.c"
+ #include <mach/mach_types.h>
+@@ -63,7 +64,7 @@
+ ld -kext -arch "$ARCH" \
+    -platform_version macos "$SDK_VER" "$SDK_VER" \
+    -o "$KEXT/Contents/MacOS/RTL8814AirLayer" \
+-   "$OBJ/info.o" "$OBJ/RTLAirLayer.o" \
++   "$OBJ/info.o" "$OBJ/RTLAirLayer.o" "$OBJ/AWDLInterface.o" \
+    -L"$SDK/usr/lib" -lkmod $KEXT_LIB
+ 
+ cp Source/AirLayer/Info.plist "$KEXT/Contents/Info.plist"
