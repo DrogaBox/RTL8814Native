@@ -158,9 +158,14 @@ escritura visible en esta init además de los ivars (`?` uso interno del hint).
    `IO80211MacAddressAgent::withOptions` con la MAC de ivars+228; property condicional
    `IOPMResetPowerStateOnWake` si el controlador la tiene.
 3. De vuelta en `Proxi::start`: resuelve el `AppleBCMWLANBusSkywalk` (`safeMetaCast` en
-   `0xffffff8001729499`), construye el array de `IOSkywalkPacketQueue` (cola base +32, queues a
-   ivars+0x3F0/+0x3F8/+0x400/+0x428/+0x430/+0x438, contados por `ivars+0x3B1` = 4 desde la init) y
-   los registra con el bus (slot +0x140 de `r14`), guarda los queue-id en ivars+0x440..
+   `0xffffff8001729499`, guardado en ivars+0x3E0) y lo registra con el array de parámetros que
+   incluye los punteros a las `IOSkywalkPacketQueue` vía su slot +0x118
+   (`call [rax+0x118]` en `0xffffff800172958b`; fallo → log
+   `"Failed to register interface with bus interface"`); obtiene además la `IO80211WorkQueue`
+   compartida del core (slot +0xC68, call en `0xffffff8001729459`, guardada en ivars+0x450 — la
+   misma cola que la `start` de la base cachea en ivars+56) y registra en ella cada cola mediante
+   el slot +0x140 de la work queue (`0xffffff8001729672`–`0xffffff80017296f4`), guardando los
+   queue-id devueltos en ivars+0x440... (indexados por ivars+0x3B4).
 4. Si el `RegInfo` vino (el camino de nacimiento), escribe `RegInfo+0x48 = 0x59400000594`
    (`0xffffff80017296ff`–`0xffffff8001729709`) y llama
    **`IOSkywalkEthernetInterface::registerEthernetInterface(this, RegInfo, queues, nqueues+2, txPool, rxPool, 0)`**
@@ -468,9 +473,9 @@ campos restantes los usa el resto de herramientas).
   parámetro nombre (`"awdl"`) en la cadena de inits; el descarte exhaustivo de escrituras de
   properties sobre el padre; el `IOProviderClass` (no escrito en runtime en la cadena; personality
   del kext `?`); la dirección exacta del `setProperty("IOInterfaceType")` y del `registerService(0)`
-  final del BSD client (función decompilada, call sites no disassembledos individualmente); la
+  final del BSD client (función decompilada, call sites no desensamblados individualmente); la
   llamada `slot +0x910` dentro de `ioctlHandler` citada del decompilado (call site exacto no
-  disassembledo).
+  desensamblado).
 - Las direcciones de los slots de vtable (p. ej. +0x5B0 `registerService`, +0x670 `attach`,
   +0x8E8 `prepareBSDInterface`, +0x8F8 `getBSDInterface`, +0x938 `setRunningState`, +0x940
   `handleChosenMedia`, +0x948 `getSupportedMediaArray`, +0xCF8 getMACAddress) salen de los

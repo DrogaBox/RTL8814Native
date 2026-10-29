@@ -92,9 +92,9 @@ Cadena de entrega, verificada descompilando cada eslabón:
 - Canal paralelo kev (notificaciones de interfaz a agentes): función global
   `IO80211InterfacePostMessage(ifname, id, data, len, kev_msg*)` (`0xffffff800229b746`)
   arma `{0x600000001, 1, id, 16, ifname, len|ptr, ctrl}` y llama
-  `IO80211QueueCall::kev_post_msg` (`0xffffff800236a11a`); rechaza len == 0 con data
-  NULL y len ≥ 0xFF1 (`"IO80211InterfacePostMessage: bad message data or message too
-  long\n"`), y excluye los ids 12 y 58 de la notificación.
+  `IO80211QueueCall::kev_post_msg` (`0xffffff800236a11a`); solo notifica si
+  `len != 0` y (`len < 0xFF1` o `data == NULL`) — `"IO80211InterfacePostMessage: bad
+  message data or message too long\n"` — y nunca los ids 12 y 58.
 
 ### 1.2 Canal P2P: reenvío de eventos de infra a los managers P2P
 
@@ -105,8 +105,10 @@ LQMData 224–233, …) y al final llama siempre a
 `IO80211InfraInterface::routeToP2PInterface(id, data, len)` (`0xffffff800236364e`).
 Ese router **filtra por whitelist** y reenvía a dos consumidores:
 
-- `IO80211NANPeerManager::postMessage` (`0xffffff80022adfce`) → `postMessageSync`
-  sobre la interfaz NAN (ivar `+1376` del manager).
+- El manager NAN (meta-cast a `IO80211AWDLPeerManager`/NAN y llamada por vtable,
+  slot `?` en `0xffffff800236364e`); el patrón coincide con
+  `IO80211NANPeerManager::postMessage` (`0xffffff80022adfce`), que hace
+  `postMessageSync` sobre la interfaz NAN (ivar `+1376` del manager).
 - `IO80211AWDLPeerManager::reportDataPathEvents(id, data, len)`
   (`0xffffff80021dd8f4`, 0x322a B, resuelto por la vtable del manager `__ZTV22…` en
   `0xffffff800245a858`, vptr+664) — consumidor AWDL de los eventos reenviados.
@@ -124,7 +126,9 @@ esta vía.
   la llamada virtual `postMessage` (slot vptr+0xB18) con **id 48** y flag WCL=0 sobre
   la interfaz del manager (ivar `+1376` = awdl0). Incrementa el contador
   `ivars->fAWDLActionFrames` (reporter key `0x4966416650325064` = "IfAfP2Pd"). El
-  fallido se loguea `"Could not allocate AR BUFFER for AF message"` (`0xffffff800220fd52`).
+  fallo de asignación se loguea con `"-------- %s[%d] ------- Could not allocate AR
+  BUFFER for AF message"` (IOLog en el camino de error de `0xffffff800220fc2c`,
+  sitio exacto `?`).
 - **Canal BPF**: `AppleBCMWLANProximityInterface::handleEvent` (fw id 75/98.1) →
   `handleActionFrame_rx` (`0xffffff800171795c`): reconstruye el frame en un buffer del
   pool de management (`getMgmtFramePool`), le antepone una cabecera de 72 B (0x48)
