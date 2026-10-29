@@ -47,6 +47,7 @@ Convención de estado:
 | [AWDL_LLW_COMPANION.md](AWDL_LLW_COMPANION.md) | Companion `llw0` (tipo 293): emisión, consecuencias del fallo y veredicto: prescindible en etapa 1 | Cerrado y verificado para etapa 1; el campo `code` del payload queda en `?` (tabla §3) |
 | [AWDL_EVENTS.md](AWDL_EVENTS.md) | Eventos kernel→userspace sobre `awdl0`, canales de entrega y qué consume el daemon | Cerrado y verificado |
 | [AWDL_STAGE3_EVENT_EMITTERS.md](AWDL_STAGE3_EVENT_EMITTERS.md) | Emisores de cada evento AWDL, ruta desde el kext hasta el daemon (`postMessage` slot `0xB18`), estado que consume `wifip2pd` y mínimos de la etapa 3 | Cabezas de función y sitios del 46/47 verificados en IDA; semántica del payload del 47 y consumo por otros clientes `?` |
+| [AWDL_STAGE4_LLW_CLOSURE.md](AWDL_STAGE4_LLW_CLOSURE.md) | Cierre de los puntos abiertos de la etapa 4: ioctls 130/131 (socket IPv6, no apple80211), ausencia de `op = 0` en `wifip2pd`, ruta de destrucción en el kernel y clase `RTLLlwInterface` mínima | Cabezas de función, rutas del 293 y de destrucción, constantes del `processBSDCommand` LL y sitios de `ioctl` del daemon verificados en IDA; puente del 131 hasta `processBSDCommand` y captura del error por el daemon `?` |
 | [AWDL_REQUEST_ISSUERS.md](AWDL_REQUEST_ISSUERS.md) | Quién emite cada request AWDL: el `IO80211AWDLPeerManager` del kernel y `IO80211.framework`; airportd el resto | Cerrado y verificado |
 
 ## 3. Protocolo en el aire, PeerManager, firmware y hardware RTL8814
