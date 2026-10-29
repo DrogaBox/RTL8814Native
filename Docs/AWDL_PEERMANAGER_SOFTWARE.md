@@ -140,7 +140,7 @@ en `+37576`: 100 entradas de 48 B `{valid, root MAC +1, parent MAC +7, RLFC u32 
    = selfMetric.
 3. `runParentElection` (`0xffffff80021ec0e4`) recorre la tabla de peers (hash en ivars base
    `+1344`, cabecera `+56`, contador `+36`) y elige padre comparando, en orden: mayor rootMetric
-   (peer ivars `+579`); a igualdad, menor electionId (`+559`, memcmp de 6 B); a igualdad, mayor
+   (peer ivars `+579`); a igualdad, MAC raíz menor (`+559`, memcmp de 6 B; ver `AWDL_OPEN_QUESTIONS_1.md` §1.3); a igualdad, mayor
    rootLFC (`+571`); a igualdad, menor hopCount (`+575`). Si el propio nodo gana ("I am Root
    Node"), se queda como maestro: hopCount 0 y selfMetric como rootMetric.
 4. `isPeerQualifiedForElection` (`0xffffff80021eacc0`): AF del par hace menos de 3000 ms (peer
@@ -245,7 +245,7 @@ de maestro se aplicó (§5).
   `initWithAddressAndManager` (`0xffffff80021a8e1e`) → `enqueuePeerInOrder`.
   Baja: `removePeer` (`0xffffff800221721c`, celda 79), `removeAllPeers` (`0xffffff800222be56`,
   celda 80), caché `addPeerToCache` (`0xffffff800222dbb2`).
-- El ivar del par (QWORD `+0x20`) acumula lo recibido: electionId de 6 B `+559`, rootLFC `+571`,
+- El ivar del par (QWORD `+0x20`) acumula lo recibido: MAC raíz `+559`, rootLFC `+571`,
   hopCount `+575`, rootMetric `+579`, selfMetric `+583`, electionId u32 `+587`, modo de maestro
   `+120`, hora del último AF `+784`, canal `+716`, presencia `+748`, campos de Sync Params
   `+756..+904`. Todo lo rellena `actionFrameReport`.
