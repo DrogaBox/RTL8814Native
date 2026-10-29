@@ -57,14 +57,14 @@ etapa 2 (`AWDL_STAGE1_OUTPUT_HANDLER_LINK.md` §5.3).
 
 | Campo | 25G241 | Verificación (cabeza) | Patrón (✓/(d)) | Uso | Riesgo |
 |---|---|---|---|---|---|
-| `+0x00` versión = 2 | 2 | `ifnet_allocate_extended` `0xffffff800063f3f0` (`0xffffff800063f432`) e `initBSDInterfaceParameters` (`0xffffff8002b10bcf`) | ✓ `83 3F 02` y ✓ `81 7E 04 58 01 00 00` (len, `0xffffff8002b10be8`) | gate de todo el struct | el override deja de correr (feature perdida) |
-| `+0x04` tamaño = `0x158` | 0x158 | ídem (`0xffffff800063f440`: `>= 0x158`; initBSD: `== 0x158`) | ✓ `81 7F 04 58 01 00 00` | gate | ídem |
+| `+0x00` versión = 2 | 2 | `ifnet_allocate_extended` `0xffffff800063f3f0` (`0xffffff800063f432`) e `initBSDInterfaceParameters` (`0xffffff8002b10bcf`) | ✓ `83 3F 02` (alloc, sobre rdi) / ✓ `83 3E 02` (initBSD, sobre rsi) | gate de todo el struct | el override deja de correr (feature perdida) |
+| `+0x04` tamaño = `0x158` | 0x158 | ídem (`0xffffff800063f440`: `>= 0x158`; initBSD `0xffffff8002b10be8`: `== 0x158`) | ✓ `81 7F 04 58 01 00 00` (alloc) / ✓ `81 7E 04 58 01 00 00` (initBSD) | gate | ídem |
 | `+0x08` flags | 0x80000000 | alloc: `& 3 == 0` (pseudocódigo §1.3 de LIFECYCLE) | (d) sin patrón | flags del alta | rechazo visible |
 | `+0x38` `if_output` del driver | `IOSkywalkNetworkBSDClient::if_output` | `start` `0xffffff8002aff562` (`0xffffff8002affa54`); **el alta lo sustituye** (`0xffffff800063f882`) | (d) sin patrón | salida inicial | nulo: siempre se sustituye |
 | `+0x40` `output` opcional | 0 | `ifnet_allocate_extended`: `[ifp+0x260] = [params+0x40]` (`0xffffff800063f890`) | ✓ `49 89 85 60 02 00 00` (`0xffffff800063f890`) | vía A de la etapa 2 | **silencio**: el output propio no se instala |
 | `+0x48` (exigido a 0) | 0 | alloc del proveedor `0xffffff80009a4140` (`0xffffff80009a41f4`) | (d) sin patrón | gate del alta | rechazo visible |
 | `+0x144` tx data offset (u16) | RegInfo+0x3C | `start` escribe en `0xffffff8002affa94` (desplazamiento `+0x13C` sobre r13 = base+8); `ifnet_allocate_extended` lee en `0xffffff800063f626` | ✓ `66 41 89 ?? 3C 01 00 00` (sesgo +8) y ✓ `44 0F B7 ?? 44 01 00 00` (`0xffffff800063f626`) | headroom de TX | **silencio**: `ifp+0x58C` a 0 |
-| `+0x146` (u16 hermano) | RegInfo+0x3E | ídem (`0xffffff800063f62e`) | ✓ `44 0F B7 AF 46 01 00 00` | segundo offset | silencio |
+| `+0x146` (u16 hermano) | RegInfo+0x3E | ídem (`0xffffff800063f62e`) | ✓ `0F B7 ?? 46 01 00 00` (`0f b7 87 46 01 00 00`, sin REX: el destino es eax) | segundo offset | silencio |
 | `+0x148` (u32) | `[cliente+0x130]` o 300/0 | ídem (`0xffffff800063f639`) | (d) sin patrón | tercer campo del trío | silencio |
 
 ## 3. `ifnet` (struct BSD; el driver no lo toca en etapa 1, la etapa 2 sí)
@@ -77,7 +77,7 @@ Para la etapa 1 estos offsets sólo sustentan predicciones de T3; para la etapa 
 | `+0x78` `if_refflags` (u32, `& 7 == 2`) | — | `ifnet_enqueue_pkt` `0xffffff80005e65d0` | ✓ `8B ?? 78 83 E0 07 83 F8 02` (`0xffffff80005e65f5`–`0xffffff80005e65fe`) | gate de encolado (T3: sin esto el ND/RS no entra) | **análisis/etapa 2**: ruta TX no arranca |
 | `+0xBE` `if_flags` (u16) | IFF_UP | `ifnet_flags` `0xffffff8000640390` (u16 en `+190`, `AWDL_STAGE1_IFUP_PATH.md` §8); gate `test byte [rdi+0BEh], 1` (`0xffffff80005e6600`) | ✓ `F6 ?? BE 00 00 00 01` | `SIOCSIFFLAGS` → subida | análisis |
 | `+0xC0` `if_eflags` | IFEF_TXSTART = 0x80 | `ifnet_allocate_extended` `0xffffff800063f3f0` (`0xffffff800063fc0a`); gates de `sub_FFFFFF80005E6110` (`0xffffff80005e65ec`, `0xffffff80005e61b2`) | ✓ `F0 41 81 ?? C0 00 00 00 80 00 00 00` (escritura); ✓ `F6 ?? C0 00 00 00 80` (lecturas) | disparo del hilo de arranque TX | análisis/etapa 2 |
-| `+0xC3` (byte, `& 4` IFEF_SKYWALK_NATIVE) | — | hilo `ifnet_start_%s` (`0xffffff80005ea8a6`, cita de TXPUSH §8; bytes del test no leídos) | (d) `F6 87 C3 00 00 00 04` | nombre del doorbell | análisis |
+| `+0xC3` (byte, `& 4` IFEF_SKYWALK_NATIVE) | — | hilo `ifnet_start_%s` (test en `0xffffff80005ea8bd`; la cita `0xffffff80005ea8a6` de TXPUSH §8 apunta al `lea` del literal vecino) | ✓ `F6 83 C3 00 00 00 04` | nombre del doorbell | análisis |
 | `+0x248` `if_output` (entrada de la pila) | `_dlil_output_handler` | `ifnet_allocate_extended` (`0xffffff800063fc4f`–`0xffffff800063fc56`) | ✓ `49 89 8D 48 02 00 00` (tienda tras el `lea`) | entrada TX de la pila (`AWDL_STAGE1_OUTPUT_HANDLER_LINK.md` §3) | **corrupción silenciosa** si la etapa 2 lo escribe mal |
 | `+0x250` `if_start` | `_ifp_if_start` | ídem (`0xffffff800063f89d`) | ✓ `4D 89 BD 50 02 00 00` | purga del hilo de arranque | **pánico** (llamada a puntero equivocado) si la etapa 2 lo corrompe |
 | `+0x258` `output_handler` | `_ifnet_enqueue` | `_dlil_output_handler` `0xffffff80005ef500` (`0xffffff80005ef504`, `jmp rax` en `+8`); `ifnet_set_output_handler` `0xffffff80005ef540` (`lock cmpxchg` en `0xffffff80005ef54d`) | ✓ `48 8B ?? 58 02 00 00` ; ✓ `F0 48 0F B1 ?? 58 02 00 00` | destino de todo el TX de la pila; objetivo de la etapa 2 | **corrupción silenciosa / pánico** |
@@ -131,8 +131,8 @@ desplazamiento de 32 bits: `FF /2` (`FF 90+rm`, o `41 FF 94 24` con SIB si la ba
 | `+0x5D8` | `IOSkywalkInterface::stop` (base) | `IOSkywalkNetworkInterface::stop` (`0xffffff8002b09e96`, `jmp`) | ✓ `FF ?? D8 05 00 00` | cola del `stop` | análisis |
 | `+0x1D8` | `OSOrderedSet::lastObject` | `deregisterNetworkInterface` (`0xffffff8002b09ec9`) | ✓ `FF ?? D8 01 00 00` | retiro del enlace | análisis |
 | `+0x1F8` | `OSOrderedSet::getObject` | `start` del cliente (`0xffffff8002aff884`) | ✓ `FF ?? F8 01 00 00` | enlace por defecto | análisis |
-| `+0xE68` | `IO80211VirtualInterface::init` | super-llamadas (`AWDL_STAGE1_SMALL_CHECKS.md` §1.2) | (d) `FF ?? 78 0E 00 00` (celda ZTV+`0xE78`) | init de la interfaz virtual | pánico (virtual puro) si el driver declaró mal la celda |
-| `ZTV+0x14F0` | `AppleBCMWLANSkywalkInterface::start(core, RegInfo)` | `createSkywalkInterface` (`0xffffff80016aa874`, `0xffffff80016aac40`) | (d) `FF ?? E0 14 00 00` | despacho del `start` de Broadcom | análisis |
+| `+0xE68` | `IO80211VirtualInterface::init` | super-llamadas (`AWDL_STAGE1_SMALL_CHECKS.md` §1.2; `0xffffff8001718e01`) | ✓ `FF ?? 78 0E 00 00` (celda ZTV+`0xE78`) | init de la interfaz virtual | pánico (virtual puro) si el driver declaró mal la celda |
+| `ZTV+0x14F0` | `AppleBCMWLANSkywalkInterface::start(core, RegInfo)` | `createSkywalkInterface` (`0xffffff80016aa874`, `0xffffff80016aac40`) | ✓ `FF ?? E0 14 00 00` | despacho del `start` de Broadcom | análisis |
 
 ## 7. Ivars del cliente BSD y de la interfaz citados
 
@@ -141,7 +141,7 @@ desplazamiento de 32 bits: `FF /2` (`FF 90+rm`, o `41 FF 94 24` con SIB si la ba
 | cliente `+0xE8` interfaz | — | `IOSkywalkNetworkBSDClient::start` (`0xffffff8002affa84`; creado en `0xffffff8002aff69b`) | ✓ `48 8B ?? E8 00 00 00` | receptor de todas las ranuras de interfaz | análisis |
 | cliente `+0xF0` copia del RegInfo | — | ídem (`0xffffff8002aff74d`; carga de `[iface+0xC0]` en `0xffffff8002aff73c`) | ✓ `48 89 ?? F0 00 00 00` | lectura de `RegInfo+0x3E` | análisis |
 | cliente `+0xF8` `__ifnet *` | — | `gatedPrepareNexus` (`0xffffff8002b006a6`) | ✓ `4C 89 ?? F8 00 00 00` | el ifnet llega al cliente | análisis |
-| cliente `+0x13C` (dword, estado de `setPowerStateHandler`) | 1 | `init`/`setPowerStateHandler`/`ioctlHandler` (`0xffffff8002aff551`, `0xffffff8002b00091`…) | (d) `C7 83 3C 01 00 00 01 00 00 00` | wake flags | análisis (no es el headroom: `LIFECYCLE_CHECKS` §1.1) |
+| cliente `+0x13C` (dword, estado de `setPowerStateHandler`) | 1 | `init`/`setPowerStateHandler`/`ioctlHandler` (`0xffffff8002aff551`, `0xffffff8002b00091`…) | ✓ `C7 83 3C 01 00 00 01 00 00 00` | wake flags | análisis (no es el headroom: `LIFECYCLE_CHECKS` §1.1) |
 | iface `+0xC0` / `+0x118` copias del RegInfo | — | `registerNetworkInterface` (`0xffffff8002b0a292`) / `copyRegistrationInfo` (`0xffffff8002b10a26`) | (d) sin patrón | fuente de todos los campos de §1 | silencio (si se mueve, la copia se pierde) |
 | iface `+0xC8` `OSOrderedSet` de enlaces | — | `registerNetworkInterface` (`0xffffff8002b0a39d`) | (d) sin patrón | enlaces lógicos | visible en el alta |
 
@@ -208,8 +208,8 @@ Leídos con `get_bytes` en la IDB (sondeos `lc_out8`/`lc_out9` de `task_lifecycl
 de mayor riesgo (todas las de riesgo «silencio» y «pánico» de §1–§3): `RegInfo+0x3C`/`+0x3E`
 (`0f b7 40 3c`, `0f b7 40 3e`), `RegInfo+0x48/0x4C` (`41 29 47 48 41 29 47 4c`), `RegInfo+0x108`
 (`8b 80 08 01 00 00`, `8b 89 08 01 00 00`), `RegInfo+4` (`41 81 7c 24 04 08 01 00 00`),
-`eparams+0x144` (`66 41 89 85 3c 01 00 00` en el escritor, `44 0f b7 af 44 01 00 00` en el lector de
-`ifnet_allocate_extended`), cabecera `{2, 0x158}` (`83 3e 02`, `81 7e 04 58 01 00 00`,
+`eparams+0x144` (`66 41 89 85 3c 01 00 00` en el escritor, `44 0f b7 bf 44 01 00 00` en el lector de
+`ifnet_allocate_extended`, `0f b7 87 46 01 00 00` la lectura de `+0x146`), cabecera `{2, 0x158}` (`83 3e 02`, `81 7e 04 58 01 00 00`,
 `83 3f 02`, `81 7f 04 58 01 00 00`), `ifp+0x58C/0x58E/0x590` (`66 41 89 85 8c 05 00 00`,
 `66 41 89 85 8e 05 00 00`, `41 89 85 90 05 00 00`), `ifp+0x78` (`8b 47 78 83 e0 07 83 f8 02`),
 `ifp+0xBE` (`f6 87 be 00 00 00 01`), `ifp+0xC0` (`f6 87 c0 00 00 00 80`, `f0 41 81 8d c0 00 00 00 80 00 00 00`),
@@ -223,15 +223,18 @@ de mayor riesgo (todas las de riesgo «silencio» y «pánico» de §1–§3): `
 ranuras `0x9C0` (`ff 90 c0 09 00 00`, `41 ff 94 24 c0 09 00 00`), `0x8E0` (`ff 90 e0 08 00 00`),
 `0x8E8` (`ff 90 e8 08 00 00`), `0x600` (`ff 90 00 06 00 00`), `0x5B0` (`ff 90 b0 05 00 00`),
 `0x5D0` (`ff 90 d0 05 00 00`), `0x5D8` (`ff a0 d8 05 00 00`), `0x1D8` (`ff 90 d8 01 00 00`),
-`0x1F8` (`ff 90 f8 01 00 00`), cliente `+0xE8`/`+0xF0`/`+0xF8` (`48 8b bb e8 00 00 00`,
-`48 89 83 f0 00 00 00`, `4c 89 bb f8 00 00 00`).
+`0x1F8` (`ff 90 f8 01 00 00`), `0xE68` (`ff 90 78 0e 00 00`), `0x14E0` (`ff 90 e0 14 00 00`),
+cliente `+0xE8`/`+0xF0`/`+0xF8` (`48 8b bb e8 00 00 00`,
+`48 89 83 f0 00 00 00`, `4c 89 bb f8 00 00 00`), `+0x13C` (`c7 83 3c 01 00 00 01 00 00 00`),
+`ifp+0xC3` (`f6 83 c3 00 00 00 04`). Las mismas 61 secuencias las re-verificó
+`Tools/awdl_recheck_offsets.py` leyendo el fichero del kernelcollection (sondeos `lc_out10` para las
+cuatro últimas).
 
 ## 11. Lo que queda sin verificar
 
 - Los patrones marcados **(d)**: `RegInfo+0x00` (versión), tamaño `0x130` de `copyRegistrationInfo`,
-  `eparams+0x08`/`+0x38`/`+0x48`, `ifp+0xC3 & 4` (la lectura de bytes de `0xffffff80005ea8a6` cayó en
-  el `lea` del literal «ifnet_start_%s», no en el test), `netif_qset_enqueue` `cmp [qset+3Ch], 2`
-  (`0xffffff80009fa2d3`, citado por `IFUP_PATH`), `ZTV+0x14F0`, `vptr+0xE68` y los ivars de §7 sin
+  `eparams+0x08`/`+0x38`/`+0x48`, `netif_qset_enqueue` `cmp [qset+3Ch], 2`
+  (`0xffffff80009fa2d3`, citado por `IFUP_PATH`) y los ivars de §7 sin
   patrón. Todos tienen VA citado por el documento de origen y se verifican con la misma receta.
 - El lector de la familia para `RegInfo+0x48/0x4C` fuera del `start` de Broadcom y para `RegInfo+0x40`
   (`?` heredado de `TXPUSH_LLINK` §2): los offsets constan, el consumidor no está cerrado.
