@@ -333,7 +333,7 @@ Contrato cerrado (`AWDL_LLW_COMPANION.md` §1–§4):
 - **flushFlowQueues** delegando en la companion: null-safe (con companion nula llama sólo a la
   base), sin riesgo de pánico por ausencia (`AWDL_LLW_COMPANION.md` §3.5;
   `AWDL_PROXIMITY_DATAPATH.md` §11).
-- **Destrucción:** por `op = 0` con el propio teardown del kext (Broadcom usa
+- **Destrucción:** (`wifip2pd` no emite `op = 0` en este build, ver `AWDL_STAGE4_LLW_CLOSURE.md` §3.1) por `op = 0` con el propio teardown del kext (Broadcom usa
   `destroySkywalkInterface` + slots 0x600/0x90) (`AWDL_LLW_COMPANION.md` §3.2).
 
 ### 3.5 Riesgos
@@ -345,7 +345,7 @@ Contrato cerrado (`AWDL_LLW_COMPANION.md` §1–§4):
   `?` (`AWDL_LLW_COMPANION.md` §1.1, §5).
 - Datapath de baja latencia real sobre el puerto 1 USB: sin precedente probado en este árbol — `?`
   (`AWDL_RTL8814_HW_SUPPORT.md` §2.3).
-- Uso en runtime del objeto companion del daemon (ioctls `'i'` 130/131 sobre `llw0`): `?`
+- Uso en runtime del objeto companion del daemon (ioctls `'i'` 130/131): cerrado en `AWDL_STAGE4_LLW_CLOSURE.md` §2 (socket IPv6; el 131 devuelve 45 si nadie lo atiende); destino exacto `llw0`: `?`
   (`AWDL_LLW_COMPANION.md` §3.5).
 - Orden de creación: la petición llega sólo tras `awdl0` completa; una creación de `llw0` que
   falle no debe tocar el datapath ya registrado de `awdl0` (rollback propio, misma disciplina que
