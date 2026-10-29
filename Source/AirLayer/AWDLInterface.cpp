@@ -51,7 +51,7 @@ IOReturn rtl_txcomp_enqueue(void *q, void *const *pkts, uint32_t n, uint32_t opt
 	__asm("__ZN26IOSkywalkTxCompletionQueue14enqueuePacketsEPKP15IOSkywalkPacketjj");
 void rtl_pool_free(void *pool, void *pkt)
 	__asm("__ZN25IOSkywalkPacketBufferPool16deallocatePacketEP15IOSkywalkPacket");
-uintptr_t rtl_vif_start(void *self, IOService *provider)
+bool rtl_vif_start(void *self, IOService *provider)
 	__asm("__ZN23IO80211VirtualInterface5startEP9IOService");
 IOReturn rtl_ctrl_setAwdlInterface(IO80211Controller *ctrl, void *awdl)
 	__asm("__ZN17IO80211Controller16setAwdlInterfaceEP23IO80211VirtualInterface");
