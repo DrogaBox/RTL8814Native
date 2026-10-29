@@ -238,7 +238,8 @@ instrucción por instrucción.
 
 ## 10. Aplicación a la etapa 1
 
-- La forma de tres colas del plan (§5.4) pasa todas las comprobaciones: 1 TX submission deja
+- **Condición previa:** la cola TX submission debe recibir una acción no nula. `IOSkywalkTxSubmissionQueue::initWithPool` (`0xffffff8002b0caac`) devuelve 0 cuando el argumento de acción (`a8`) es nulo, y `withPool` devuelve entonces nulo; el camino STA pasa `txAction` (`RTLAirLayer.cpp:365`). Pasar nulo hace fallar la creación de las colas antes de cualquier comprobación de §5 (`AWDL_STAGE1_SPEC_DELTA.md` §4).
+- La forma de tres colas del plan (§5.4) pasa todas las comprobaciones, con esa condición: 1 TX submission deja
   `info+5 = 1` y el byte de información en `3`; el netif añade el enlace, crea una cola TX y una RX
   con índice 0, y el `ifnet` se crea.
 - No hace falta añadir las 4 colas por AC. Si en una etapa posterior se quieren, deben ser exactamente
