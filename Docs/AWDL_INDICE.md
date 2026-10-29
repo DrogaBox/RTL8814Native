@@ -1,6 +1,6 @@
 # Índice de los documentos AWDL
 
-Inventario de los 59 documentos `Docs/AWDL_*.md` a fecha de 2026-10-29, agrupados por tema, con el
+Inventario de los 60 documentos `Docs/AWDL_*.md` a fecha de 2026-10-29, agrupados por tema, con el
 resumen en una línea y el estado de cada uno. Base del estado: el título, el primer párrafo y las
 secciones de cierre o de puntos abiertos de cada documento, más `HANDOFF_AWDL.md` (raíz del repo,
 sección 4, que recoge los `?` deduplicados).
@@ -76,6 +76,7 @@ Convención de estado:
 | [AWDL_STAGE1_QUEUE_SHAPE.md](AWDL_STAGE1_QUEUE_SHAPE.md) | 1 TX submission + 1 TX completion + 1 RX completion basta; sólo el bit WMM exige 4 colas | Cerrado y verificado |
 | [AWDL_STAGE1_IFUP_PATH.md](AWDL_STAGE1_IFUP_PATH.md) | Qué ejecuta `ifconfig awdl0 up` y el primer paquete: las colas nacen deshabilitadas y el ND/RS no llega al no-op | Cerrado y verificado; su §4 lo corrige [AWDL_STAGE1_QSET_STATE.md](AWDL_STAGE1_QSET_STATE.md) |
 | [AWDL_STAGE1_QSET_STATE.md](AWDL_STAGE1_QSET_STATE.md) | `qset+0x3C` es `nll_state`; `if_refflags`/`if_eflags` los pone IOSkywalkFamily; con el código actual el primer ND/RS llega a la acción no-op | Cerrado y verificado; cinco puntos finos propios (§10) |
+| [AWDL_STAGE1_ERRNO_TXPATH.md](AWDL_STAGE1_ERRNO_TXPATH.md) | `errnoFromReturn` mapea el rechazo por cola deshabilitada (`0xE00002D8`) a errno 16 (`EBUSY`); wifip2pd no consume `if_link_state` ni `state+113` (lector de `IFF_UP` e `IFF_RUNNING` vía `getifaddrs` con extremo keypath en `?`) | Cerrado en sus dos preguntas; cadena keypath del daemon, lectores kernel de `state+113` y tramo `dlil_ifclassq_setup` en `?` (§8) |
 | [AWDL_STAGE1_IFM_CURRENT.md](AWDL_STAGE1_IFM_CURRENT.md) | `ifm_current` sale del descriptor de medios sembrado por `registerNetworkInterface` desde `RegInfo+0x28` (0x80) | Cerrado y verificado; su punto abierto lo cierra [AWDL_STAGE1_SIOCSIFMEDIA.md](AWDL_STAGE1_SIOCSIFMEDIA.md) |
 | [AWDL_STAGE1_SIOCSIFMEDIA.md](AWDL_STAGE1_SIOCSIFMEDIA.md) | Nada puede cambiar `ifm_current` de `awdl0` antes de la lectura del daemon | Cerrado y verificado; T5.1 queda como comprobación de regresión |
 | [AWDL_STAGE1_VIRTUAL_IF_PARENT.md](AWDL_STAGE1_VIRTUAL_IF_PARENT.md) | El 97 lo responde la familia con `getPrimarySkywalkInterface`; sin stub propio | Cerrado y verificado |
@@ -188,7 +189,7 @@ a la sección 4 de `HANDOFF_AWDL.md`, de la que corrige dos puntos ya cerrados (
 | 7 | Tipo de retorno real de `IO80211VirtualInterface::init` (#82); el código lo da por `bool` | `AWDL_STAGE1_SPEC_DELTA.md` §7; `AWDL_STAGE1_CODE_FIXES.md` §3 | Leer el manejo del retorno en el `init` de la familia |
 | 8 | Longitud inicial del `req` de pila en la ruta legacy del 94 cuando `len < 32` (hallazgo A10) | `AWDL_STAGE1_CODE_REVIEW_HOOK.md` A10 | Leer la inicialización del `req` en `setVirtualInterfaceCreate` |
 | 9 | Puntos finos del ciclo de vida: cero-inicial del asignador tipado, limpieza de `registerInterestedDriver` si falla la rama 5 de `init`, propietario del cerrojo `ivars+0x30`, campo del `ifnet` que consume `clienteBSD+0x13C`, enlace de `r15` en `AppleBCMWLANSkywalkInterface::start`, intención del parámetro `uint` de `deregisterEthernetInterface` | `AWDL_STAGE1_PENDING_CHECKS.md` §«Puntos que quedan abiertos» | Chequeos dirigidos en el KC, uno por punto |
-| 10 | Camino de TX: errno que ve la pila al descartarse el paquete (mapeo de `0xE00002D8` en `errnoFromReturn`), consumidor de `state+113`/`if_link_state` en wifip2pd, llamada del `ifclassq` a `tx_push`, vía de alta del `netif_llink` en el camino del kext | `AWDL_STAGE1_IFUP_PATH.md` §8; `AWDL_STAGE1_QSET_STATE.md` §10 | Descompilar `errnoFromReturn` y localizar los sitios citados |
+| 10 | Camino de TX: errno que ve la pila al descartarse el paquete (mapeo de `0xE00002D8` en `errnoFromReturn`), consumidor de `state+113`/`if_link_state` en wifip2pd, llamada del `ifclassq` a `tx_push`, vía de alta del `netif_llink` en el camino del kext | `AWDL_STAGE1_IFUP_PATH.md` §8; `AWDL_STAGE1_QSET_STATE.md` §10; errno 16 (`EBUSY`) y búsquedas en wifip2pd cerrados en `AWDL_STAGE1_ERRNO_TXPATH.md` §1-§6 | Recorrer la cadena keypath de wifip2pd y el llenado de la tabla del `ifclassq` (`dlil_ifclassq_setup`); alta del `netif_llink` |
 | 11 | Orden entre `setInterface` y la creación del `ifnet` en `bsd_start`; quién consume el retorno 22 del rechazo por `num_txqs == 0` | `AWDL_STAGE1_QUEUE_SHAPE.md` §11 | Recorrer la secuencia instrucción a instrucción |
 | 12 | Qué getters de los 63 slots consulta el daemon fuera de la secuencia post-create (p. ej. al abrir AirDrop) | `AWDL_STAGE1_STUB_VALUES.md` §3/§5 | Leer el switch maestro de eventos/requests del daemon; confirmado con un par Apple real en hardware |
 | 13 | Constructores de TLV sin nombre (datapath state, ranging, real-time group, version, NAN sync, pref chan) y contenido exacto del tirón de TX | `AWDL_PEERMANAGER_DRIVER_ABI.md` §3.11 y §4 | Identificar y decompilar los constructores (etapa 2) |
