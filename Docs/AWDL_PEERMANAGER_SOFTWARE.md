@@ -407,4 +407,4 @@ versiones de IO80211Family (el kext no puede depender de ellos salvo para depura
 codificación de los ioctls internos y su lista completa son observadas, no documentadas por Apple;
 y el manager asume un controlador con workloop (`getController` → `getWorkLoop`) y el bloqueo de
 datapath del base `IO80211PeerManager`, que la subclase hereda si el init base se ejecuta.
-Además, subclasear las clases AWDL de IO80211Family exige enlazar contra sus símbolos (vtable y `gMetaClass`) sin KDK; AirLayer ya lo hace con `IO80211InfraProtocol`, pero el mismo enlace con `IO80211VirtualInterface`/`IO80211AWDLProtocol` no está comprobado `?`.
+Además, subclasear las clases AWDL de IO80211Family exige enlazar contra sus símbolos (vtable y `gMetaClass`) sin KDK; AirLayer ya lo hace con `IO80211InfraProtocol`, y `AWDL_KEXT_LINKAGE.md` comprueba en la tabla de símbolos del KC que `IO80211VirtualInterface`, `IO80211AWDLProtocol` e `IO80211AWDLPeerManager` también exportan vtable, `gMetaClass`, constructores y los métodos del contrato (tipo `0x0f`) en 25G241.
