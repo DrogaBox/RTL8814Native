@@ -77,7 +77,7 @@ Convenciones:
 | D1 | La puerta del 94 se implementa como **override en `RTLAirInterface`** (objeto `IO80211InfraProtocol`), no en el controlador. | El puente castea a `IO80211InfraProtocol` y llama el slot `+0x1160`; el controlador no deriva de ese protocolo. El objeto receptor exacto del cast no está verificado (`?`). | [`AWDL_PROTOTYPE_DESIGN.md`](AWDL_PROTOTYPE_DESIGN.md) §1.3, §3.5; `Source/AirLayer/RTLAirLayer.hpp:50`, `Source/IO80211/IO80211_25_6_0.h:595` |
 | D2 | `awdl0` se implementa como subclase de **`IO80211AWDLProtocol`** y no de `IO80211VirtualInterface` a secas. | La etapa 2 necesita que los `safeMetaCast` a `IO80211AWDLProtocol` alcancen el objeto; derivar de la base no recibiría las requests AWDL. | §3.5 del diseño; [`AWDL_PURE_SLOTS.md`](AWDL_PURE_SLOTS.md) |
 | D3 | La declaración de clases se hace en un **fichero nuevo** con la cadena completa por offsets; no se usa el catálogo disperso. | Con el catálogo actual los índices C++ no coinciden con la vtable real (faltan los 27 métodos `0xE68`–`0xF38` antes del slot 490 y los 16 reservados después), y el objeto nacería con la vtable desplazada 27 posiciones. | `Source/IO80211/IO80211AWDL_25_6_0.h:1-6`; [`AWDL_VTABLE_SLOTS.md`](AWDL_VTABLE_SLOTS.md) filas 463–506 |
-| D4 | El 94 se atiende **en línea** en el handler, sin thread call ni espera, y `registerService(2)` es síncrono. | Es lo que hace Broadcom (`registerService(2)` en `0xffffff800172982a`) y deja el ifnet creado antes de devolver el nombre; el daemon no necesita ninguna petición más. | [`AWDL_INTERFACE_BIRTH.md`](AWDL_INTERFACE_BIRTH.md) §2.4 paso 6, §5 |
+| D4 | El 94 se atiende **en línea** en el handler, sin thread call ni espera, y `registerService(2)` es síncrono. | Es lo que hace Broadcom (`registerService(2)` en `0xffffff800172982a`) y deja el ifnet creado antes de devolver el nombre; el daemon no necesita ninguna petición más. Condicional (`?`): el 94 corre bajo un gate —identificado como el del cliente BSD sólo en la ruta ioctl ([`AWDL_STAGE1_REGINFO_AND_GATES.md`](AWDL_STAGE1_REGINFO_AND_GATES.md) §5–§6)— y el `registerService` síncrono puede esperar a ese mismo work loop; T2.2 mide el retorno y, si bloquea, la alternativa asíncrona obliga a revisar el criterio del nombre en `payload+0x10`. | [`AWDL_INTERFACE_BIRTH.md`](AWDL_INTERFACE_BIRTH.md) §2.4 paso 6, §5 |
 | D5 | El `RegistrationInfo` de `awdl0` se rellena con prefijo `awdl`, unit 0, MTU `0x594` y medios `0x80`/`0x80`. | El filtro del daemon exige `(ifm_current & 0xE0) == 0x80`; la semilla Broadcom `8` no pasaría y el actualizador intermedio no está identificado (`?`). | [`AWDL_INTERFACE_BIRTH.md`](AWDL_INTERFACE_BIRTH.md) §6.1–§6.3; §3.3 del diseño |
 | D6 | El tipo 293 no se implementa en la etapa 1: el dispatch devuelve 102 y el daemon lo absorbe. | El fallo no contamina `awdl0`: no hay teardown ni reintento, y la espera de 30 s sólo aparece si el kext contesta éxito sin crear nada. | [`AWDL_LLW_COMPANION.md`](AWDL_LLW_COMPANION.md) §4 |
 | D7 | Toda la vía se habilita con un boot-arg nuevo (`rtlawdl=1`), apagado por defecto. | Permite comparar A/B contra el comportamiento actual (102) sin recargar el kext y acota el radio de un fallo en el arranque. | Práctica del propio layer: `rtlair` en `Source/AirLayer/RTLAirLayer.cpp:1402-1445` |
@@ -160,9 +160,11 @@ prueba positiva es que emita el 94 (paso siguiente).
 El override se añade a `RTLAirInterface` (declaración nueva en `RTLAirLayer.hpp`, junto a las demás
 WCL de `:56-99`) y se implementa en `RTLAirLayer.cpp`. El parche mínimo está en §12.3.
 
-Antes del cast, los puentes de la superficie AWDL consultan `isCommandProhibited` (slot `+0xCC8`);
-el código actual devuelve `false` (`Source/AirLayer/RTLAirLayer.cpp:1726`), de modo que el 94 no queda
-bloqueado por esa puerta.
+`?` La consulta de `isCommandProhibited` (slot `+0xCC8`) está documentada para los 63 puentes de la
+superficie AWDL, no para el puente del 94, y el slot pertenece a la interfaz, no al controlador
+([`AWDL_IOCTL_SLOT_MAP.md`](AWDL_IOCTL_SLOT_MAP.md) §1); el código actual devuelve
+`false` (`Source/AirLayer/RTLAirLayer.cpp:1726`). Que el 94 quede exento de esa puerta no está
+probado: lo decide T2.2.
 
 `?` El puente podría castear el objeto que devuelve el controlador por otra vía (interfaz
 principal, `getAwdlInterface()`); no está verificado cuál. Si el cast no aterriza en el objeto
@@ -175,7 +177,7 @@ ejecutaría y el daemon seguiría sin interfaz.
 
 | Condición | Retorno | Efecto lateral |
 |---|---|---|
-| `req == nullptr` o `len != 32` | `kIOReturnBadArgument` (`0xE00002C2`) | Log `awdl: create bad len`; nada más |
+| `req == nullptr` | `kIOReturnBadArgument` (`0xE00002C2`) | Log `awdl: create bad len`; nada más. La longitud la valida el handler de la familia (`0xffffff80022886c8`) antes del puente; el override sólo recibe el puntero ([`AWDL_STAGE1_VIRTUAL_IF_PARENT.md`](AWDL_STAGE1_VIRTUAL_IF_PARENT.md) §5) |
 | `role == 6` y `rtlawdl` apagado o gate cerrado | `kIOReturnUnsupported` (`0xE00002C7`, 102) | Comportamiento actual del sistema; el daemon registra el fallo y sigue |
 | `role` distinto de 6 y distinto de 7 | `0xE0000001` | Log `awdl: invalid role %u` (Broadcom usa el mismo valor, §2.1) |
 | `role == 7` | `kIOReturnUnsupported` | APSTA queda fuera de la etapa 1 |
@@ -252,6 +254,7 @@ La declaración nueva se escribe por **offsets** (`offset = 8 × slot` con la co
 
 | Bloque | Offsets | Contenido | Fuente |
 |---|---|---|---|
+| `IO80211VirtualInterface` (overrides) | `0x428`–`0xDC0` (50 slots) | overrides de slots ya existentes: no desplazan la vtable; el único efecto de cada uno es que la celda apunta a la implementación de la familia en lugar de a la de `IO80211SkywalkInterface` o `IOService`. Lista completa con el símbolo exportado de cada uno en [`AWDL_STAGE1_CODE_FIXES.md`](AWDL_STAGE1_CODE_FIXES.md) §5 | cabecera real, `Source/AirLayer/AWDLInterface.h:91-145` |
 | `IO80211SkywalkInterface` | hasta `0xE60` | ya declarado en `Source/IO80211/IO80211_25_6_0.h:386-471`; el último método declarado es `syncDPSStats` | [`AWDL_VTABLE_SLOTS.md`](AWDL_VTABLE_SLOTS.md) fila 462 |
 | `IO80211VirtualInterface` | `0xE68`–`0xF38` (27 métodos) | `init(ctrl, mac, u32, name)`, `setLinkState`, `forwardPacket`, `handleIoctl`, `addPeerToCache`, `deletePeerFromCache`, `handleDebugCmd`, `getPeerSlotDataStats`, `getPeerDataStats`, `clearPeerDataStats`, `setAwdlCurrentChannelSequenceIndex`, `isOutputFlowControlled`, `setOutputFlowControlled`, `clearOutputFlowControlled`, `flushFlowQueues`, `configureAQMOutput`, `attachToBpf`, `configureIfnet`, `reset`, `dupAndTransmitMcastPacket`, `freeMulticastPacket`, `triggerAWDLMulticastTx`, `p2pMulticastTx` (×2), `signalMulticastPackets`, `sendPendingPacketsToStack`, `freePendingPackets` | filas 463–489 |
 | `IO80211VirtualInterface` | `0xF40` | `setMacAddress(ether_addr&)`, **puro** | fila 490; [`AWDL_PURE_SLOTS.md`](AWDL_PURE_SLOTS.md) |
@@ -280,16 +283,22 @@ Struct de `0x130` B, versión 1, validado por `initRegistrationInfo`
 |---:|---:|---|---|
 | `+0x00` | 4 | `version = 1` | `initRegistrationInfo` |
 | `+0x0C` | 4 | `3` (`IFNET_SUBFAMILY_WIFI`) | nacimiento §2.2 (`0xffffff800165de3c`) |
-| `+0x10` | 4 | `6` (`?` el rol del `RegInfo`; el camino STA usa 1) | `Source/AirLayer/RTLAirLayer.cpp:1506`; `?` |
-| `+0x14` | 4 | `2` (número de palabras de medios) | nacimiento §2.2 (`0xffffff800165ddcc`) |
+| `+0x10` | 4 | `6` (campo sin lector: `initRegistrationInfo` lo deja a 0 y nada lo lee en el kernelcache, [`AWDL_STAGE1_REGINFO_AND_GATES.md`](AWDL_STAGE1_REGINFO_AND_GATES.md) §3; el valor 6 es inocuo) | `Source/AirLayer/RTLAirLayer.cpp:1506` |
+| `+0x14` | 4 | `2` (número de palabras de medios) | camino STA (`Source/AirLayer/RTLAirLayer.cpp:210`, `:1507`); `initRegistrationInfo` escribe 256 ([`AWDL_STAGE1_REGINFO_AND_GATES.md`](AWDL_STAGE1_REGINFO_AND_GATES.md) §2) |
 | `+0x24` | 4 | `0x80` (`IFM_IEEE80211`) | nacimiento §2.2; diseño §3.4 |
 | `+0x28` | 4 | **`0x80`** (`ifm_current`; Broadcom pone `8`) | desviación deliberada D5; nacimiento §6.3 |
 | `+0x30` | 8 | puntero al literal `"awdl"` | nacimiento §3.1 |
 | `+0x38` | 4 | `0` (unit) | nacimiento §3.1 |
-| `+0x3A` | 2 | `64` (u16, headroom) | nacimiento §2.2 (`0xffffff800165de8c`) |
-| `+0x40` | 4 | `0` (el STA usa 0; Broadcom 4 o 6 según una property) | `Source/AirLayer/RTLAirLayer.cpp:1510`; `?` |
+| `+0x3C` | 2 | `64` (u16, headroom) | camino STA (`Source/AirLayer/RTLAirLayer.cpp:212`, `:1509`) y `createProxInterface` (`0xffffff800165de8c`, `word [r12+3Ch] = 40h`, [`AWDL_STAGE1_CODE_FIXES.md`](AWDL_STAGE1_CODE_FIXES.md) §6.1); `?` lector no identificado |
+| `+0x40` | 4 | `0` (campo sin lector: nada lo lee, [`AWDL_STAGE1_REGINFO_AND_GATES.md`](AWDL_STAGE1_REGINFO_AND_GATES.md) §2; el STA usa 0, Broadcom 4 o 6 según una property) | `Source/AirLayer/RTLAirLayer.cpp:1510` |
 | `+0x48` / `+0x4C` | 4 / 4 | `0x594` (MTU 1428) | nacimiento §2.4 paso 4 (`0xffffff80017296ff`) |
 | `+0x108` | 6 | MAC del `payload+0x04` del 94 | nacimiento §2.2; [`AWDL_STRUCTS.md`](AWDL_STRUCTS.md) §3.2 |
+
+`?` Headroom: [`AWDL_INTERFACE_BIRTH.md`](AWDL_INTERFACE_BIRTH.md) §2.2 lo sitúa en `+0x3A`, pero ese
+offset es la mitad alta del unit de `+0x38` —escribir 64 ahí deja el unit en `0x00400000` y el
+headroom real a 0 ([`AWDL_STAGE1_CODE_FIXES.md`](AWDL_STAGE1_CODE_FIXES.md) §6.1)— y la escritura de
+referencia (`createProxInterface`, `0xffffff800165de8c`) va en `+0x3C`. Ningún lector de `+0x3C`
+aparece en los barridos publicados.
 
 Precedente de relleno en el código: `Source/AirLayer/RTLAirLayer.cpp:1502-1511` (mismo struct para
 el rol 1). El `RegInfo` de `awdl0` es propio del objeto y sobrevive hasta su `free()`
@@ -303,13 +312,21 @@ completion y una multicast opcional, con un pool compartido ([`AWDL_PROTOTYPE_DE
 transmite ni recibe**: el datapath no se usa. Para minimizar superficie se registra la misma forma
 que ya funciona en el camino STA —1 TX submission, 1 TX completion, 1 RX completion, un pool por
 dirección— con los invariantes documentados (lote de `enqueuePackets` menor que la capacidad; los
-paquetes de la cola salen de su pool). `?` No está verificado que la familia acepte 3 colas para
-una interfaz virtual de rol 6; Broadcom usa 6. Si el registro falla en T3, la alternativa es pasar
-el conjunto completo de §3.4 del diseño sin acciones de datapath.
+paquetes de la cola salen de su pool). [`AWDL_STAGE1_QUEUE_SHAPE.md`](AWDL_STAGE1_QUEUE_SHAPE.md)
+§1, §5 y §10 cierran la forma: una cola TX submission es el mínimo que la familia acepta, la TX
+completion no la consume el cliente BSD, el recuento de colas RX no se valida y ninguna comprobación
+mira el rol; el plan B del conjunto completo de §3.4 del diseño no hace falta.
 
-Cada cola se añade a la work queue con `addEventSource` y queda sin acción asociada: no hay
-`txAction` ni drenaje de RX en la etapa 1. `enable`/`disable` sólo registran el estado, sin
-habilitar ni deshabilitar las colas. El patrón de registro está en
+La TX submission exige una acción no nula: `IOSkywalkTxSubmissionQueue::initWithPool`
+(`0xffffff8002b0caac`) la rechaza y `withPool` devuelve nulo, con lo que el arranque se queda sin
+`awdl0` ([`AWDL_STAGE1_CODE_FIXES.md`](AWDL_STAGE1_CODE_FIXES.md) §1). Las colas nacen habilitadas
+(`IOEventSource::init`, `0xffffff8000aca900`, deja `enabled = true`, y el código no las
+deshabilita): el plan pasa a la TX submission la acción no-op de CODE_FIXES §1.2 —consume el lote y
+lo devuelve por la cola TX completion; devolver 0 pararía la cola, porque `legacyDequeue`
+(`0xffffff8002b2c860`) avanza el anillo según el retorno— o las deshabilita, y mientras no
+haya drenaje no las añade como event sources. El código de etapa 1 (CODE_FIXES §1.2, §2) pasa la
+acción no-op y mantiene las tres colas en el work loop hasta el `teardownDatapath`; T3.5 ejercita
+ese conjunto. El patrón de registro está en
 `Source/AirLayer/RTLAirLayer.cpp:374-388` y `:515-535`.
 
 ### 5.5 Secuencia de arranque (orden exacto)
@@ -341,6 +358,12 @@ Los pasos 2–4 siguen [`AWDL_INTERFACE_BIRTH.md`](AWDL_INTERFACE_BIRTH.md) §2.
 §2.4 y §5. `registerService(2)` deja el ifnet creado antes de devolver el control al handler
 (§5 del nacimiento): cuando `setVIRTUAL_IF_CREATE` escribe el nombre y devuelve 0, `awdl0` ya existe
 y la notificación está en camino o entregada.
+
+`?` D4 queda condicional: el 94 corre bajo un gate —el del cliente BSD en la ruta ioctl
+([`AWDL_STAGE1_REGINFO_AND_GATES.md`](AWDL_STAGE1_REGINFO_AND_GATES.md) §5–§6); en la ruta user
+client el gate no se ha identificado— y el `registerService(2)` síncrono puede esperar a ese mismo
+work loop. T2.2 mide el retorno; si bloquea, la alternativa asíncrona obliga a revisar el criterio
+del nombre en `payload+0x10` (§0.1 paso 5).
 
 ### 5.6 Lo que la etapa 1 **no** hace
 
@@ -403,9 +426,11 @@ siembran desde `RegInfo+0x24` y `RegInfo+0x28`
 la respuesta pasa el filtro sin escribir ninguna `if_ioctl` propia. La variante legacy
 `OSIOCGIFMEDIA = 0xC0286938` sigue el mismo camino.
 
-`?` No está verificado que ningún componente reescriba `estado+52` entre el registro y la lectura
-del daemon; si lo hiciera con un valor sin tipo 802.11, el filtro fallaría y `awdl0` se ignoraría con
-`Ignoring %s because its not a WiFi interface` (`0x100494b00`). La prueba T5 de §14 lo detecta.
+El cierre está en [`AWDL_STAGE1_SIOCSIFMEDIA.md`](AWDL_STAGE1_SIOCSIFMEDIA.md) §5 y §7: el descriptor
+de medios se siembra en el alta (`+0x30` y `+0x34` desde `RegInfo+0x24`/`+0x28`,
+`0xffffff8002b0a32a`/`0x2b0a332`) y el único escritor posterior, `ioctl_sifmedia` (cabeza
+`0xffffff8002b0affa`), falla antes del store en `awdl0` (sin `IOMediumDictionary`): `0x80` se
+mantiene.
 
 ## 7. Pieza E — `VIRTUAL_IF_PARENT` (tipo 97)
 
@@ -425,13 +450,14 @@ buscando `'\0'` con ese tope (`sub_100046D30`, `w2p 0x100046db9`).
 
 1. El objeto debe ser realmente `IO80211VirtualInterface` (por eso D2 y D3); un objeto
    `IO80211InfraProtocol` a secas no pasa el `safeMetaCast` y el handler devuelve `0xE082280E`.
-2. El objeto debe estar publicado en el controlador con `setAwdlInterface()`
-   ([`ARCHITECTURE.md`](ARCHITECTURE.md):1275; [`AWDL_ROLE6_RE.md`](AWDL_ROLE6_RE.md):54), que es
-   el puntero con el que la familia asocia la interfaz AWDL a su controlador. `?` No está verificado
-   si el handler 97 busca la interfaz por la lista de adjuntas o por `getAwdlInterface()`; la
-   llamada cubre el segundo caso y es inocua para el primero.
-3. El nombre del padre es el del controlador / interfaz de infraestructura (`en2` en este sistema,
+2. El nombre del padre es el del controlador / interfaz de infraestructura (`en2` en este sistema,
    `en0` en la referencia del documento).
+
+El requisito antiguo de publicar el objeto con `setAwdlInterface()` se retira: el 97 lee
+`getPrimarySkywalkInterface` (bloque del controlador `+0x188`, escrito sólo por `attachInterface`
+para el rol 1) y no consulta `getAwdlInterface`; el primario ya está adjunto
+(`Source/AirLayer/RTLAirLayer.cpp:1493`) y `setAwdlInterface` no tiene ninguna referencia en el
+kernelcache ([`AWDL_STAGE1_VIRTUAL_IF_PARENT.md`](AWDL_STAGE1_VIRTUAL_IF_PARENT.md) §3–§7).
 
 Respuesta esperada en el buffer de 16 B: `en2` (3 bytes) o el nombre que tenga la interfaz de
 infraestructura, sin NUL y con el resto intacto.
@@ -485,14 +511,19 @@ La alternativa (implementar `llw0`) pertenece a la etapa 4 del diseño (§6).
 - rol 0: `Apple80211RawEventMonitoringInit` + 16 × `Apple80211StartMonitoringEvent` (ids 1, 2, 3,
   9, 11, 55, 59, 66, 74, 78, 82, 125, 126, 127, 160, 215).
 
-Ningún evento es condición de aceptación; lo bloqueante es que el registro devuelva 0: un error
-encadena la recuperación `sub_100046E30`, que **re-crea la interfaz**
-([`AWDL_PROTOTYPE_DESIGN.md`](AWDL_PROTOTYPE_DESIGN.md) §1.7). La vía es el user client / event pipe
-de la familia (`createEventPipe`, slot 440; `postMessageSync` en `0xffffff80022f8abc`).
+Ningún evento es condición de aceptación; lo bloqueante es que el registro devuelva 0. La vía es el
+user client / event pipe de la familia (`createEventPipe`, slot 440 = `0xDC0`; `postMessageSync` en
+`0xffffff80022f8abc`), y la puerta ya está en la familia:
+`IO80211VirtualInterface::createEventPipe` (`0xffffff80023347fc`) cubre el rol 6 y exige el
+entitlement `com.apple.wifi_awdl.event_monitor`, con `0xE00002E2` como respuesta sin él
+([`AWDL_STAGE1_DISPATCH_PATH.md`](AWDL_STAGE1_DISPATCH_PATH.md) §2).
 
 **Cambio de código: ninguno previsto.** `?` No está verificado que el event pipe de la familia
-acepte una interfaz de un driver externo sin más; si el registro falla en T7, la recuperación se
-manifiesta como re-creación de `awdl0` y hay que revisar el user client, no el handler 94.
+acepte una interfaz de un driver externo sin más. `?` La recuperación que el diseño cita —un error
+encadena `sub_100046E30`, que re-crea la interfaz
+([`AWDL_PROTOTYPE_DESIGN.md`](AWDL_PROTOTYPE_DESIGN.md) §1.7)— no consta como rama de aborto en
+[`AWDL_STAGE1_STUB_VALUES.md`](AWDL_STAGE1_STUB_VALUES.md) §4; lo decide T7.1. Si el registro falla,
+la revisión toca el user client, no el handler 94.
 
 ## 10. Orden, bloqueo y ciclo de vida
 
@@ -500,8 +531,8 @@ manifiesta como re-creación de `awdl0` y hay que revisar el user client, no el 
 
 | Camino | Contexto | Regla |
 |---|---|---|
-| `setVIRTUAL_IF_CREATE` | contexto del user client de apple80211 (hilo del llamador), fuera de cualquier gate propio | crea y arranca en línea; no usa thread calls ni esperas |
-| `registerService(2)` | dentro del handler; ejecuta el cliente BSD de forma síncrona | no debe llamarse con el gate de la work queue cerrado por el mismo hilo (`?` el despacho concreto del handler) |
+| `setVIRTUAL_IF_CREATE` | hilo del llamador, bajo un gate: el del cliente BSD en la ruta ioctl ([`AWDL_STAGE1_REGINFO_AND_GATES.md`](AWDL_STAGE1_REGINFO_AND_GATES.md) §5–§6); en la ruta user client también hay gate, sin identificar (`?`) | crea y arranca en línea; no usa thread calls ni esperas; D4 condicional (§5.5) |
+| `registerService(2)` | dentro del handler; ejecuta el cliente BSD de forma síncrona | no debe llamarse con el gate de la work queue cerrado por el mismo hilo (`?` el gate de la ruta user client; T2.2 mide el retorno) |
 | `enable`/`disable` | work queue (`runAction`) | no tocan el estado AWDL |
 | `stop`/`free` del controlador | hilo de terminación de IOKit | desmontan `awdl0` antes de liberar el controlador |
 
@@ -534,7 +565,7 @@ no toca la radio.
 
 | Punto de fallo | Acción | Retorno al daemon | Log esperado |
 |---|---|---|---|
-| `len != 32` o puntero nulo | nada | `0xE00002C2` | `awdl: create len %u` |
+| Puntero nulo (la longitud la valida el handler de la familia, §4.3) | nada | `0xE00002C2` | `awdl: create bad len` |
 | Rol no soportado | nada | `0xE0000001` (roles ≠ 6,7) o `0xE00002C7` (rol 7) | `awdl: invalid role %u` |
 | `OSTypeAlloc` falla | nada | `kIOReturnNoMemory` | `awdl: alloc failed` |
 | `initWithController` falla (init, rol, attach) | `terminate()` + release | `0xE00002BC` | `awdl: init failed` |
@@ -678,6 +709,10 @@ public:
     /* Overrides de slots ya existentes: no desplazan la vtable. */
     virtual void free() override;
     virtual void stop(IOService *) override;
+    /* 50 overrides más de slots ya existentes (`0x428`–`0xDC0`), declarados sin
+     * cuerpo local: cada celda resuelve al símbolo exportado de
+     * IO80211VirtualInterface y no desplaza la vtable. La lista completa, con
+     * el símbolo exportado de cada uno, está en AWDL_STAGE1_CODE_FIXES.md §5. */
     using IO80211SkywalkInterface::init;   /* evita ocultar init() de IOService */
     virtual bool init(IO80211Controller *, ether_addr *, uint32_t, const char *);   /* 0xE68 */
     virtual uintptr_t setLinkState(uint32_t, uint32_t);                            /* 0xE70 */
@@ -841,6 +876,9 @@ private:
     char _bsdName[16];
 
     bool createDatapath();
+    void teardownDatapath();
+    static IOReturn txNoop(OSObject *owner, void *queue, void *const *pkts,
+                           uint32_t count, void *refCon);
     static IOReturn removeQueues(OSObject *owner, void *, void *, void *, void *);
 };
 #endif /* RTL_AWDL_INTERFACE_H */
@@ -861,8 +899,16 @@ private:
 #include "AWDLInterface.h"
 #include <IOKit/IOLib.h>
 
-/* Mientras airLog() siga siendo static en RTLAirLayer.cpp (§12.2, notas). */
-#define LOG(fmt, ...) IOLog("RTL8814AirLayer: " fmt "\n", ##__VA_ARGS__)
+/* El parche (§12.3) expone rtlAirLog() desde RTLAirLayer.cpp; las trazas van al
+ * anillo RTLAirLayerLog del nodo RTL8814Native. */
+#define LOG(fmt, ...) rtlAirLog("RTL8814AirLayer: " fmt "\n", ##__VA_ARGS__)
+
+/* Cola TX completion y pool, para la acción no-op de la TX submission
+ * (AWDL_STAGE1_CODE_FIXES.md §1.2). */
+IOReturn rtl_txcomp_enqueue(void *q, void *const *pkts, uint32_t n, uint32_t opts)
+	__asm("__ZN26IOSkywalkTxCompletionQueue14enqueuePacketsEPKP15IOSkywalkPacketjj");
+void rtl_pool_free(void *pool, void *pkt)
+	__asm("__ZN25IOSkywalkPacketBufferPool16deallocatePacketEP15IOSkywalkPacket");
 
 OSDefineMetaClassAndStructors(RTLAwdInterface, IO80211AWDLProtocol)
 
@@ -875,7 +921,7 @@ OSDefineMetaClassAndStructors(RTLAwdInterface, IO80211AWDLProtocol)
 #define AWDL_REGINFO_MEDIA_CUR  0x28    /* u32 ifm_current */
 #define AWDL_REGINFO_PREFIX     0x30
 #define AWDL_REGINFO_UNIT       0x38
-#define AWDL_REGINFO_HEADROOM   0x3a
+#define AWDL_REGINFO_HEADROOM   0x3c
 #define AWDL_REGINFO_FLAGS      0x40
 #define AWDL_REGINFO_MTU        0x48
 #define AWDL_REGINFO_MAC        0x108
@@ -915,7 +961,8 @@ bool RTLAwdInterface::createDatapath()
     _rxPool = rtl_pool_withName("rtlawdl:rx", this, 1, &o);
     if (!_txPool || !_rxPool)
         return false;
-    _txSubQ = rtl_txsub_withPool(_txPool, 128, 0, this, nullptr, nullptr, 0);
+    _txSubQ = rtl_txsub_withPool(_txPool, 128, 0, this,
+                                 (void *)&RTLAwdInterface::txNoop, nullptr, 0);
     _txCompQ = rtl_txcomp_withPool(_txPool, 128, 0, this, nullptr, nullptr, 0);
     _rxCompQ = rtl_rxcomp_withPool(_rxPool, 128, 0, this, nullptr, nullptr, 0);
     if (!_txSubQ || !_txCompQ || !_rxCompQ)
@@ -957,19 +1004,29 @@ bool RTLAwdInterface::startWithRegistration(RTLAirController *ctrl)
     void *queues[3] = { _txSubQ, _txCompQ, _rxCompQ };
     IOReturn r = rtl_eth_register(this, _regInfo, queues, 3, _txPool, _rxPool, 0);
     LOG("awdl: registerEthernetInterface = 0x%x", r);
-    if (r != kIOReturnSuccess)
+    if (r != kIOReturnSuccess) {
+        teardownDatapath();                        /* sin eventos colgantes (CODE_FIXES §2) */
         return false;
+    }
 
     /* Síncrono: el cliente BSD compone "awdl0", publica IOInterfaceName y
      * crea el ifnet antes de volver (Docs/AWDL_INTERFACE_BIRTH.md §5). */
     registerService(kIOServiceSynchronous);
     setRunningState(false);
-    /* Mismo prefijo y unit que el RegInfo: "awdl" + 0. */
-    snprintf(_bsdName, sizeof(_bsdName), "awdl%d", 0);
+    /* Nombre del ifnet ya creado (§4.4), no de un contador propio: se lee con
+     * getBSDName y se falla si está vacío (AWDL_STAGE1_CODE_FIXES.md §2). */
+    strlcpy(_bsdName, getBSDName(), sizeof(_bsdName));
+    if (!_bsdName[0]) {
+        LOG("awdl: no bsd name");
+        teardownDatapath();
+        return false;
+    }
     LOG("awdl: born %s", _bsdName);
     return true;
 }
 
+/* Deshabilita, quita del work loop, libera y pone a nulo cada cola, saltando
+ * las ya nulas; idempotente (AWDL_STAGE1_CODE_FIXES.md §2.1). */
 IOReturn RTLAwdInterface::removeQueues(OSObject *owner, void *, void *, void *, void *)
 {
     RTLAwdInterface *me = (RTLAwdInterface *)owner;
@@ -981,11 +1038,40 @@ IOReturn RTLAwdInterface::removeQueues(OSObject *owner, void *, void *, void *, 
     return kIOReturnSuccess;
 }
 
-void RTLAwdInterface::stop(IOService *provider)
+void RTLAwdInterface::teardownDatapath()
 {
     IOWorkLoop *wq = (IOWorkLoop *)rtl_sky_getWorkQueue(this);
     if (wq)
         wq->runAction(&RTLAwdInterface::removeQueues, this);
+    else
+        removeQueues(this, nullptr, nullptr, nullptr, nullptr);
+}
+
+/* TX submission action, stage 1: nothing is transmitted. The packets go back
+ * through the TX completion queue, as RTLAirInterface::txAction does once the
+ * radio has consumed them; the completion queue completes them under its gate
+ * and returns them to the pool. legacyDequeue advances its ring by the returned
+ * count, so returning 0 would stall the queue: consume the whole batch.
+ */
+IOReturn RTLAwdInterface::txNoop(OSObject *owner, void *, void *const *pkts,
+                                 uint32_t count, void *)
+{
+    RTLAwdInterface *me = OSDynamicCast(RTLAwdInterface, owner);
+    if (!me || !count || !me->_txCompQ)
+        return 0;
+    /* enqueuePackets exige count < capacidad; 64 < 128 siempre. */
+    for (uint32_t done = 0; done < count; done += 64) {
+        uint32_t n = count - done > 64 ? 64 : count - done;
+        if (rtl_txcomp_enqueue(me->_txCompQ, pkts + done, n, 0) != kIOReturnSuccess)
+            for (uint32_t i = 0; i < n; i++)
+                rtl_pool_free(me->_txPool, pkts[done + i]);
+    }
+    return (IOReturn)count;
+}
+
+void RTLAwdInterface::stop(IOService *provider)
+{
+    teardownDatapath();
     IO80211VirtualInterface::stop(provider);
 }
 
@@ -1022,17 +1108,16 @@ Notas de implementación:
   `initWithController`) y se copia al `RegInfo` en el paso 6. `?` No se ha verificado un getter
   público de la MAC en la base; el camino STA la conserva en `RTLAirController::_mac`
   (`Source/AirLayer/RTLAirLayer.hpp:187`).
-- El nombre `awdl0` se compone con prefijo y unit fijos (los mismos que el `RegInfo`) porque
-  `getBSDName()` de la familia lee el ifnet y puede no estar disponible hasta que el cliente BSD
-  termina; el handler sólo escribe el nombre y no lo usa para nada más. `?` Si la familia rechaza
-  el registro con 3 colas, se pasa al conjunto de 4+2 de §5.4.
+- El nombre `awdl0` se lee del ifnet con `getBSDName()` una vez terminado el `registerService(2)` y
+  se falla si está vacío (§4.4; [`AWDL_STAGE1_CODE_FIXES.md`](AWDL_STAGE1_CODE_FIXES.md) §2).
 - `registerService(kIOServiceSynchronous)` sustituye al `kIOServiceAsynchronous` del camino STA
   (`Source/AirLayer/RTLAirLayer.cpp:345`): es la diferencia que garantiza que el ifnet exista antes
   de devolver el nombre (D4).
-- `LOG` es el `airLog` de `RTLAirLayer.cpp`, declarado `static` en esa unidad (`:26-58`). Para que el
-  fichero nuevo escriba en el anillo `RTLAirLayerLog` hace falta exponer un `rtlAirLog()` no estático
-  desde `RTLAirLayer.cpp` (una línea; §12.3). Mientras no se haga, el ejemplo usa `IOLog` directamente
-  y las líneas `awdl:` no aparecen en el anillo del nodo `RTL8814Native`.
+- `LOG` usa el `rtlAirLog()` que el parche expone desde `RTLAirLayer.cpp`
+  (`Tools/awdl_stage1_hook.patch:60-72`; `AWDLInterface.cpp:23-25`), de modo que las líneas `awdl:`
+  van al anillo `RTLAirLayerLog` del nodo `RTL8814Native`. El parche lleva además las funciones del
+  controlador: el override del 94, `createAwdlInterface`, `destroyAwdlInterface` y el arranque del
+  boot-arg (§12.3).
 - El ivar `_mac[6]` se añade a la clase (`uint8_t _mac[6];`), junto a `_bsdName`.
 
 ### 12.3 Parche de enganche (descrito, no aplicado)
@@ -1088,11 +1173,12 @@ de `_iface->terminate()`; en `free()` (`:1558`), `IOLockFree(_awdlLock)`; en `st
 
 Un solo cambio, en dos líneas del mismo bloque:
 
-1. **Línea 39** (`build_airlayer.sh:39`), la invocación de compilación de `RTLAirLayer.cpp`: una
+1. **Línea 40** (`build_airlayer.sh:40`), la invocación de compilación de `RTLAirLayer.cpp`: una
    línea más, idéntica salvo el fichero de entrada (`Source/AirLayer/AWDLInterface.cpp`) y el objeto
-   de salida (`"$OBJ/AWDLInterface.o"`). No cambian las banderas.
+   de salida (`"$OBJ/AWDLInterface.o"`). No cambian las banderas. El generador del gate de versión
+   ha desplazado el bloque: la compilación queda en `:40` y la lista del enlazado en `:66`.
 
-2. **Línea 66** (`build_airlayer.sh:63-67`), la lista de objetos del enlazado: añadir
+2. **Línea 66** (`build_airlayer.sh:66`), la lista de objetos del enlazado: añadir
    `"$OBJ/AWDLInterface.o"` junto a `"$OBJ/RTLAirLayer.o"`.
 
    ```diff
@@ -1103,8 +1189,11 @@ Un solo cambio, en dos líneas del mismo bloque:
 
 No hace falta tocar `CFLAGS`/`CXXFLAGS` (`build_airlayer.sh:20-29`): `-ISource/IO80211` y
 `-ISource/AirLayer` ya cubren las inclusiones, y el fichero nuevo no necesita banderas propias.
-`?` No se ha compilado el esqueleto; la primera compilación real debe confirmar que la declaración
-encadenada no colisiona con `IO80211_25_6_0.h` (no incluye el catálogo AWDL, §5.2).
+`?` El parche aplica limpio sobre el árbol actual (comprobado con `git apply --check`,
+[`AWDL_STAGE1_SPEC_DELTA.md`](AWDL_STAGE1_SPEC_DELTA.md) §1) y `AWDLInterface.cpp` compila aislado
+con estos flags ([`AWDL_STAGE1_CODE_FIXES.md`](AWDL_STAGE1_CODE_FIXES.md) §0), pero el kext no se ha
+enlazado: la primera compilación real debe confirmar que la declaración encadenada no colisiona con
+`IO80211_25_6_0.h` (no incluye el catálogo AWDL, §5.2).
 
 ## 14. Lista de comprobación de pruebas
 
@@ -1118,7 +1207,8 @@ vía AWDL se controla con `rtlawdl`.
 | P0.1 | `Tools/re/check_awdl_symbols.sh` | 11/11 símbolos con tipo `0f` |
 | P0.2 | `Tools/re/check_awdl_header.py` | Sin discrepancias en los slots puros 490 y 507–569 |
 | P0.3 | Límite `0xE60 → 0xE68` de §5.2 contra el volcado de `__ZTV23IO80211VirtualInterface` | 27 métodos entre `syncDPSStats` y `setMacAddress`; `setMacAddress` en `0xF40` |
-| P0.4 | `nm`/tabla del binario construido | `IO80211VirtualInterface::init`, `setAwdlInterface` y `registerEthernetInterface` resueltos, sin `__cxa_pure_virtual` en la vtable del objeto |
+| P0.4 | `nm`/tabla del binario construido | `IO80211VirtualInterface::init`, `setAwdlInterface` y `registerEthernetInterface` resueltos, sin `__cxa_pure_virtual` en la vtable del objeto; los 50 overrides de §5.2 resuelven cada uno al símbolo exportado de la familia (comprobación dedicada en P0.5) |
+| P0.5 | `nm -u` del objeto compilado y contraste con `Docs/re/io80211_25.6.0/syms.txt` (receta en [`AWDL_STAGE1_CODE_FIXES.md`](AWDL_STAGE1_CODE_FIXES.md) §5) | Los 93 símbolos de `IO80211VirtualInterface` con tipo `0f`; 48 de los 50 overrides llegan al objeto (`free` y `stop` tienen cuerpo local) |
 
 ### T1 — Carga y gate
 
@@ -1145,6 +1235,7 @@ vía AWDL se controla con `rtlawdl`.
 | T3.2 | `ifconfig awdl0` | MAC del payload, MTU 1428, medios 802.11 |
 | T3.3 | `if_nametoindex("awdl0")` | Distinto de 0 |
 | T3.4 | Log del kernel | `awdl: registerEthernetInterface = 0x0`, `awdl: born awdl0` |
+| T3.5 | Subir `awdl0` y provocar tráfico IPv6/ND | Sin pánico: la acción no-op consume el lote por la cola TX completion y las colas habilitadas no dejan eventos colgantes ([`AWDL_STAGE1_CODE_FIXES.md`](AWDL_STAGE1_CODE_FIXES.md) §1.2, §7) |
 
 ### T4 — Aceptación por el daemon
 
@@ -1162,6 +1253,12 @@ vía AWDL se controla con `rtlawdl`.
 | T5.1 | `ioctl(SIOCGIFMEDIA)` sobre `awdl0` | `ifm_current & 0xE0 == 0x80` |
 | T5.2 | `RawGet` 97 sobre `awdl0` | Nombre del padre (`en2`) sin NUL |
 | T5.3 | Log del daemon tras T5.2 | Sin error de padre; sin timeout |
+
+T5 queda como comprobación de regresión y ya no decide nada: `ifm_current = 0x80` y el padre `en2`
+están fijados por los documentos ([`AWDL_STAGE1_IFM_CURRENT.md`](AWDL_STAGE1_IFM_CURRENT.md) §3;
+[`AWDL_STAGE1_SIOCSIFMEDIA.md`](AWDL_STAGE1_SIOCSIFMEDIA.md) §7;
+[`AWDL_STAGE1_VIRTUAL_IF_PARENT.md`](AWDL_STAGE1_VIRTUAL_IF_PARENT.md) §6); las tres filas sirven
+para detectar una regresión del `RegInfo` o del `attachInterface`.
 
 `?` No se ha identificado un comando de usuario estándar para emitir el 97 aislado; la prueba se
 apoya en el efecto (T4) y en una sonda propia si se añade.
@@ -1184,50 +1281,62 @@ apoya en el efecto (T4) y en una sonda propia si se añade.
 
 ## 15. Riesgos y puntos abiertos
 
-1. **Receptor del cast del 94 (`?`)**: el puente castea a `IO80211InfraProtocol`; no se ha
-   verificado que el objeto sea `RTLAirInterface` y no otra interfaz o el controlador
-   ([`AWDL_PROTOTYPE_DESIGN.md`](AWDL_PROTOTYPE_DESIGN.md) §3.5, §7).
-2. **Búsqueda de la interfaz para el 97 (`?`)**: si el handler usa `getAwdlInterface()`, la llamada
-   a `setAwdlInterface()` es obligatoria; si usa la lista de adjuntas, es inocua. Sin verificar.
-3. **Tipo de retorno de `IO80211VirtualInterface::init` (`?`)**: el nombre mangleado no lo codifica;
-   el esqueleto usa `bool`.
-4. **Convención de numeración (`?`)**: `IO80211_25_6_0.h:458-460` y
-   [`AWDL_VTABLE_SLOTS.md`](AWDL_VTABLE_SLOTS.md) filas 460–462 usan convenciones distintas para los
-   mismos offsets; mezclarlas al escribir la declaración desplazaría la vtable. Se ancla todo a
-   offsets y la comprobación P0.3 verifica el recuento (27 métodos, `0xE60 → 0xE68`).
-5. **Exportación de `IO80211VirtualInterface::init` (`?`)**: tipo `0f` confirmado en el volcado, pero
-   ausente de la selección de [`AWDL_KEXT_LINKAGE.md`](AWDL_KEXT_LINKAGE.md) §1.2; P0.1/P0.4 lo
-   confirman.
-6. **Forma de colas aceptada por la familia (`?`)**: 3 colas (camino STA) frente a las 4+2 de
-   Broadcom; si el registro falla, se pasa al conjunto completo de §5.4.
-7. **Valor de `RegInfo+0x10` (`?`)**: el camino STA escribe 1; para rol 6 no hay referencia.
-8. **Valor de `RegInfo+0x40` (`?`)**: el STA escribe 0; Broadcom 4 o 6 según una property.
-9. **`ifm_current` (`?`)**: la semilla `0x80` pasa el filtro, pero no se ha verificado que nada la
-   reescriba antes de la lectura del daemon (§6.3; [`AWDL_INTERFACE_BIRTH.md`](AWDL_INTERFACE_BIRTH.md)
-   §6.3).
-10. **Señal del semáforo si falla el 97 (`?`)**: la secuencia estática lo sitúa antes de la señal;
-    no se ha verificado el camino de error de la closure.
-11. **`registerService(2)` desde el handler (`?`)**: no se ha verificado si el despacho apple80211
-    ya tiene tomado el gate de la work queue; si lo tuviera, el arranque del cliente BSD podría
-    bloquearse. Mitigación: T2.2 mide el tiempo de retorno y T3.4 confirma el nombre.
-12. **Metaclass de la subclase (`?`)**: `OSDefineMetaClassAndStructors` necesita `gMetaClass` y
+1. **`registerService(2)` desde el handler (promovido, `?`)**: el 94 corre bajo un gate —el del
+   cliente BSD en la ruta ioctl ([`AWDL_STAGE1_REGINFO_AND_GATES.md`](AWDL_STAGE1_REGINFO_AND_GATES.md)
+   §5–§6); en la ruta user client el gate no se ha identificado— y, si el alta necesita ese mismo
+   work loop, el `registerService` síncrono se bloquea. Broadcom usa el mismo patrón y funciona.
+   Mitigación: T2.2 mide el tiempo de retorno y T3.4 confirma el nombre; si bloquea, la alternativa
+   asíncrona obliga a revisar el criterio del nombre en `payload+0x10` (D4).
+2. **Acción nula de la TX submission (nuevo)**: `IOSkywalkTxSubmissionQueue::initWithPool`
+   (`0xffffff8002b0caac`) exige acción no nula; con ella nula `withPool` devuelve nulo y el arranque
+   se queda sin `awdl0` ([`AWDL_STAGE1_CODE_FIXES.md`](AWDL_STAGE1_CODE_FIXES.md) §1). El código
+   lleva la acción no-op de CODE_FIXES §1.2 y T3.5 la ejercita.
+3. **Rollback incompleto del datapath (nuevo)**: si falla el registro o el nombre, las tres colas
+   deben salir del work loop antes de liberar el objeto (`teardownDatapath` → `removeQueues`,
+   [`AWDL_STAGE1_CODE_FIXES.md`](AWDL_STAGE1_CODE_FIXES.md) §2). `?` Si `terminate()` sobre un
+   arranque fallido invoca `stop()` y retira las colas.
+4. **Headroom del `RegistrationInfo` (nuevo)**: la escritura va en `+0x3C` (§5.3); `+0x3A` es la
+   mitad alta del unit y la corrompería ([`AWDL_STAGE1_CODE_FIXES.md`](AWDL_STAGE1_CODE_FIXES.md)
+   §6.1). `?` Ningún lector de `+0x3C` identificado.
+5. **Enlace de los 50 overrides (nuevo)**: cada override de `Source/AirLayer/AWDLInterface.h:91-145`
+   debe resolver al símbolo exportado de `IO80211VirtualInterface`; la compilación aislada de
+   CODE_FIXES §0 muestra 93/93 símbolos `0f` y P0.5 repite la comprobación sobre el objeto del build.
+6. **Tipo de retorno de `IO80211VirtualInterface::init`**: resuelto por desensamblado como `bool`
+   (0 en cada rama de fallo, 1 en la de éxito,
+   [`AWDL_STAGE1_CODE_FIXES.md`](AWDL_STAGE1_CODE_FIXES.md) §3.1); el esqueleto lo declara `bool` y
+   comprueba el resultado.
+7. **Convención de numeración**: cerrada con el anclaje a offsets (`IO80211_25_6_0.h:458-460` y
+   [`AWDL_VTABLE_SLOTS.md`](AWDL_VTABLE_SLOTS.md) filas 460–462 difieren sólo en la convención); la
+   comprobación P0.3 verifica el recuento (27 métodos, `0xE60 → 0xE68`).
+8. **Exportación de `IO80211VirtualInterface::init`**: tipo `0f` confirmado en el volcado y en
+   `Docs/re/io80211_25.6.0/syms.txt` (93/93, [`AWDL_STAGE1_CODE_FIXES.md`](AWDL_STAGE1_CODE_FIXES.md)
+   §0); [`AWDL_KEXT_LINKAGE.md`](AWDL_KEXT_LINKAGE.md) §1.2 es una selección, no el inventario.
+9. **Señal del semáforo si falla el 97 (`?`)**: la secuencia estática lo sitúa antes de la señal y el
+   camino de error no está documentado ([`AWDL_STAGE1_STUB_VALUES.md`](AWDL_STAGE1_STUB_VALUES.md)
+   §4). Deja de ser bloqueante: el primario ya está adjunto
+   (`Source/AirLayer/RTLAirLayer.cpp:1493`) y el 97 no puede fallar en este flujo
+   ([`AWDL_STAGE1_VIRTUAL_IF_PARENT.md`](AWDL_STAGE1_VIRTUAL_IF_PARENT.md) §6).
+10. **Metaclass de la subclase (`?`)**: `OSDefineMetaClassAndStructors` necesita `gMetaClass` y
     `C2` de `IO80211AWDLProtocol` (exportados, [`AWDL_KEXT_LINKAGE.md`](AWDL_KEXT_LINKAGE.md) §2.2);
     no se ha verificado el registro de una subclase de terceros en esa jerarquía.
-13. **`classNameOverride`** (slot 319, [`AWDL_VTABLE_SLOTS.md`](AWDL_VTABLE_SLOTS.md)): podría
+11. **`classNameOverride`** (slot 319, [`AWDL_VTABLE_SLOTS.md`](AWDL_VTABLE_SLOTS.md)): podría
     cambiar el nombre visible en el IORegistry; no verificado.
-14. **Semántica del `code` del 293 (`?`)**: el kernel no lo lee; queda documentado para la etapa 4.
-15. **Coexistencia con el catálogo AWDL**: la declaración nueva y
-    `Source/IO80211/IO80211AWDL_25_6_0.h` no pueden incluirse juntas; el catálogo no se modifica.
-16. **Ruta WCL del 94 (`?`)**: si `sendIOUCToWcl` consume la request antes del puente, el override
-    no se ejecuta; no verificado para este controlador.
-17. **Build**: el esqueleto no se ha compilado; la primera compilación puede revelar colisiones de
-    firmas en los 27 métodos de `0xE68`–`0xF38` (`?`).
+12. **Semántica del `code` del 293 (`?`)**: el kernel no lo lee; queda documentado para la etapa 4.
+13. **Ruta WCL del 94 (`?`)**: parcialmente cerrada — la caída al puente existe en las dos tablas de
+    dispatch ([`AWDL_STAGE1_DISPATCH_PATH.md`](AWDL_STAGE1_DISPATCH_PATH.md) §1.3); `?` si existe un
+    WCL en este stack que pueda consumir la request antes del puente.
+14. **Build**: el esqueleto compila aislado con los flags de `build_airlayer.sh` y el parche aplica
+    limpio ([`AWDL_STAGE1_CODE_FIXES.md`](AWDL_STAGE1_CODE_FIXES.md) §0;
+    [`AWDL_STAGE1_SPEC_DELTA.md`](AWDL_STAGE1_SPEC_DELTA.md) §1); el kext no se ha enlazado. `?` La
+    primera compilación enlazada debe confirmar que la declaración encadenada no colisiona con
+    `IO80211_25_6_0.h` y que las firmas de los 27 métodos de `0xE68`–`0xF38` casan.
 
 ## 16. Anexo — Tabla de slots de la etapa 1
 
-`off` = offset desde el vptr; `slot` = numeración de [`AWDL_VTABLE_SLOTS.md`](AWDL_VTABLE_SLOTS.md)
-(`slot = off/8 + 2`). Los métodos de `0xFC8`–`0x11B8` son puros y en la etapa 1 devuelven
-`kIOReturnUnsupported`; `setMacAddress` (`0xF40`) también es puro y devuelve 0.
+`off` = offset desde el vptr, no desde la cabecera `ZTV` de la vtable (`vptr = ZTV + 0x10`);
+`slot` = numeración de [`AWDL_VTABLE_SLOTS.md`](AWDL_VTABLE_SLOTS.md) (`slot = off/8 + 2`). Los
+métodos de `0xFC8`–`0x11B8` son puros y en la etapa 1 devuelven `kIOReturnUnsupported`;
+`setMacAddress` (`0xF40`) también es puro y devuelve 0.
 
 | off | slot | Método | Tratamiento etapa 1 |
 |---:|---:|---|---|
@@ -1250,6 +1359,13 @@ apoya en el efecto (T4) y en una sonda propia si se añade.
 | `0x1170`–`0x1198` | 560–565 | dfsp, dfsp ucsa, **companion (562, `0x1180`)**, oob sec, llw params, tx rate | stubs 102 / D6 |
 | `0x11A0`–`0x11B8` | 566–569 | p2p coex, psf dwell, awdl config, rtg peer stats | stubs 102 |
 
+`?` Los nombres del tramo final no están fijados: [`AWDL_STAGE1_STUB_VALUES.md`](AWDL_STAGE1_STUB_VALUES.md)
+§3 lee en `+0x11A0`..`+0x11B8` `setLLW_PARAMS`, `setTX_RATE`, `setP2P_COEX_PROTECTION` y
+`setPSF_DWELL`, exactamente `0x10` (2 slots) por encima de la tabla anterior; es la firma de una
+lectura desde el ZTV en lugar del vptr. Bajo esa hipótesis las dos tablas coinciden, pero hasta que
+P0.3 lea la vtable desde el vptr, los nombres de las cuatro últimas filas y el orden de los cuatro
+últimos stubs quedan en `?`. Los otros 59 nombres no están afectados.
+
 El slot 570 (`getTX_RATE`, `0x11C0`) queda fuera de la declaración: su naturaleza pura discrepa
 entre [`AWDL_PURE_SLOTS.md`](AWDL_PURE_SLOTS.md) y [`AWDL_APPLE80211_DISPATCH.md`](AWDL_APPLE80211_DISPATCH.md)
 §7 (`?`), y la etapa 1 no lo necesita. `?` La tabla presupone la comprobación P0.3.
@@ -1267,3 +1383,41 @@ entre [`AWDL_PURE_SLOTS.md`](AWDL_PURE_SLOTS.md) y [`AWDL_APPLE80211_DISPATCH.md
 - [`AWDL_PURE_SLOTS.md`](AWDL_PURE_SLOTS.md) — slots puros y firmas.
 - [`AWDL_APPLE80211_DISPATCH.md`](AWDL_APPLE80211_DISPATCH.md) §4 — tablas de dispatch.
 - `Source/AirLayer/RTLAirLayer.cpp`, `.hpp`, `Source/IO80211/*`, `build_airlayer.sh` — código actual.
+
+## 18. Aplicación de las ediciones del delta de consistencia
+
+Las 14 ediciones ordenadas de [`AWDL_STAGE1_SPEC_DELTA.md`](AWDL_STAGE1_SPEC_DELTA.md) §5, aplicadas
+sobre esta especificación:
+
+| # | Secciones | Edición | Estado |
+|---:|---|---|---|
+| 1 | §4.3, §11 | `len != 32` fuera del contrato del override; la longitud la valida el handler de la familia | Aplicada |
+| 2 | §4.2 | `isCommandProhibited` retirado como prueba del 94; conclusión en `?` hasta T2.2 | Aplicada |
+| 3 | §5.2, §12.1, P0.4 | 50 overrides de `0x428` a `0xDC0`; no desplazan la vtable; enlace de sus símbolos en P0.4 | Aplicada |
+| 4 | §5.3, §12.2 | Fuente de `+0x14 = 2` corregida al camino STA; `+0x10` y `+0x40` marcados sin lector; headroom resuelto a `+0x3C` | Aplicada |
+| 5 | §5.4 | Forma de colas cerrada por QUEUE_SHAPE; acción no nula obligatoria; colas nacen habilitadas; acción no-op en el plan | Aplicada |
+| 6 | §2, §5.5, §10.1 | D4 condicional: gate del 94 y riesgo de bloqueo del `registerService` síncrono; T2.2 mide | Aplicada |
+| 7 | §7.2 | Requisito 2 (`setAwdlInterface`) borrado, con la justificación del 97 | Aplicada |
+| 8 | §6.3 | «No verificado» sustituido por el cierre de SIOCSIFMEDIA: siembra en el alta y `ioctl_sifmedia` falla antes del store | Aplicada |
+| 9 | §9 | Gate real del evento (`com.apple.wifi_awdl.event_monitor`, `0xffffff80023347fc`); `sub_100046E30` deja de citarse como hecho y pasa a T7.1 | Aplicada |
+| 10 | §12.1, §12.2 | `snprintf` por `getBSDName`; `rtlAirLog`; `removeQueues` completo con `teardownDatapath`; acción no-op; funciones del controlador del parche | Aplicada |
+| 11 | §13 | Líneas de `build_airlayer.sh` actualizadas (`:40`, `:66`); parche aplica limpio, kext sin enlazar | Aplicada |
+| 12 | §14 | P0.5 y T3.5 añadidas; T5 degradada a comprobación de regresión | Aplicada |
+| 13 | §15 | Lista reescrita: cerrados retirados (1, 2, 6, 7, 8, 9, 15), 11 promovido, riesgos nuevos (acción nula, rollback, headroom, overrides) | Aplicada |
+| 14 | §16 | Offsets declarados desde el vptr; discrepancia de `0x10` con STUB_VALUES §3; cuatro últimos nombres en `?` | Aplicada |
+
+Ninguna edición se omite. Precisiones de aplicación:
+
+- La edición 3 pide añadir la comprobación de enlace de los 50 overrides a P0.4 y la edición 12 añade
+  P0.5 para esos mismos símbolos: P0.4 referencia P0.5 y la comprobación no se duplica.
+- La edición 4 ofrece «resolver `+0x3A` frente a `+0x3C` o marcar los dos como `?`»: se resuelve a
+  `+0x3C` con la evidencia de [`AWDL_STAGE1_CODE_FIXES.md`](AWDL_STAGE1_CODE_FIXES.md) §6.1
+  (`createProxInterface` escribe 64 en `+0x3C`; `+0x3A` es la mitad alta del unit), y el `?` se
+  conserva para el lector del campo.
+- La edición 5 prescribe no añadir las colas como event sources mientras no haya drenaje; el código
+  de [`AWDL_STAGE1_CODE_FIXES.md`](AWDL_STAGE1_CODE_FIXES.md) §1.2 y §2 las mantiene en el work loop
+  con la acción no-op hasta el `teardownDatapath`, y T3.5 ejercita ese conjunto; §5.4 recoge las dos
+  cosas.
+- Las ediciones no tocaban los riesgos antiguos 3, 4 y 5 de §15; quedan en la lista reescrita con el
+  cierre que aporta [`AWDL_STAGE1_CODE_FIXES.md`](AWDL_STAGE1_CODE_FIXES.md) (§3.1 tipo `bool`, §0
+  símbolos `0f`).
