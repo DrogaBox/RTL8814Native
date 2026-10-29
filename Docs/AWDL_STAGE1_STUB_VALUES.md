@@ -16,7 +16,7 @@ sólo se cree la interfaz.
 | 4 | `RawGet` `VIRTUAL_IF_PARENT` | 97 | tabla get `getVIRTUAL_IF_PARENT` (`0xffffff800227b7ff`) | no; devuelve el nombre del padre |
 | 5 | `RawSet` `COMPANION_SKYWALK_IF_CREATE` | 293 | tabla set `setCOMPANION_SKYWALK_IF_CREATE` (`0xffffff800228b4b8`, `gSetHandlerTable[292]`) | no |
 | 6 | ioctls ifnet (`SIOCGIFMEDIA`, `SIOCSIFFLAGS`, `SIOCSIFLLADDR`, `SIOCSIFADDR`, `SIOCADDMULTI`, …) | — | camino BSD/IOSkywalk | no |
-| 7 | ioctl `'i'` 131 (`0xC1206983`) e ioctl `'i'` 130 (`0xC0806982`, tipo 7708) | — | `IO80211APIUserClient` | no |
+| 7 | ioctl `'i'` 131 (`0xC1206983`) e ioctl `'i'` 130 (`0xC0806982`, tipo 7708) | — | socket BSD → `if_ioctl` → `handleIoctl` → `performGatedCommandIOCTL` → `RouteExternal` (id fuera de rango → 102); `AWDL_STAGE1_IOCTL_130_131.md` | no |
 | 8 | monitoreo de eventos (`Apple80211RawP2PEventMonitoringInit` / `…EventMonitoringInit`) | — | user client + `createEventPipe` | no |
 
 Fuentes: `Docs/AWDL_WIFIP2PD_POST_CREATE.md` (tabla de la secuencia y payloads) y
@@ -33,7 +33,7 @@ secuencia anterior no invoca). Consecuencia directa para la etapa 1: los stubs
 | 4 (97) | nombre de la interfaz primaria (`en2`) como C-string; `kIOReturnSuccess` | El handler del kernel ya lo hace así (`getPrimarySkywalkInterface`, `AWDL_STAGE1_OPEN_POINTS.md` §3); el stub no hace falta |
 | 5 (293) | `102` y no crear `llw0` | La ausencia de la companion sólo produce el log de `AWDL_LLW_COMPANION.md`; el daemon continúa con `awdl0` |
 | 6 (`SIOCGIFMEDIA`) | `ifm_current = 0x80` | Exigido por el filtro `(ifm_current & 0xE0) == 0x80` (`AWDL_STAGE1_IFM_CURRENT.md` §1); sale del descriptor de medios, no del `RegistrationInfo` directo |
-| 7 (130/131) | `kIOReturnSuccess` con el payload vacío o el eco del `?` | No están documentados como fatales; el daemon no ramifica sobre el contenido en la secuencia leída (`?` en `AWDL_WIFIP2PD_CALLERS.md`) |
+| 7 (130/131) | nada: dejar el comportamiento heredado (`RouteExternal` devuelve 102 por id fuera de rango) | El GET (131, id 0) y el SET (130, tipo 7708) quedan fuera de `[1, 586]`; el GET falla, el SET no se emite y el daemon traga el error por su `throws`; no es fatal (`AWDL_STAGE1_IOCTL_130_131.md`) |
 | 8 (eventos) | dejar que la familia cree el canal | Sólo exige rol 6 y la autorización `com.apple.wifi_awdl.event_monitor` (`AWDL_STAGE1_DISPATCH_PATH.md` §2) |
 
 ## 3. Los 63 slots: qué hace Proximity en la cola de la vtable
@@ -71,7 +71,8 @@ la secuencia post-create (p. ej. al abrir AirDrop) no está en las dos listas co
 | 97 | no consta (`?`) | el daemon guarda `parentInterfaceName`; no hay rama de aborto documentada |
 | 293 | no | la ausencia de `llw0` se registra y la secuencia sigue (`AWDL_LLW_COMPANION.md`) |
 | `SIOCGIFMEDIA` | sí | el filtro de medios decide si la interfaz se acepta (`AWDL_STAGE1_IFM_CURRENT.md` §6) |
-| 130/131, eventos | no consta (`?`) | `AWDL_WIFIP2PD_CALLERS.md` no documenta rama de aborto |
+| 130/131 | no | ambos devuelven 102 (id fuera de rango); el GET falla, el SET no se emite, el daemon traga el `throws` (`AWDL_STAGE1_IOCTL_130_131.md`) |
+| eventos | no consta (`?`) | `AWDL_WIFIP2PD_CALLERS.md` no documenta rama de aborto |
 
 ## 5. Pendiente
 
