@@ -394,6 +394,9 @@ private:
 	char _bsdName[16];
 
 	bool createDatapath();
+	void teardownDatapath();
+	static IOReturn txNoop(OSObject *owner, void *queue, void *const *pkts,
+	                       uint32_t count, void *refCon);
 	static IOReturn removeQueues(OSObject *owner, void *, void *, void *, void *);
 };
 

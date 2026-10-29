@@ -44,9 +44,13 @@ void *rtl_txcomp_withPool(void *pool, uint32_t cap, uint32_t flags, OSObject *ow
 void *rtl_rxcomp_withPool(void *pool, uint32_t cap, uint32_t flags, OSObject *owner,
                           void *action, void *refCon, uint32_t opts)
 	__asm("__ZN26IOSkywalkRxCompletionQueue8withPoolEP25IOSkywalkPacketBufferPooljjP8OSObjectPFjS3_PS_PP15IOSkywalkPacketjPvES8_j");
-void rtl_vif_init(void *self, IO80211Controller *ctrl, ether_addr *mac, uint32_t role,
-                 const char *name)
+bool rtl_vif_init(void *self, IO80211Controller *ctrl, ether_addr *mac, uint32_t role,
+                  const char *name)
 	__asm("__ZN23IO80211VirtualInterface4initEP17IO80211ControllerP10ether_addrjPKc");
+IOReturn rtl_txcomp_enqueue(void *q, void *const *pkts, uint32_t n, uint32_t opts)
+	__asm("__ZN26IOSkywalkTxCompletionQueue14enqueuePacketsEPKP15IOSkywalkPacketjj");
+void rtl_pool_free(void *pool, void *pkt)
+	__asm("__ZN25IOSkywalkPacketBufferPool16deallocatePacketEP15IOSkywalkPacket");
 uintptr_t rtl_vif_start(void *self, IOService *provider)
 	__asm("__ZN23IO80211VirtualInterface5startEP9IOService");
 IOReturn rtl_ctrl_setAwdlInterface(IO80211Controller *ctrl, void *awdl)
@@ -79,7 +83,7 @@ struct rtl_awdl_pool_options {
 #define AWDL_REGINFO_MEDIA_CUR  0x28    /* u32, ifm_current                  */
 #define AWDL_REGINFO_PREFIX     0x30    /* ptr to "awdl"                     */
 #define AWDL_REGINFO_UNIT       0x38    /* u32, 0                            */
-#define AWDL_REGINFO_HEADROOM   0x3a    /* u16, 64                           */
+#define AWDL_REGINFO_HEADROOM   0x3c    /* u16, 64; +0x38 is the BSD unit    */
 #define AWDL_REGINFO_FLAGS      0x40    /* u32, 0                            */
 #define AWDL_REGINFO_MTU        0x48    /* u32 MTU and u32 max MTU (0x594)   */
 #define AWDL_REGINFO_MAC        0x108   /* 6 bytes, the MAC of the request   */
@@ -107,7 +111,10 @@ bool RTLAwdInterface::initWithController(RTLAirController *ctrl, const uint8_t m
 	 * failures that matter surface in attach() and in the base start(). */
 	ether_addr ea;
 	memcpy(ea.octet, mac, 6);
-	rtl_vif_init(this, ctrl, &ea, AWDL_ROLE, "awdl");
+	if (!rtl_vif_init(this, ctrl, &ea, AWDL_ROLE, "awdl")) {
+		LOG("awdl: base init failed");
+		return false;
+	}
 	rtl_sky_setId(this, AWDL_IFACE_ID);
 	if (!attach(ctrl)) {
 		LOG("awdl: attach failed");
@@ -137,7 +144,8 @@ bool RTLAwdInterface::createDatapath()
 		LOG("awdl: packet pool alloc failed");
 		return false;
 	}
-	_txSubQ = rtl_txsub_withPool(_txPool, 128, 0, this, nullptr, nullptr, 0);
+	_txSubQ = rtl_txsub_withPool(_txPool, 128, 0, this,
+	                             (void *)&RTLAwdInterface::txNoop, nullptr, 0);
 	_txCompQ = rtl_txcomp_withPool(_txPool, 128, 0, this, nullptr, nullptr, 0);
 	_rxCompQ = rtl_rxcomp_withPool(_rxPool, 128, 0, this, nullptr, nullptr, 0);
 	if (!_txSubQ || !_txCompQ || !_rxCompQ) {
@@ -189,8 +197,10 @@ bool RTLAwdInterface::startWithRegistration(RTLAirController *ctrl)
 	void *queues[3] = { _txSubQ, _txCompQ, _rxCompQ };
 	IOReturn r = rtl_eth_register(this, _regInfo, queues, 3, _txPool, _rxPool, 0);
 	LOG("awdl: registerEthernetInterface 0x%x", r);
-	if (r != kIOReturnSuccess)
+	if (r != kIOReturnSuccess) {
+		teardownDatapath();
 		return false;
+	}
 
 	/* Synchronous: the BSD client of the family composes the name, publishes
 	 * it and creates the ifnet before this returns. */
@@ -200,6 +210,7 @@ bool RTLAwdInterface::startWithRegistration(RTLAirController *ctrl)
 	const char *name = rtl_sky_getBSDName(this);
 	if (!name || !name[0]) {
 		LOG("awdl: no bsd name");
+		teardownDatapath();
 		return false;
 	}
 	strlcpy(_bsdName, name, sizeof(_bsdName));
@@ -227,13 +238,40 @@ IOReturn RTLAwdInterface::removeQueues(OSObject *owner, void *, void *, void *, 
 	return kIOReturnSuccess;
 }
 
-void RTLAwdInterface::stop(IOService *provider)
+/*
+ * TX submission action, stage 1: nothing is transmitted. The packets go back
+ * through the TX completion queue, which completes them under its gate and
+ * returns them to the pool. legacyDequeue advances its ring by the returned
+ * count, so returning 0 would stall the queue: consume the whole batch.
+ */
+IOReturn RTLAwdInterface::txNoop(OSObject *owner, void *, void *const *pkts,
+                                 uint32_t count, void *)
+{
+	RTLAwdInterface *me = OSDynamicCast(RTLAwdInterface, owner);
+	if (!me || !count || !me->_txCompQ)
+		return 0;
+	/* enqueuePackets requires count < queue capacity (128). */
+	for (uint32_t done = 0; done < count; done += 64) {
+		uint32_t n = count - done > 64 ? 64 : count - done;
+		if (rtl_txcomp_enqueue(me->_txCompQ, pkts + done, n, 0) != kIOReturnSuccess)
+			for (uint32_t i = 0; i < n; i++)
+				rtl_pool_free(me->_txPool, pkts[done + i]);
+	}
+	return (IOReturn)count;
+}
+
+void RTLAwdInterface::teardownDatapath()
 {
 	IOWorkLoop *wq = (IOWorkLoop *)rtl_sky_getWorkQueue(this);
 	if (wq)
 		wq->runAction(&RTLAwdInterface::removeQueues, this);
 	else
 		removeQueues(this, nullptr, nullptr, nullptr, nullptr);
+}
+
+void RTLAwdInterface::stop(IOService *provider)
+{
+	teardownDatapath();
 	IO80211VirtualInterface::stop(provider);
 }
 
