@@ -5,6 +5,8 @@
 #   sudo ./Tools/phase5_deploy.sh "<EFI mount>" driver    RTL8814Native 4.20
 #   sudo ./Tools/phase5_deploy.sh "<EFI mount>" layer N [S] RTL8814AirLayer 0.15 + rtlair=N (1 or 2),
 #                                                        rtlairstep=S if given (bisection, 1-4)
+#   sudo RTL8814_AWDL=1 ./Tools/phase5_deploy.sh "<EFI mount>" layer 2 adds rtlawdl=1 (AWDL stage 1);
+#   without it the arg is removed. Put the variable after sudo: sudo drops the caller's environment.
 #   sudo ./Tools/phase5_deploy.sh "<EFI mount>" inert     remove rtlair from boot-args (layer stays, inert)
 #
 # Every run first copies EFI/OC/config.plist and the touched kexts to
@@ -22,11 +24,12 @@ OC="$EFI/EFI/OC"
 CFG="$OC/config.plist"
 PB=/usr/libexec/PlistBuddy
 GUID="7C436110-AB2A-4BBB-A880-FE41995C9F82"
-DRIVER_SRC="${RTL8814_DRIVER_SRC:-Backups/build_4.22/RTL8814Native.kext}"
-DRIVER_MD5="${RTL8814_DRIVER_MD5:-36ea1ac8a83a606ceeb2d36f8c9ff015}"
-LAYER_SRC="${RTL8814_LAYER_SRC:-Backups/airlayer_0.30/RTL8814AirLayer.kext}"
-LAYER_MD5="${RTL8814_LAYER_MD5:-d84740a6a6a75dc8c6db34af626d6d6e}"
+DRIVER_SRC="${RTL8814_DRIVER_SRC:-Build/RTL8814Native.kext}"
+LAYER_SRC="${RTL8814_LAYER_SRC:-Build/RTL8814AirLayer.kext}"
+DRIVER_MD5="${RTL8814_DRIVER_MD5:-$(md5 -q "$DRIVER_SRC/Contents/MacOS/RTL8814Native" 2>/dev/null || true)}"
+LAYER_MD5="${RTL8814_LAYER_MD5:-$(md5 -q "$LAYER_SRC/Contents/MacOS/RTL8814AirLayer" 2>/dev/null || true)}"
 
+[ "$(id -u)" = 0 ] || { echo "run with sudo (it writes to the EFI)"; exit 1; }
 [ -f "$CFG" ] || { echo "no $CFG (is the EFI mounted?)"; exit 1; }
 # Mount names move between boots ("NO NAME" can be the USB stick): internal disks only
 diskutil info "$EFI" | grep -Eq 'Device Location: +Internal' || {
@@ -65,10 +68,11 @@ kext_index() {     # bundle path -> index in Kernel:Add, or empty
 
 set_rtlair() {     # value [step], or empty to remove both
 	local args new
-	args="$($PB -c "Print :NVRAM:Add:$GUID:boot-args" "$CFG")"
-	new="$(echo "$args" | tr ' ' '\n' | grep -vE '^rtlair(step)?=' | tr '\n' ' ' | sed 's/ *$//')"
+	args="$($PB -c "Print :NVRAM:Add:$GUID:boot-args" "$CFG" 2>/dev/null || true)"
+	new="$(printf '%s\n' "$args" | tr ' ' '\n' | { grep -vE '^(rtlair(step)?|rtlawdl)=' || true; } | tr '\n' ' ' | sed 's/ *$//')"
 	[ -n "$1" ] && new="${new:+$new }rtlair=$1"
 	[ -n "$1" ] && [ -n "${2:-}" ] && new="$new rtlairstep=$2"
+	[ -n "$1" ] && [ "${RTL8814_AWDL:-0}" = 1 ] && new="$new rtlawdl=1"
 	$PB -c "Set :NVRAM:Add:$GUID:boot-args $new" "$CFG"
 	echo "boot-args: $new"
 }
