@@ -8,6 +8,8 @@ e IOSkywalkFamily van en el mismo binario), IDA headless (`idat -A -S`) sobre un
 `boot_awdl.kc.i64`. Todas las direcciones son VA; cada una citada como cabeza se comprobó con
 `ida_funcs.get_func(ea).start_ea == ea`. Lo que el desensamblado no fija va con `?`.
 
+Nota posterior: `AWDL_STAGE1_QSET_STATE.md` corrige §4 y el riesgo 4 de §7: `netif_qset_enqueue` no está en el camino del primer ND/RS (su único llamador es el procesado de flujos) y el byte `+0x3C` que compara es `nll_state` del `netif_llink`, que vale 1 en una interfaz viva. Con las colas habilitadas, el primer paquete sí llega a la acción no-op.
+
 ## 1. Respuesta
 
 1. **La subida termina bien.** `ifconfig awdl0 up` recorre `if_ioctl` → `ioctlHandler` →

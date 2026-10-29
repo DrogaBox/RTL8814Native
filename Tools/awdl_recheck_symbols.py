@@ -64,9 +64,14 @@ METHOD_NAME_RE = re.compile(r"(\w+)\s*\(")
 PURE_TAIL_RE = re.compile(r"\)\s*=\s*0\s*$")
 
 
+def fail(msg):
+    print(msg, file=sys.stderr)
+    sys.exit(2)
+
+
 def read_text(path):
     if not path.is_file():
-        sys.exit("error: missing input file: %s" % path)
+        fail("error: missing input file: %s" % path)
     return path.read_text(encoding="utf-8", errors="replace")
 
 
@@ -85,7 +90,7 @@ def class_block(text, class_name):
     """Source text of a class/struct body, braces excluded."""
     m = re.search(r"\b(?:struct|class)\s+" + re.escape(class_name) + r"\b[^{;]*\{", text)
     if not m:
-        sys.exit("error: %s not found as a class definition" % class_name)
+        fail("error: %s not found as a class definition" % class_name)
     depth, i = 1, m.end()
     while i < len(text) and depth:
         if text[i] == "{":
@@ -94,7 +99,7 @@ def class_block(text, class_name):
             depth -= 1
         i += 1
     if depth:
-        sys.exit("error: unbalanced braces in the %s block" % class_name)
+        fail("error: unbalanced braces in the %s block" % class_name)
     return text[m.end(): i - 1]
 
 
@@ -134,7 +139,7 @@ def extra_list_requirements(path):
         if not entry:
             continue
         if not re.fullmatch(r"__?Z\w+", entry):
-            sys.exit("error: %s:%d: not a mangled symbol: %s" % (path, lineno, entry))
+            fail("error: %s:%d: not a mangled symbol: %s" % (path, lineno, entry))
         reqs.setdefault(entry, "list:" + path.name)
     return reqs
 
@@ -147,8 +152,8 @@ def load_dump(path):
         if not parts:
             continue
         if len(parts) != 3:
-            sys.exit("error: %s:%d: expected '<address> <size> <name>', got: %s"
-                     % (path, lineno, line))
+            fail("error: %s:%d: expected '<address> <size> <name>', got: %s"
+                 % (path, lineno, line))
         addr, _size, name = parts
         if addr.strip("0") == "":
             undefined.add(name)
