@@ -1,5 +1,7 @@
 # Comprobaciones pendientes de la etapa 1
 
+> Corrección: el almacén del tx data offset de `0xffffff8002affa94` va al `ifnet_init_eparams` de pila y no al cliente BSD; el valor acaba en `ifnet+0x58C`. Ver `AWDL_STAGE1_LIFECYCLE_CHECKS.md` §1 y §4.
+
 Cierre de cuatro puntos abiertos de `AWDL_STAGE1_CODE_FIXES.md` y `AWDL_STAGE1_SPEC_DELTA.md`,
 verificados en el desensamblado del kernelcache de macOS 26.7.1 (25G241, x86_64) sobre una copia de
 la base anotada. Las direcciones de función se comprobaron una a una: cada VA citado como función es
