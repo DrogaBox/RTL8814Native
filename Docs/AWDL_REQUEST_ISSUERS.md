@@ -16,7 +16,7 @@ las del kernel son VA del `.kc`. Lo no verificado va como `?`.
 
 ## 1. Respuesta corta
 
-1. **La masa de los ~70 tipos AWDL no la emite ningún proceso de espacio de usuario: la emite el propio
+1. **La masa de los ~70 tipos AWDL no la emite ningún proceso de userspace: la emite el propio
    `IO80211AWDLPeerManager` del kernel** sobre su interfaz, por la ruta interna (magic
    `0x802869C8` → `IO80211Glue::receiveMessageInternal` → `apple80211RouteInternal` →
    `gInternalSetHandlerTable`). El `.kc` contiene 336 sites del magic SET `0x802869C8` y 299 del
@@ -25,12 +25,12 @@ las del kernel son VA del `.kc`. Lo no verificado va como `?`.
    mismo camino de despacho que usaría userspace. La codificación del comando interno (token
    `0x802869C8` con el tipo en el dword alto) está documentada en
    [`AWDL_PEERMANAGER_SOFTWARE.md`](AWDL_PEERMANAGER_SOFTWARE.md) §9.2.
-2. En espacio de usuario **un único componente del sistema emite ioctls apple80211:
+2. En userspace **un único componente del sistema emite ioctls apple80211:
    `IO80211.framework`** (la versión userspace, en el caché). El barrido completo del caché
    produce exactamente 5 sites de GET (`0xC02869C9`) y 6 de SET (`0x802869C8`), todos dentro de
    esa imagen (§2.2). La constante `0xC02869C8` («SET usuario» según el doc de despacho) **no
    aparece como inmediato en ningún binario del sistema** (0 hits en el caché y en los 5
-   daemons): los SET de espacio de usuario viajan todos como `0x802869C8`.
+   daemons): los SET de userspace viajan todos como `0x802869C8`.
 3. `Apple80211.framework` ya no implementa el API: su symtab solo exporta 13 símbolos externos
    (`AC*` de AppleConnect + `_Apple80211VersionString`/`_Apple80211VersionNumber`,
    symtab en `0x2dc07f00` del pool, 83 entradas). El API `Apple80211*` que importan los daemons
@@ -109,7 +109,7 @@ Lectura de la decompilación (copia binaria del `__TEXT` cargada cruda, funcione
 `sub_1F421` = SetWithIOCTL en `Build/ida_awdl/task_awdl_issuers/io80211_out/`): los wrappers
 construyen el struct de 40 B (`apple80211req`: `ifname[16]` @0, tipo u32 @+0x10, val u32 @+0x14,
 len u32 @+0x18, puntero @+0x20 — layout ya verificado en `AWDL_WIFIP2PD_POST_CREATE.md` §2.0) y
-llaman `ioctl` sobre un socket BSD. El SET de espacio de usuario usa **siempre** `0x802869C8`
+llaman `ioctl` sobre un socket BSD. El SET de userspace usa **siempre** `0x802869C8`
 (`_IOW('i',200,40)`), no `0xC02869C8`; el kernel lo acepta en la misma rama
 (`AWDL_APPLE80211_DISPATCH.md` §2). `Apple80211Get`/`Apple80211Set` (sin `WithIOCTL`) delegan en
 las variantes `WithIOCTL`/wrappers (`?` el encadenado exacto: la decompilación cruda de
@@ -154,8 +154,8 @@ Inventario de su superficie Apple80211 (probe1 sobre copia `airportd_copy.i64`,
 (`-[CWHostAPModeManager __supportedChannel:]`), 5 de `ioctl` (ninguno con constantes
 apple80211; el único identificado es `0xC0206911` en `sub_100083C1C`), y 1 `IOServiceOpen` +
 1 `IOConnectCallAsyncMethod` en `-[WiFiWatchdogMonitor initWithIOService:]`
-(`0x1000fbc97`: `IOServiceOpen(..., type=1)` en `0x1000fbebb`, `IOConnectCallAsyncMethod` en
-`0x1000fbebb+` sobre el servicio del driver para el watchdog — sin requests apple80211).
+(`0x1000fbc97`: `IOServiceOpen(..., type=1)` sobre el servicio del driver y
+`IOConnectCallAsyncMethod` en `0x1000fbebb`, ambos para el watchdog — sin requests apple80211).
 La extracción de tipos (`analyze_airportd.py`, salida `airportd_calls.txt`) no produce ningún
 tipo AWDL directo salvo los que siguen; el resto son tipos generales (1, 2, 3, 4, 5, 9, 15, 16,
 19, 24, 43, 48, 51, 52, 66, 69, 70, 81, 85, 87, 90, 96, 107, 191, 192, 193, 216, 223, 239, 245,
@@ -331,7 +331,6 @@ GET (mismo patrón, magic `0xC02869C9`):
 | `getAwdlDevStats(apple80211_awdl_dev_stats*)` | `0xffffff800221dc20+0x24` | **247**, 14 |
 | `getAwdlAfTxMode(…)` | `0xffffff800221c27b+0x5b` | **208** |
 | `getAwdlTxCalPeriod(…)` | `0xffffff800221c0b4+0x2a` | **226**, 14 |
-| `getAwdlElectionId`/`getAwdlElectionMetric`/`getAwdlSyncParams`… (resto) | ver filas anteriores | — |
 | `getP2PDriverMetrics(apple80211_p2p_steering_metrics*)` | `0xffffff800222a34a+0xe` | 1, **456** (`?`) |
 | `configureValidAWDLChannels()` | `0xffffff80021cab7f+0x13f` | **207** (`CHANNELS_INFO`), 1, 379 (`?`) |
 | `getSibCoexStatusFromDriver()` | `0xffffff80021cb52d+0x39` | sin inmediato (`?`) |
@@ -342,7 +341,7 @@ El funnel genérico es `IO80211AWDLPeerManager::setIOCTLE(uint,uint,void*)`
 (site del magic en `0xffffff80021fb8ba+0xc8`): tipo/len/payload como argumentos. Las funciones
 receptoras de los tipos coinciden con la tabla de `AWDL_APPLE80211_DISPATCH.md` §4
 (`gSetHandlerTable[115] = setAWDL_SYNC_PARAMS` para 116, etc.): la auto-emisión recorre el mismo
-camino de despacho que una request de espacio de usuario y termina en el mismo setter, con la
+camino de despacho que una request de userspace y termina en el mismo setter, con la
 notificación al glue (`CommonGlue::sendMessage`) incluida.
 
 ### 6.3 Otros emisores internos
