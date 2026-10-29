@@ -134,23 +134,32 @@ bytes **sin NUL** en `req_data` (`memmove(*(void **)(a4 + 32), BSDName, v10)`). 
 
 | Offset | Ancho | Campo | Significado |
 |---:|---:|---|---|
-| +0x00 | 4 | `code` u32 | código de companion que wifip2pd propaga de su llamador (`v61[0] = a5`, `w2p 0x10004b34d`); tipo auxiliar Swift `apple80211_companion_skywalk_if_create_code` = `UInt32` rawValue (`awdl_callers_probe.log:1666`) |
-| +0x04 | 4 | `op` u32 | 1 = crear (`v61[1] = 1`, `w2p 0x10004b352`); valor distinto de 0 y de 1 = borrar (`?` semántica exacta de los demás valores) |
-| +0x08 | 16 | `name[16]` | **salida**: nombre BSD de la interfaz companion creada |
+| +0x00 | 4 | `code` u32 | código de companion que wifip2pd propaga de su llamador (`v61[0] = a5`, `w2p 0x10004b34d`); el kernel nunca lo lee y su valor en el camino AWDL queda `?`; tipo auxiliar Swift `apple80211_companion_skywalk_if_create_code` = `UInt32` rawValue (`awdl_callers_probe.log:1666`) |
+| +0x04 | 4 | `op` u32 | 1 = crear (`v61[1] = 1`, `w2p 0x10004b352`); 0 = destruir; cualquier otro valor = no-op que devuelve 0 |
+| +0x08 | 16 | `name[16]` | **salida**: nombre BSD de la interfaz companion; se escribe solo en el éxito de la creación, también cuando la interfaz ya existía |
 
 Handler SET `0xffffff800228b4b8`: `len == 24`, `data != NULL`, ruta WCL con 0x18 y fallback al
 puente. Implementación Broadcom (`AppleBCMWLANProximityInterface::setCOMPANION_SKYWALK_IF_CREATE`,
-`0xffffff8001722ef2`): lee `op` en `+0x04` (`v3 = *(_DWORD *)(a2 + 4)`; 0 = `?`, 1 = crear la
-interfaz Skywalk de baja latencia vía `createSkywalkInterface`, resto = borrar, log
-`"Deletion failed, NAN companion skywalk interface does not exists"`), y en el éxito escribe el
-nombre: `__strncpy_chk((void *)(a2 + 8), bsdname, 0x10)`. **El nombre de respuesta se devuelve en
-payload+8, no en `req.ifname`**: wifip2pd lo lee con `String.init(cString:)` sobre el mismo offset
-(`v62` en `rbp-0x70` = `v61+8` tras `v61` en `rbp-0x78`, `w2p 0x10004b40a`) y valida con
-`if_nametoindex("llw0")` (inmediato `813132908` = `0x30776C6C`, `w2p 0x10004b814`) si el rol del
-handle es 1, o `if_nametoindex("llw1")` (`829910124` = `0x31776C6C`, `w2p 0x10004b862`) si es 2.
-Esto corrige el detalle de `AWDL_WIFIP2PD_POST_CREATE.md` §2.4 que atribuía la respuesta al campo
-`ifname` de la petición (sobre awdl0 va el nombre del padre como dirección de la request; el nombre
-creado vuelve en payload+8). El campo `ifname` de la petición (req+0) lleva `awdl0`.
+`0xffffff8001722ef2`; semántica verificada en
+[`AWDL_LLW_COMPANION.md`](AWDL_LLW_COMPANION.md) §3.2): lee `op` en `+0x04`
+(`v3 = *(_DWORD *)(a2 + 4)`) y nunca lee `code` en `+0x00`. `op == 1` crea la interfaz Skywalk
+de baja latencia vía `createSkywalkInterface` (sitio `0xffffff8001723068`) y en el éxito escribe
+el nombre en payload+8; si la companion ya existe (puntero en ivars+120), escribe igualmente el
+nombre BSD de la existente en payload+8 y devuelve 0 con el log
+`"AWDL companion skywalk interface %s already exists for %s"`; si la creación falla, devuelve el
+error sin escribir payload+8. `op == 0` destruye vía `destroySkywalkInterface` (sitio
+`0xffffff8001722fe9`); sin companion devuelve `0xE00002C0` con el log
+`"Deletion failed, NAN companion skywalk interface does not exists for %s"`.
+**Cualquier otro valor de `op` es un no-op que devuelve 0.** El nombre se escribe solo en el
+éxito de la creación: `__strncpy_chk((void *)(a2 + 8), bsdname, 0x10)`. **El nombre de respuesta
+se devuelve en payload+8, no en `req.ifname`**: wifip2pd lo lee con `String.init(cString:)` sobre
+el mismo offset (`v62` en `rbp-0x70` = `v61+8` tras `v61` en `rbp-0x78`, `w2p 0x10004b40a`) y
+valida con `if_nametoindex("llw0")` (inmediato `813132908` = `0x30776C6C`, `w2p 0x10004b814`) si
+el rol del handle es 1, o `if_nametoindex("llw1")` (`829910124` = `0x31776C6C`,
+`w2p 0x10004b862`) si es 2. Esto corrige el detalle de `AWDL_WIFIP2PD_POST_CREATE.md` §2.4 que
+atribuía la respuesta al campo `ifname` de la petición (sobre awdl0 va el nombre del padre como
+dirección de la request; el nombre creado vuelve en payload+8). El campo `ifname` de la petición
+(req+0) lleva `awdl0`.
 
 ## 4. Superficie AWDL con slot de vtable: structs por tipo
 
