@@ -46,6 +46,7 @@ Convención de estado:
 | [AWDL_PROXIMITY_DATAPATH.md](AWDL_PROXIMITY_DATAPATH.md) | Colas, pools, TX/RX y `getBSDNamePrefix` del rol 6 en el camino Broadcom | Cerrado y verificado; la reconstrucción fina del registro lleva `?` puntual |
 | [AWDL_LLW_COMPANION.md](AWDL_LLW_COMPANION.md) | Companion `llw0` (tipo 293): emisión, consecuencias del fallo y veredicto: prescindible en etapa 1 | Cerrado y verificado para etapa 1; el campo `code` del payload queda en `?` (tabla §3) |
 | [AWDL_EVENTS.md](AWDL_EVENTS.md) | Eventos kernel→userspace sobre `awdl0`, canales de entrega y qué consume el daemon | Cerrado y verificado |
+| [AWDL_STAGE3_EVENT_EMITTERS.md](AWDL_STAGE3_EVENT_EMITTERS.md) | Emisores de cada evento AWDL, ruta desde el kext hasta el daemon (`postMessage` slot `0xB18`), estado que consume `wifip2pd` y mínimos de la etapa 3 | Cabezas de función y sitios del 46/47 verificados en IDA; semántica del payload del 47 y consumo por otros clientes `?` |
 | [AWDL_REQUEST_ISSUERS.md](AWDL_REQUEST_ISSUERS.md) | Quién emite cada request AWDL: el `IO80211AWDLPeerManager` del kernel y `IO80211.framework`; airportd el resto | Cerrado y verificado |
 
 ## 3. Protocolo en el aire, PeerManager, firmware y hardware RTL8814
