@@ -30,7 +30,7 @@ multicast y su recuento). Ninguno toca los campos `+0x10`/`+0x40` de la copia de
 ## 2. Lo que fija la familia
 
 `initRegistrationInfo` (`0xffffff8002b108e2`) hace `bzero(RegInfo+8, 0x128)`
-(`0xffffff8002b1091a`–`0xffffff8002b10923`) y escribe: qword `0x00000001300000001` en `+0`
+(`0xffffff8002b1091a`–`0xffffff8002b10923`) y escribe: qword `0x13000000001` en `+0`
 (`0xffffff8002b10928`–`0xffffff8002b10932`), `+0x8` por el slot `+0x9B0` de la vtable de
 `IOSkywalkNetworkInterface` con defecto 2 (`0xffffff8002b10958`), `+0xC` por el slot `+0x9B8`
 (`0xffffff8002b10966`), `+0x14 = 0x100` (`0xffffff8002b10935`), `+0x24 = 0x22`
