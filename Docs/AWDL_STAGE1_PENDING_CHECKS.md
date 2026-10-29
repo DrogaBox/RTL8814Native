@@ -56,7 +56,7 @@ Cabeza de `free`: `0xffffff8002330b8c` (confirmada como ranura 18 de la vtable d
 | `[this+0x128]` (bloque de ivars) | `0xffffff8002330b9c`-`0xb9f` | `test`/`jz`: si es nulo salta todo el bloque y va al `free` base. |
 | `ivars+0xE0` (diccionario) | `0xffffff8002330bac`-`0xbaf` | `test`/`jz` antes del release (`[vtable+0x28]`). |
 | `ivars+0x200` (base de colas de flujo) | `0xffffff8002330bd3`-`0xbd6` | `test`/`jz` antes del release. |
-| `ivars+0x208` | `0xffffff8002330bfd`-`0xbfd` | `test`/`jz` antes de la llamada `[vtable+0x8F0]`. |
+| `ivars+0x208` | `0xffffff8002330bf3`-`0xbfd` | `test`/`jz` antes de la llamada `[vtable+0x8F0]`. |
 | Bloque completo | `0xffffff8002330c1e` | `memset_s(ivars, 0x210, 0, 0x210)` antes de `IOFreeTypeImpl`. |
 
 Ninguna liberación de `free` carece de comprobación de nulo. El `free` base,
