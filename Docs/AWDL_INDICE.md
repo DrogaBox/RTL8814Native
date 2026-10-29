@@ -1,6 +1,6 @@
 # Índice de los documentos AWDL
 
-Inventario de los 60 documentos `Docs/AWDL_*.md` a fecha de 2026-10-29, agrupados por tema, con el
+Inventario de los 62 documentos `Docs/AWDL_*.md` a fecha de 2026-10-29, agrupados por tema, con el
 resumen en una línea y el estado de cada uno. Base del estado: el título, el primer párrafo y las
 secciones de cierre o de puntos abiertos de cada documento, más `HANDOFF_AWDL.md` (raíz del repo,
 sección 4, que recoge los `?` deduplicados).
@@ -73,7 +73,9 @@ Convención de estado:
 | [AWDL_STAGE1_OPEN_POINTS.md](AWDL_STAGE1_OPEN_POINTS.md) | Cierra tres puntos de la spec §15: cast del 94, caída sin WCL y padre del 97 | Cerrado y verificado en lo esencial; §4 deja dos puntos (tabla §3 de este índice) |
 | [AWDL_STAGE1_PENDING_CHECKS.md](AWDL_STAGE1_PENDING_CHECKS.md) | Cierra cuatro puntos: lector de `RegInfo+0x3C`, `vi_free` a medio inicializar, dereg opcional y `checkForWork` | Cerrado y verificado en lo esencial; siete puntos finos propios (tabla §3) |
 | [AWDL_STAGE1_STUB_VALUES.md](AWDL_STAGE1_STUB_VALUES.md) | La secuencia post-create no toca ningún slot puro; stub recomendado petición a petición | Cerrado y verificado; corregido por [AWDL_STAGE1_IOCTL_130_131.md](AWDL_STAGE1_IOCTL_130_131.md) (fila 7) y [AWDL_STAGE1_VIRTUAL_IF_PARENT.md](AWDL_STAGE1_VIRTUAL_IF_PARENT.md) (fila 4) |
-| [AWDL_STAGE1_QUEUE_SHAPE.md](AWDL_STAGE1_QUEUE_SHAPE.md) | 1 TX submission + 1 TX completion + 1 RX completion basta; sólo el bit WMM exige 4 colas | Cerrado y verificado |
+| [AWDL_STAGE1_QUEUE_SHAPE.md](AWDL_STAGE1_QUEUE_SHAPE.md) | 1 TX submission + 1 TX completion + 1 RX completion basta; sólo el bit WMM exige 4 colas | Cerrado y verificado; su `?` de orden lo cierra [AWDL_STAGE1_BSDSTART_ORDER.md](AWDL_STAGE1_BSDSTART_ORDER.md) |
+| [AWDL_STAGE1_BSDSTART_ORDER.md](AWDL_STAGE1_BSDSTART_ORDER.md) | `setInterface` ocurre dentro del registro, antes del `ifnet`; el 22 del validador no llega al driver | Cerrado y verificado |
+| [AWDL_STAGE1_SMALL_CHECKS.md](AWDL_STAGE1_SMALL_CHECKS.md) | `IO80211VirtualInterface::init` devuelve `bool` de 1 byte; el `req` de pila de la ruta legacy del 94 nace a cero | Cerrado y verificado |
 | [AWDL_STAGE1_IFUP_PATH.md](AWDL_STAGE1_IFUP_PATH.md) | Qué ejecuta `ifconfig awdl0 up` y el primer paquete: las colas nacen deshabilitadas y el ND/RS no llega al no-op | Cerrado y verificado; su §4 lo corrige [AWDL_STAGE1_QSET_STATE.md](AWDL_STAGE1_QSET_STATE.md) |
 | [AWDL_STAGE1_QSET_STATE.md](AWDL_STAGE1_QSET_STATE.md) | `qset+0x3C` es `nll_state`; `if_refflags`/`if_eflags` los pone IOSkywalkFamily; con el código actual el primer ND/RS llega a la acción no-op | Cerrado y verificado; cinco puntos finos propios (§10) |
 | [AWDL_STAGE1_ERRNO_TXPATH.md](AWDL_STAGE1_ERRNO_TXPATH.md) | `errnoFromReturn` mapea el rechazo por cola deshabilitada (`0xE00002D8`) a errno 16 (`EBUSY`); wifip2pd no consume `if_link_state` ni `state+113` (lector de `IFF_UP` e `IFF_RUNNING` vía `getifaddrs` con extremo keypath en `?`) | Cerrado en sus dos preguntas; cadena keypath del daemon, lectores kernel de `state+113` y tramo `dlil_ifclassq_setup` en `?` (§8) |
@@ -135,7 +137,8 @@ Convención de estado:
 6. Etapa 1: [AWDL_STAGE1_IMPL_SPEC.md](AWDL_STAGE1_IMPL_SPEC.md) primero, y después los cierres en
    este orden: [AWDL_STAGE1_DISPATCH_PATH.md](AWDL_STAGE1_DISPATCH_PATH.md) e
    [AWDL_STAGE1_IFNET_TO_INTERFACE.md](AWDL_STAGE1_IFNET_TO_INTERFACE.md) (despacho),
-   [AWDL_STAGE1_QUEUE_SHAPE.md](AWDL_STAGE1_QUEUE_SHAPE.md) (colas),
+   [AWDL_STAGE1_QUEUE_SHAPE.md](AWDL_STAGE1_QUEUE_SHAPE.md) y
+   [AWDL_STAGE1_BSDSTART_ORDER.md](AWDL_STAGE1_BSDSTART_ORDER.md) (colas y arranque BSD),
    [AWDL_STAGE1_IFM_CURRENT.md](AWDL_STAGE1_IFM_CURRENT.md) y
    [AWDL_STAGE1_SIOCSIFMEDIA.md](AWDL_STAGE1_SIOCSIFMEDIA.md) (medios),
    [AWDL_STAGE1_VIRTUAL_IF_PARENT.md](AWDL_STAGE1_VIRTUAL_IF_PARENT.md) y
@@ -186,11 +189,11 @@ a la sección 4 de `HANDOFF_AWDL.md`, de la que corrige dos puntos ya cerrados (
 |---:|---|---|---|
 | 5 | Clase del objeto WCL en `glue+0xD8` y el método del slot `+0x120` que decide si el 94 se consume; si existe un WCL que lo consuma en este stack (#95) | `AWDL_STAGE1_OPEN_POINTS.md` §4; `AWDL_STAGE1_SPEC_DELTA.md` §7 | Identificar la clase y el método del slot en el KC |
 | 6 | Llamador de `requestEnqueue` sobre las colas de `awdl0` y punto de habilitación del event source (`+0x28`) en el arranque del datapath: con acción nula pasaría de latente a fatal | `AWDL_STAGE1_PENDING_CHECKS.md` §4 | Localizar el llamador en la familia; T3.5 lo confirma en hardware |
-| 7 | Tipo de retorno real de `IO80211VirtualInterface::init` (#82); el código lo da por `bool` | `AWDL_STAGE1_SPEC_DELTA.md` §7; `AWDL_STAGE1_CODE_FIXES.md` §3 | Leer el manejo del retorno en el `init` de la familia |
-| 8 | Longitud inicial del `req` de pila en la ruta legacy del 94 cuando `len < 32` (hallazgo A10) | `AWDL_STAGE1_CODE_REVIEW_HOOK.md` A10 | Leer la inicialización del `req` en `setVirtualInterfaceCreate` |
+| 7 | ~~Tipo de retorno real de `IO80211VirtualInterface::init` (#82); el código lo da por `bool`~~ | `AWDL_STAGE1_SPEC_DELTA.md` §7; `AWDL_STAGE1_CODE_FIXES.md` §3 | Leer el manejo del retorno en el `init` de la familia. Cerrado por [AWDL_STAGE1_SMALL_CHECKS.md](AWDL_STAGE1_SMALL_CHECKS.md) §1 |
+| 8 | ~~Longitud inicial del `req` de pila en la ruta legacy del 94 cuando `len < 32` (hallazgo A10)~~ | `AWDL_STAGE1_CODE_REVIEW_HOOK.md` A10 | Leer la inicialización del `req` en `setVirtualInterfaceCreate` Cerrado por [AWDL_STAGE1_SMALL_CHECKS.md](AWDL_STAGE1_SMALL_CHECKS.md) §2 |
 | 9 | Puntos finos del ciclo de vida: cero-inicial del asignador tipado, limpieza de `registerInterestedDriver` si falla la rama 5 de `init`, propietario del cerrojo `ivars+0x30`, campo del `ifnet` que consume `clienteBSD+0x13C`, enlace de `r15` en `AppleBCMWLANSkywalkInterface::start`, intención del parámetro `uint` de `deregisterEthernetInterface` | `AWDL_STAGE1_PENDING_CHECKS.md` §«Puntos que quedan abiertos» | Chequeos dirigidos en el KC, uno por punto |
 | 10 | Camino de TX: errno que ve la pila al descartarse el paquete (mapeo de `0xE00002D8` en `errnoFromReturn`), consumidor de `state+113`/`if_link_state` en wifip2pd, llamada del `ifclassq` a `tx_push`, vía de alta del `netif_llink` en el camino del kext | `AWDL_STAGE1_IFUP_PATH.md` §8; `AWDL_STAGE1_QSET_STATE.md` §10; errno 16 (`EBUSY`) y búsquedas en wifip2pd cerrados en `AWDL_STAGE1_ERRNO_TXPATH.md` §1-§6 | Recorrer la cadena keypath de wifip2pd y el llenado de la tabla del `ifclassq` (`dlil_ifclassq_setup`); alta del `netif_llink` |
-| 11 | Orden entre `setInterface` y la creación del `ifnet` en `bsd_start`; quién consume el retorno 22 del rechazo por `num_txqs == 0` | `AWDL_STAGE1_QUEUE_SHAPE.md` §11 | Recorrer la secuencia instrucción a instrucción |
+| 11 | ~~Orden entre `setInterface` y la creación del `ifnet` en `bsd_start`; quién consume el retorno 22 del rechazo por `num_txqs == 0`~~ | `AWDL_STAGE1_QUEUE_SHAPE.md` §11 | Cerrado por [AWDL_STAGE1_BSDSTART_ORDER.md](AWDL_STAGE1_BSDSTART_ORDER.md): `setInterface` en `0xffffff8002b0a38d` (dentro del registro, antes del `registerService`); el `ifnet` en `0xffffff8002affbb5` (dentro del `start` del cliente BSD); el 22 del núcleo lo consume el alloc del proveedor y el de la vía DriverKit se convierte en `0xE00002BC` |
 | 12 | Qué getters de los 63 slots consulta el daemon fuera de la secuencia post-create (p. ej. al abrir AirDrop) | `AWDL_STAGE1_STUB_VALUES.md` §3/§5 | Leer el switch maestro de eventos/requests del daemon; confirmado con un par Apple real en hardware |
 | 13 | Constructores de TLV sin nombre (datapath state, ranging, real-time group, version, NAN sync, pref chan) y contenido exacto del tirón de TX | `AWDL_PEERMANAGER_DRIVER_ABI.md` §3.11 y §4 | Identificar y decompilar los constructores (etapa 2) |
 | 14 | Vínculo del `IO80211AWDLPeerManager` del kernel con la interfaz de un driver externo (ivars `+0x120`/`+0x28`) | `AWDL_APPLE80211_DISPATCH.md` §8.3; `AWDL_PROTOTYPE_DESIGN.md` §7 | Trazar la creación y publicación del manager para rol 6 (etapa 2) |

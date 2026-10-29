@@ -230,11 +230,15 @@ etapa 1 no habilita las colas, así que no hay ninguna vía a ese salto.
 | `22` | `EINVAL` | `0x2aff2c5` | índice fuera del recuento de su dirección, cola ausente o fallo al añadirla al proveedor |
 | sin código | — | `0x2aff562` | pool ausente o descuadrado, o fallo del proveedor del nexus: cierra y devuelve 0; no hay `awdl0` |
 
-El rechazo del netif por `num_txqs == 0` no cambia el retorno del registro: viaja como 22 a
-`kern_nexus_netif_llink_add` y de ahí a `IOSkywalkNetworkBSDClient::message`, que devuelve
-`0xE00002BC`; el registro ya había devuelto 0. `?` Quién consume ese retorno y si aborta el alta en ese
-punto no se ha fijado: el orden entre `setInterface` y `registerService` no se ha recorrido
-instrucción por instrucción.
+El rechazo del netif por `num_txqs == 0` no cambia el retorno del registro, que ya había devuelto 0.
+En el camino del registro en núcleo el 22 ni siquiera pasa por `kern_nexus_netif_llink_add`: lo
+produce `nx_netif_default_llink_config` (`0xffffff80009faf35`, llamada desde
+`kern_nexus_controller_alloc_net_provider_instance` en `0xffffff80009a4310`) y lo consume el propio
+alloc, que lo devuelve tal cual; `IOSkywalkNetworkBSDClient::start` aborta con cualquier valor no
+nulo y no hay `ifnet` ni nombre BSD. La vía que sí va por `kern_nexus_netif_llink_add` y por
+`message` (que convierte el 22 en `0xE00002BC` en `0xffffff8002b00d6e`) es la del mensaje
+`0xE0060105`, cuya única cadena es DriverKit (`addLogicalLink` ←
+`IOUserNetworkWLAN::_AddLogicalLink_Impl`). Cerrado por `AWDL_STAGE1_BSDSTART_ORDER.md`.
 
 ## 10. Aplicación a la etapa 1
 
@@ -266,6 +270,6 @@ instrucción por instrucción.
 | rol | referencias a `IO80211SkywalkInterface::getInterfaceRole` (`0x22f5ed8`) | sólo código de `AppleBCMWLAN*`; ninguna en la cadena de registro ni en la familia |
 | habilitación | referencias a `IOSkywalkQueueSet::setEnable` | dos de datos (vtable), ninguna de código |
 | `createDatapath` | nombres con `Datapath` en `IO80211*` e `IOSkywalk*` | no existe; sólo `printDataPath`, `reportDatapathIssue` y los métodos de Broadcom |
-| `?` | orden entre `setInterface` (mensaje `0xE0060105`) y la creación del `ifnet` en `bsd_start` | no recorrido |
+| orden entre `setInterface` y la creación del `ifnet` en `bsd_start` | recorrido instrucción a instrucción | cerrado por `AWDL_STAGE1_BSDSTART_ORDER.md`: `setInterface` en `0xffffff8002b0a38d` (registro, antes del `registerService`); `ifnet` en `0xffffff8002affbb5` (`start` del cliente BSD) |
 | `?` | alta con 0 colas RX (bucle omitido, sin comprobación) | no verificado en hardware |
 | `?` | valores concretos de `service class` de la tabla `wmmAC` | la tabla se leyó en el desensamblado; su semántica (AC 0-3) no se ha mapeado a nombres |
