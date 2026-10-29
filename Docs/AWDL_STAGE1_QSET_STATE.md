@@ -195,10 +195,12 @@ instrucción útil de
 | 7 | `legacyDequeue` → acción | `0xffffff8002B2C860` → `+0x20` de la cola | Acción no nula y `+0xCC` | `txNoop` (`AWDLInterface.cpp:255`) | Se ejecuta |
 | — | `netif_qset_enqueue` | `0xffffff80009FA2A0` | `nll_state == 2` | No está en esta ruta; el enlace está en 1 | No aplica |
 
-Conclusión: **sí**. Con las colas habilitadas por `e50d7cf`, el primer ND/RS atraviesa las dos
-comprobaciones de `ifnet`, la de `IFF_UP` y la de la cola, y llega a la acción no-op. El único tramo no
-leído es el salto del `ifclassq` a la operación `tx_push` del proveedor; todo lo demás está fijado por el
-desensamblado.
+Conclusión original (corregida): se daba por hecho que el primer ND/RS llegaba a la acción no-op con las
+colas habilitadas. Ese salto del `ifclassq` a `tx_push` no existe: el encolado despierta el hilo de
+arranque del `ifnet`, cuyo `if_start` es `_ifp_if_start` y purga el `ifclassq`; la acción sólo se ejecuta si
+la familia golpea la cola después del encolado. El análisis completo, con las filas 4, 5 y 7 de la tabla
+anterior invalidadas, está en `AWDL_STAGE1_TXPUSH_LLINK.md` §1 y §10. Lo fijado aquí sobre `if_refflags`,
+`if_eflags` y `nll_state` sigue vigente.
 
 ## 9. Lo que la etapa 1 deja sin poner
 
@@ -218,7 +220,7 @@ algún consumidor de `wifip2pd` lo exige queda como estaba en `AWDL_STAGE1_IFUP_
 
 | Punto | Estado |
 |---|---|
-| Llamada del `ifclassq` a la operación `tx_push` del proveedor | `?` No se ha localizado la instrucción; la operación está registrada en `+0x58` de la tabla del proveedor (`0xffffff8002AFF1C5`) y `nxp_queue_tx_push` es su única implementación. |
+| Llamada del `ifclassq` a la operación `tx_push` del proveedor | Cerrado por `AWDL_STAGE1_TXPUSH_LLINK.md` §1-§4: no existe ese salto; `tx_push` sólo se usa en el camino de puerto virtual. |
 | Vía de alta del `netif_llink` en el camino del kext (mensaje `0xE0060105` o llamada del nexus en `0xffffff80005FE2D9`) | `?` Las dos existen; la del mensaje sólo se ha visto salir de la ruta DriverKit. |
 | Otras escrituras de `+0x3C` fuera de las funciones del `netif_llink` | `?` No se ha hecho barrido exhaustivo; en el ciclo de vida del enlace sólo aparecen 1 y 2. |
 | Significado del bit 8 de `if_refflags` (0x0A en el alta) | `?` No se ha identificado el nombre; la comprobación de `ifnet_enqueue_pkt` sólo mira los tres bits bajos. |

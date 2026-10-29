@@ -1,6 +1,6 @@
 # Índice de los documentos AWDL
 
-Inventario de los 62 documentos `Docs/AWDL_*.md` a fecha de 2026-10-29, agrupados por tema, con el
+Inventario de los 63 documentos `Docs/AWDL_*.md` a fecha de 2026-10-29, agrupados por tema, con el
 resumen en una línea y el estado de cada uno. Base del estado: el título, el primer párrafo y las
 secciones de cierre o de puntos abiertos de cada documento, más `HANDOFF_AWDL.md` (raíz del repo,
 sección 4, que recoge los `?` deduplicados).
@@ -75,9 +75,10 @@ Convención de estado:
 | [AWDL_STAGE1_STUB_VALUES.md](AWDL_STAGE1_STUB_VALUES.md) | La secuencia post-create no toca ningún slot puro; stub recomendado petición a petición | Cerrado y verificado; corregido por [AWDL_STAGE1_IOCTL_130_131.md](AWDL_STAGE1_IOCTL_130_131.md) (fila 7) y [AWDL_STAGE1_VIRTUAL_IF_PARENT.md](AWDL_STAGE1_VIRTUAL_IF_PARENT.md) (fila 4) |
 | [AWDL_STAGE1_QUEUE_SHAPE.md](AWDL_STAGE1_QUEUE_SHAPE.md) | 1 TX submission + 1 TX completion + 1 RX completion basta; sólo el bit WMM exige 4 colas | Cerrado y verificado; su `?` de orden lo cierra [AWDL_STAGE1_BSDSTART_ORDER.md](AWDL_STAGE1_BSDSTART_ORDER.md) |
 | [AWDL_STAGE1_BSDSTART_ORDER.md](AWDL_STAGE1_BSDSTART_ORDER.md) | `setInterface` ocurre dentro del registro, antes del `ifnet`; el 22 del validador no llega al driver | Cerrado y verificado |
+| [AWDL_STAGE1_TXPUSH_LLINK.md](AWDL_STAGE1_TXPUSH_LLINK.md) | No hay salto del `ifclassq` a `tx_push`; el hilo de arranque ejecuta `_ifp_if_start`, que purga; el primer ND/RS sólo llega a `txNoop` si la familia golpea la cola después del encolado (a decidir en T3.5) | Cerrado y verificado; `[ifp+0x900]` y el paso final `?` por hardware |
 | [AWDL_STAGE1_SMALL_CHECKS.md](AWDL_STAGE1_SMALL_CHECKS.md) | `IO80211VirtualInterface::init` devuelve `bool` de 1 byte; el `req` de pila de la ruta legacy del 94 nace a cero | Cerrado y verificado |
 | [AWDL_STAGE1_IFUP_PATH.md](AWDL_STAGE1_IFUP_PATH.md) | Qué ejecuta `ifconfig awdl0 up` y el primer paquete: las colas nacen deshabilitadas y el ND/RS no llega al no-op | Cerrado y verificado; su §4 lo corrige [AWDL_STAGE1_QSET_STATE.md](AWDL_STAGE1_QSET_STATE.md) |
-| [AWDL_STAGE1_QSET_STATE.md](AWDL_STAGE1_QSET_STATE.md) | `qset+0x3C` es `nll_state`; `if_refflags`/`if_eflags` los pone IOSkywalkFamily; con el código actual el primer ND/RS llega a la acción no-op | Cerrado y verificado; cinco puntos finos propios (§10) |
+| [AWDL_STAGE1_QSET_STATE.md](AWDL_STAGE1_QSET_STATE.md) | `qset+0x3C` es `nll_state`; `if_refflags`/`if_eflags` los pone IOSkywalkFamily; el análisis del primer ND/RS lo corrige [AWDL_STAGE1_TXPUSH_LLINK.md](AWDL_STAGE1_TXPUSH_LLINK.md) | Cerrado y verificado; cinco puntos finos propios (§10) |
 | [AWDL_STAGE1_ERRNO_TXPATH.md](AWDL_STAGE1_ERRNO_TXPATH.md) | `errnoFromReturn` mapea el rechazo por cola deshabilitada (`0xE00002D8`) a errno 16 (`EBUSY`); wifip2pd no consume `if_link_state` ni `state+113` (lector de `IFF_UP` e `IFF_RUNNING` vía `getifaddrs` con extremo keypath en `?`) | Cerrado en sus dos preguntas; cadena keypath del daemon, lectores kernel de `state+113` y tramo `dlil_ifclassq_setup` en `?` (§8) |
 | [AWDL_STAGE1_IFM_CURRENT.md](AWDL_STAGE1_IFM_CURRENT.md) | `ifm_current` sale del descriptor de medios sembrado por `registerNetworkInterface` desde `RegInfo+0x28` (0x80) | Cerrado y verificado; su punto abierto lo cierra [AWDL_STAGE1_SIOCSIFMEDIA.md](AWDL_STAGE1_SIOCSIFMEDIA.md) |
 | [AWDL_STAGE1_SIOCSIFMEDIA.md](AWDL_STAGE1_SIOCSIFMEDIA.md) | Nada puede cambiar `ifm_current` de `awdl0` antes de la lectura del daemon | Cerrado y verificado; T5.1 queda como comprobación de regresión |
