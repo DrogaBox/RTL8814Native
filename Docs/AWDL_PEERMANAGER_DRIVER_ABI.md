@@ -732,12 +732,16 @@ struct awdl_umi {                    // 56 B
     uint8_t  pad0[10];               // +0x0a
     uint16_t option;                 // +0x14  6 = normal, 14 = "UMIOnDwell"
     uint8_t  self_bssid[6];          // +0x16  ivars+37204/+37208
-    uint32_t reserved1;              // +0x1c  = 0
-    uint16_t template_len;           // +0x20  ivars+10248
-    uint8_t  pad1[6];                // +0x22
-    uint64_t template;               // +0x28  ivars+9048 (plantilla MI en ivars)
+    uint8_t  pad1[10];               // +0x1c..+0x27 = 0
+    uint16_t template_len;           // +0x28  ivars+10248
+    uint8_t  pad2[6];                // +0x2a
+    uint64_t template;               // +0x30  ivars+9048 (plantilla MI en ivars)
 };                                    // total 0x38
 ```
+
+Offsets recalculados sobre la descompilación de `sendUnicastMI`: el payload empieza en `v36`
+(`rbp-0x68`, `v35[1] = &v36`), la longitud es `LOWORD(v40)` (`rbp-0x40` → `+0x28`) y el puntero `v41`
+(`rbp-0x38` → `+0x30`). Una versión anterior de esta nota los situaba en `+0x20`/`+0x28`.
 
 Precondiciones: `ivars+16096` bit 1 (AWDL conectado), `>= 10 ms` desde el último UMI al peer
 (`peer_ivars+1632`), `ivars+772` bit 0 (dentro de ventana) y `buildMasterIndicationTemplate` con
