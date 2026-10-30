@@ -171,7 +171,7 @@ llegar con −45 dBm o más (−58 en el juego ampliado) para pasar a enrutable.
 
 ## 6. Pendiente
 
-- Qué evento del par dispara, en `wifip2pd`, las rutas que acaban en `sub_1002823D0` y el ioctl 415 (§2).
+- ~~Qué evento del par dispara el ioctl 415 en `wifip2pd`~~: cerrado por [AWDL_WIFIP2PD_PRESENCE_TRIGGER.md](AWDL_WIFIP2PD_PRESENCE_TRIGGER.md) (primer action frame de cada par, más datapath y registro de tráfico).
 - Qué cambio de estado de la interfaz activa `LLAValid` (`PM+65308`) y quién activa el bit 1 de
   `PM+16096` (hay escrituras completas del campo en `enableAWDL`, `setAwdlSyncState`, `reset` y
   otras).
