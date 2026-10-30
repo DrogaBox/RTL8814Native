@@ -118,7 +118,24 @@ exige A1 propia o broadcast en `Source/rtl8814au/core/rtw_mlme_ext.c:1317-1319`;
   (`usb_recv_tasklet`, `Source/Compat/VendorOsDep.c:677`; `recvbuf2recvframe` :433). Convertirlo a
   mbuf y entregarlo por una nueva función de plataforma (propuesta: `RTL_RADIO_FN_AWDL_HOOK`,
   simétrica a `RTL_RADIO_FN_DATA_HOOK` de :41, con una struct de metadatos {rssi, rate, mactime,
-  canal} tomados de `pattrib->phy_info` `?` — el campo exacto del RSSI por confirmar) `?`.
+  canal}) `?` (nombre y firma por decidir). Origen de cada campo en el punto de desvío:
+  - **RSSI en dBm**: `pattrib->phy_info.recv_signal_power` (`s8`). `pre_recv_entry`
+    (`core/rtw_recv.c:4870`) llama a `rx_query_phy_status` (:4911) antes de `rtw_recv_entry`, así que
+    ya está relleno al llegar a `validate_recv_frame`. El 8814A va por
+    `phydm_rx_physts_1st_type` (`hal/phydm/phydm_phystatus.c:1145`, rama `ODM_IC_11AC_SERIES` de
+    :3278): en OFDM vale `(pwdb_all & 0x7f) − 110` y en CCK `phydm_get_cck_rssi(lna, vga)`. El
+    informe de PHY va en todas las tramas porque el RCR de arranque lleva `RCR_APP_PHYST_RXFF`
+    (`hal/rtl8814a/usb/usb_halinit.c:450`). Si `pattrib->physt` vale 0, no hay medida, y el 0 en
+    `+0x2c` desactivaría el filtro de borde: mejor descartar la trama o poner −100 `?`.
+  - **Tasa**: `pattrib->data_rate`, índice `DESC_RATE*` de 7 bits (`rtl8814a_rxdesc.c:55`).
+  - **`mactime`**: el parser de descriptores del 8814A no lee el TSF. La macro
+    `GET_RX_STATUS_DESC_TSFL_8814A` (dword 5, `include/rtl8814a_recv.h:156`) existe y habría que
+    añadir la lectura. De qué puerto es ese TSF no está comprobado `?`.
+  - **Canal**: `pattrib->ch` no se rellena en el 8814A; hay que tomar el canal actual de la radio.
+
+  El manager solo usa `+0x2c` (RSSI): `+0x0c` canal, `+0x28` tasa y `+0x30` `mactime` no los lee
+  (`AWDL_PEERMANAGER_DRIVER_ABI.md` §1.3). Viajan dentro de la cabecera de 72 B del evento 48, y
+  si el daemon los usa no está trazado `?`.
 - Capa, recepción: cola propia bajo `_awdlLock`/`_rxLock` (`RTLAirLayer.cpp:1485`, patrón de
   `rxHook`/`rxDrainEntry` :1255-1292), con hilo de drenaje propio o el mismo `_rxDrain` extendido.
   Clasificación por tipo en la capa: categoría 127 → paso 3; frame de datos con SNAP Apple → paso
@@ -526,7 +543,7 @@ de `AWDL_ESTADO_Y_BLOQUEO.md` §4, que este plan no sustituye.
 |---:|---|---|
 | 1 | Firma y nombre de las nuevas funciones de plataforma (`AWDL_PORT`, `AWDL_HOOK`, `AWDL_TX`) | Diseño de `RTLRadioABI.h` antes de P1/P2/P6 |
 | 2 | Vía de programación del puerto 1 (registros directos frente a llamadas con `hw_port = HW_PORT1`) y efecto del tipo ad-hoc sobre beacons/TSF | Prueba de P1; `AWDL_RTL8814_RX_ACK.md` §5 |
-| 3 | Campo exacto de RSSI/tasa/mactime que la radio entrega con el frame crudo (`pattrib->phy_info`) | Lectura del código RX de la radio al implementar P2 |
+| 3 | ~~Campo exacto de RSSI/tasa/mactime que la radio entrega con el frame crudo~~ | Cerrado en el paso 2: `recv_signal_power`, `data_rate`, TSFL del descriptor sin leer aún; queda abierto el valor para tramas sin informe de PHY |
 | 4 | Captura del puntero del manager (`createPeerManager` heredado frente a `getP2PSkywalkPeerMgr`) | P5; punto 15 de `AWDL_INDICE.md` §8.2 |
 | 5 | Cuerpo exacto del TLV 5 y su mapeo con el 155 | P6; `AWDL_PSF_MIF_EMISSION.md` §10 |
 | 6 | Tasa de PSF/MIF (12 Mbps de referencia frente a 6 Mbit/s OFDM en 2,4 GHz) y de datos (legacy 24 frente a HT MCS7) | Medición en P6/P7 |
