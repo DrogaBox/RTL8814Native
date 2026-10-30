@@ -74,7 +74,8 @@ El tipo 17 aparece en todas las tramas del iPhone y no en las de owly; en el ker
 `parseAwdlIEEE80211CntnrTLV` ([AWDL_FRAME_WIRE_FORMAT.md](AWDL_FRAME_WIRE_FORMAT.md)), y según
 `winawdl/DESIGN-NOTES.md` es donde el iPhone anuncia sus capacidades VHT. Las capturas no contienen
 MIFs con relleno de ceros ni A-MSDU; winawdl sí observó MIFs del iPhone terminados en 8 bytes a cero en
-el canal 44. Cómo trata ese relleno el parser del kernel es `?`.
+el canal 44. El parser del kernel lo acepta: los ceros pasan como TLVs de tipo 0 y longitud 0 y van al
+caso por defecto ([AWDL_FRAME_WIRE_FORMAT.md](AWDL_FRAME_WIRE_FORMAT.md) §4).
 
 ### 4.1 Campos del TLV 4 (sync params)
 
@@ -99,7 +100,7 @@ cuerpo en `+3`) la correspondencia es:
 | `+30` | `pm` | modo de presencia (AW por franja) | 4 |
 | `+32` | `sn` | número de secuencia de la próxima AW | — |
 
-Las filas `+24`/`+28` corrigen la lectura de [AWDL_TLV_BODIES.md](AWDL_TLV_BODIES.md): en el aire esos
+[AWDL_TLV_BODIES.md](AWDL_TLV_BODIES.md) §1.2 ya incorpora estos nombres. Las filas `+24`/`+28` corrigen su lectura anterior: en el aire esos
 6 bytes son la dirección del maestro. Que el kernel los copie a peer `+600`/`+604` como dirección y no
 como secuencia es coherente con ello, pero el uso posterior de esos ivars no se ha revisado `?`. Las
 filas `+4`, `+8`, `+10` y `+16` sustituyen los nombres genéricos por los de la especificación; los

@@ -39,30 +39,44 @@ int IO80211AWDLPeer::parseAwdlSyncParamsTlv(IO80211Peer *peer,
 ### 1.2 Campos del cuerpo
 
 Los desplazamientos son relativos al puntero de TLV que recibe la función, que incluye la cabecera:
-el cuerpo empieza en `+3` (así se explica que el primer campo útil esté en `+3` y que el último
-`uint16_t` leído esté en `+32`, dentro de los 42 B exigidos) `?` sobre la convención exacta de
-desplazamiento que usa el llamante.
+el cuerpo empieza en `+3`. Lo confirma `IO80211AWDLPeer::tlvCheckBounds` (`0xffffff80021aefa0`): para
+el tipo 4 exige `len >= 0x27` (39 B de cuerpo), y la función de parseo exige 42 B de cursor (39 + 3 de
+cabecera, `cmp qword ptr [rsi+8], 2Ah` en `0xffffff80021b4bbf`). `tlvCheckBounds` comprueba además
+`+36 <= 0x1F` y `+37 <= 3`, que son el número de franjas menos uno y la codificación de la secuencia de
+canales que empieza en `+36` (cuerpo `+33`).
 
-| Offset | Tipo | Campo (log del kernel) | Destino / efecto |
-|---:|---|---|---|
-| `+0` | 1 | tipo de TLV (4) | no se comprueba aquí; lo usa el iterador |
-| `+1` | 2 | longitud (`len`) | no se comprueba aquí |
-| `+3` | 1 | `tchan` (canal de trabajo) | copiado a peer `+756` y a peer `+1432` |
-| `+4` | 2 | `dc` (duty cycle / duración) | peer `+758` |
-| `+6` | 1 | `mchan` (canal maestro) | sólo se imprime en la traza (no se almacena `?`) |
-| `+8` | 2 | campo de sincronía 1 | peer `+762` |
-| `+10` | 2 | campo de sincronía 2 | peer `+764` |
-| `+14` | 2 | `aw_ext_length` | peer `+768`; debe valer 16, si no se marca `"Zero AWExt"` en peer `+770` y se registra la traza |
-| `+16` | 2 | campo de ventana 1 | peer `+772` |
-| `+18` | 2 | `rem` (restante de la ventana) | peer `+904` |
-| `+20` | 1 | `ext byte 1` | peer `+1452` |
-| `+21` | 1 | `ext byte 2` | sólo traza `?` |
-| `+22` | 1 | `ext byte 3` | sólo traza `?` |
-| `+23` | 1 | `ext byte 4` | sólo traza `?` |
-| `+24` | 4 | dword de secuencia | peer `+600` |
-| `+28` | 2 | word de secuencia | peer `+604` |
-| `+30` | 1 | `pm` (presence mode) | peer `+748`; cero ⇒ fallo de parseo (ver 1.1) |
-| `+32` | 2 | `sn` (número de secuencia) | peer `+106` (se copia además el valor anterior enmascarado con `0xFFC0` a `+108`, y si cambia se guarda `mach_absolute_time()` en `+112`) |
+Los nombres de la tercera columna son los del log del kernel; la cuarta da el campo en el aire según la
+especificación de owly (`docs/SPEC.md` §3.2), contrastada con 4893 action frames reales de iOS 26
+([AWDL_REFERENCIAS_EXTERNAS.md](AWDL_REFERENCIAS_EXTERNAS.md) §4.1). La lectura de cada campo se cita
+por la instrucción de carga.
+
+| Offset | Tipo | Campo (log del kernel) | Campo en el aire (valor medido) | Destino / efecto |
+|---:|---|---|---|---|
+| `+0` | 1 | tipo de TLV (4) | | no se comprueba aquí; lo usa el iterador |
+| `+1` | 2 | longitud (`len`) | | no se comprueba aquí; `tlvCheckBounds` exige ≥ 39 |
+| `+3` | 1 | `tchan` | canal de la próxima AW | peer `+756` y `+1432` (`0xffffff80021b4ea7`) |
+| `+4` | 2 | `dc` | contador descendente en TU hasta el límite de la siguiente franja (≤ 64) | peer `+758` (`0xffffff80021b4d2e`) |
+| `+6` | 1 | `mchan` | canal del maestro | sólo traza |
+| `+7` | 1 | — | tiempo de guarda (0) | no se lee |
+| `+8` | 2 | — | periodo de AW en TU (16) | peer `+762` (`0xffffff80021b4d3a`) |
+| `+10` | 2 | — | periodo entre action frames en TU (110; el iPhone también 440) | peer `+764` (`0xffffff80021b4d46`) |
+| `+12` | 2 | — | flags (`0x1800`) | no se lee |
+| `+14` | 2 | `aw_ext_length` | longitud de AW extendida (16) | peer `+768` (`0xffffff80021b4d5e`); distinto de 16 ⇒ `"Zero AWExt"` y peer `+770 = 1` |
+| `+16` | 2 | — | longitud de AW común (16) | peer `+772` (`0xffffff80021b4d52`) |
+| `+18` | 2 | `rem` | TU restantes de la AW actual | peer `+904` (`0xffffff80021b4e9b`) |
+| `+20` | 1 | `ext` 1.º | extensión mínima (3) | peer `+1452` (`0xffffff80021b4eb7`) |
+| `+21` | 1 | `ext` 3.º | extensión máxima de multicast (3) | sólo traza |
+| `+22` | 1 | `ext` 4.º | extensión máxima de unicast (3) | sólo traza |
+| `+23` | 1 | `ext` 2.º | extensión máxima de action frames (3) | sólo traza; el log imprime `ext(+20/+23/+21/+22)` |
+| `+24` | 6 | — | dirección MAC del maestro (en las capturas, siempre una de las MAC de la sesión) | peer `+600` (4 B) y `+604` (2 B) (`0xffffff80021b4f86`, `0xffffff80021b4f8a`); ningún lector de `+600` como dirección encontrado en las funciones AWDL `?` |
+| `+30` | 1 | `pm` | modo de presencia, AW por franja (4) | peer `+748`; cero ⇒ fallo de parseo (`0xffffff80021b4cdc`) |
+| `+31` | 1 | — | reservado | no se lee |
+| `+32` | 2 | `sn` | número de secuencia de la próxima AW | peer `+106` (`0xffffff80021b4d25`); el valor anterior enmascarado con `0xFFC0` va a `+108`, y si cambia se guarda `mach_absolute_time()` en `+112` |
+| `+34` | 2 | — | alineación con el AP | no se lee |
+| `+36` | var. | — | secuencia de canales, como en el tipo 18 | `parseAwdlChanSeqFromSyncParamsTLV` |
+
+Los ivars «peer `+N`» de esta tabla y del resto del documento están en el bloque privado del peer
+(`*(peer+0x20)`), no en el objeto `IO80211AWDLPeer`.
 
 Además, tras fijar `peer+784 = mach_absolute_time()` (marca del último AF) e incrementar el contador
 `peer+732`, se llama a `parseAwdlChanSeqFromSyncParamsTLV` (`0xffffff80021b8196`) para extraer la

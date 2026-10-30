@@ -137,6 +137,17 @@ Con esta corrección la numeración coincide con la de los constructores del man
 El tipo del TLV en el aire es exactamente el byte `type` de la cabecera. El parser tolera tipos
 desconocidos: los ignora y sigue con el siguiente.
 
+**Fin del recorrido y relleno.** El bucle no rechaza bytes sobrantes tras el último TLV. Se para sin
+error cuando quedan menos de 3 bytes (`cmp rsi, 3` en `0xffffff80021b02ab` antes de entrar y en
+`0xffffff80021b1376` tras cada avance) o cuando la longitud declarada del siguiente TLV más 3 excede lo
+que queda. `IO80211TLVIterator<...>::operator++` (`0xffffff80021b7d70`, llamado en
+`0xffffff80021b1342`) aplica las mismas dos condiciones. Un relleno a cero de cualquier longitud pasa
+como TLVs de tipo 0 y longitud 0: `tlvCheckBounds` (`0xffffff80021aefa0`, llamado en
+`0xffffff80021b03ad`) acepta el tipo 0 con longitud entre 0 y 1024, y el `switch` lo manda al caso por
+defecto. Así, los MIF de iPhone que terminan en 8 bytes a cero
+([AWDL_REFERENCIAS_EXTERNAS.md](AWDL_REFERENCIAS_EXTERNAS.md) §4) se procesan enteros, y un TLV final
+truncado se descarta en silencio en vez de invalidar el frame. Un emisor propio no necesita relleno.
+
 ## 5. Campos que el driver debe rellenar por transmisión
 
 Por cada action frame emitido:
@@ -153,9 +164,12 @@ de la trama: el arranque de ventana se publica por el evento 41 (`FwAwStartTime`
 payload) y el periodo por el ioctl 116. Un driver sin firmware debe, por tanto, mantener su propio
 reloj de ventana y derivar de él (a) el instante de repetición de la plantilla del 151 y (b) el
 `AwNumber`/`FwAwStartTime` que reporta en el evento 41.
-4. **Campo `target_tx_time`/`phy_tx_time` (`+8`/`+12`)**: el kernel no los lee (`?` su semántica), así
-que pueden ir a cero sin afectar al parseo; sí pueden afectar a la sincronía fina entre nodos
-reales, extremo que no se puede confirmar desde este binario.
+4. **Campos `phy_tx_time`/`target_tx_time` (`+8`/`+12`)**: tiempos en µs de la transmisión real y de
+la prevista (owly AWDL-3). `parseAwdlSyncParamsTlv` los lee (`mov r12d, [r14+8]` en
+`0xffffff80021b4ce7`): si ambos son distintos de cero y `+8 > +12`, guarda la diferencia como
+`sync_contention` y los pasa a `monitorPeersTimeline`
+([AWDL_TLV_BODIES.md](AWDL_TLV_BODIES.md) §1.3). A cero no rompen el parseo, pero desactivan esa
+medida; un emisor propio debe rellenarlos con su reloj de microsegundos.
 
 ## 6. Resumen operativo
 
