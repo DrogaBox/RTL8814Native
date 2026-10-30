@@ -121,6 +121,31 @@ como secuencia es coherente con ello, pero el uso posterior de esos ivars no se 
 filas `+4`, `+8`, `+10` y `+16` sustituyen los nombres genéricos por los de la especificación; los
 valores medidos (16, 110, 16) encajan con un periodo de AW de 16 TU.
 
+### 4.2 Secuencia de canales del iPhone (TLV 18)
+
+En las 1462 tramas del iPhone (versión `0xA0`, clase 2), la cabecera del TLV 18 es siempre la misma:
+16 franjas (`count-1 = 15`), codificación 3 (canal + clase operativa, 2 B por franja), `dup` 0,
+`step` 3 y relleno `0xFFFF`, con 41 B de longitud. Secuencias observadas (canal por franja 0..15):
+
+| Tramas | Secuencia |
+|---:|---|
+| 817 | `44 0 44 0 0 0 0 0 6 0 44 0 0 0 0 0` |
+| 359 | `44 44 44 0 0 0 0 44 6 44 44 44 0 0 0 44` |
+| 153 | `44 44 44 0 0 0 0 0 6 44 44 0 0 0 0 0` |
+| 133 | `44 44 44 44 44 44 44 44 6 44 44 44 44 44 44 44` |
+
+- El iPhone anuncia canal 0 en las franjas que no atiende, que es el patrón honesto que exige
+  [AWDL_CHANNEL_SEQUENCE_CONTROL.md](AWDL_CHANNEL_SEQUENCE_CONTROL.md) §7.
+- El canal 6 solo aparece en la franja 8, una de cada 16.
+- El 44, canal de la sesión capturada, ocupa de 3 a 15 franjas según el tráfico.
+
+Para el RTL8814AU:
+- con la radio fija en el 44 o el 149, coincide con el iPhone en varias franjas incluso en reposo;
+- con la radio en el 6 (el ESP32-S3, o el T9UH en 2,4 GHz), solo coincide en la franja 8.
+
+Las capturas son de un nodo owly en el 44; con otro par en otro canal, el iPhone elige otro canal
+dominante `?`.
+
 ## 5. Datos en el aire
 
 [AWDL_PROXIMITY_DATAPATH.md](AWDL_PROXIMITY_DATAPATH.md) describe la cabecera que Broadcom intercambia
