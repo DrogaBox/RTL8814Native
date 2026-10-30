@@ -34,9 +34,9 @@ Versiones objetivo y sus majores Darwin (la puerta compara el major: `GateLogic.
 
 | macOS | Darwin | builds | Instalador Intel |
 |---|---|---|---|
-| 14 (Sonoma) | 23 | 23Xxx | sí (?) |
-| 15 (Sequoia) | 24 | 24Xxx | sí (?) |
-| 26 (Tahoe) | 25 | 25Xxx | sí (esta máquina ejecuta 26.7.1 x86_64, build 25G241) |
+| 14 (Sonoma) | 23 | 23Xxx | sí: 14.8.9 (23J631), §2.4 |
+| 15 (Sequoia) | 24 | 24Xxx | sí: 15.8.2 (24H232), §2.4 |
+| 26 (Tahoe) | 25 | 25Xxx | sí: 26.7.2 (25G332), §2.4; esta máquina ejecuta 26.7.1 x86_64, build 25G241 |
 
 Distribución Intel frente a Apple silicon: en Intel la colección de arranque es el fileset x86_64
 de `KernelCollections` (lo que usa este repo). En Apple silicon las mismas rutas existen sobre el
@@ -104,6 +104,37 @@ La copia de trabajo de 25.6.0 vive en `~/re_cache/ida/boot.kc`; IDA solo se usa 
 - Solo esta ruta necesita desempaquetar IMG4/im4m (`pyimg4` o equivalente, ?): el KC de un sistema
   instalado o de un instalador es un Mach-O fileset plano.
 
+### 2.4 `InstallAssistant.pkg` del catálogo de actualizaciones (vía confirmada para 14, 15 y 26)
+
+Reproducida el 2026-10-30 en la máquina de trabajo para 14.8.9, 15.8.2 y 26.7.2, sin instalar
+ninguna de ellas y sin `sudo`:
+
+1. El catálogo público
+   `https://swscan.apple.com/content/catalogs/others/index-26-15-14-13-12-10.16-10.15-10.14-10.13-10.12-10.11-10.10-10.9-mountainlion-lion-snowleopard-leopard.merged-1.sucatalog.gz`
+   lista cada instalador completo como un producto con un `InstallAssistant.pkg` en
+   `swcdn.apple.com`. El `.dist` de cada producto da versión y build. Tamaños descargados:
+   13.654.790.295 B (14.8.9), 15.664.531.445 B (15.8.2) y 18.389.893.051 B (26.7.2).
+2. `xar -xf InstallAssistant.pkg SharedSupport.dmg` saca la imagen sin expandir el resto del
+   paquete. Se monta con `hdiutil attach -readonly -nobrowse`.
+3. La imagen contiene un zip de asset (más de 1 GB) y el sistema va en sus trozos
+   `AssetData/payloadv2/payload.NNN`, en formato Apple Archive. El zip no lleva la colección suelta:
+   en `AssetData/boot/` solo hay los manifiestos `BootKernelExtensions.kc.*.im4m` y, en 14.8.9,
+   un `kernelcache.release.mac15j` de 27.835.689 B que este flujo no usa.
+4. `aa` no lee de la entrada estándar, así que cada trozo se vuelca a un archivo temporal con
+   `unzip -p` y se lista con `aa list -i`. El trozo que contiene
+   `System/Library/KernelCollections/BootKernelExtensions.kc` se extrae con
+   `aa extract -i <trozo> -d extracted -include-path <ruta>`. `SystemVersion.plist` se busca igual.
+   Los scripts usados están en `~/re_cache/kc/extract_kc.sh` y `find_kc_chunk.sh`.
+5. El resultado es el mismo Mach-O fileset plano que en un sistema instalado. IDA lo abre entero.
+
+| Build | macOS | `BootKernelExtensions.kc` | md5 | sha256 |
+|---|---|---|---|---|
+| 23J631 | 14.8.9 | 62.783.488 B | `2ab1c3ac3db747642bf4cd6ac73e12f5` | `3f5dcde57f2d0ce27b9c9abf3d1e3d2c36b33cea9ae0a7eb36bf9c4282ed8cd2` |
+| 24H232 | 15.8.2 | 66.125.824 B | `bcf4c23aa5f52f69951aea31c044f5de` | `ddd9016e225a61ebfd4f04b02a00937262f26690c57a928613e08506978c81be` |
+| 25G332 | 26.7.2 | 67.600.384 B | `b9da5eafcd90e439ae7c55c1ca8ddf33` | `96c12f421a8e99580b5015dfd39877df38ecde9b9e056b8ccd28f15847bca35c` |
+
+El build sale del `ProductBuildVersion` del `SystemVersion.plist` extraído del mismo payload.
+
 ## 3. Identidad del artefacto
 
 Antes de volcar nada, registrar build, tamaño, md5 y sha256 de la copia:
@@ -114,10 +145,11 @@ md5 <copia.kc>
 shasum -a 256 <copia.kc>
 ```
 
-El build se lee con `sw_vers -buildVersion` en la máquina origen (confirmado) o, en un payload de
-instalador, en su `SystemVersion.plist` (?). Si el KC procede de un instalador y no de un sistema
-instalado, la coincidencia con el KC de un sistema real del mismo build no está verificada (?):
-comparar md5 de ambos antes de fiar los volcados. Ejemplo de fila de registro (la que usa el
+El build se lee con `sw_vers -buildVersion` en la máquina origen o, en un payload de instalador, en
+su `SystemVersion.plist` (§2.4); las dos vías están confirmadas. Falta verificar que el KC de un
+instalador coincide con el de un sistema instalado del mismo build `?`. Se comprueba comparando el
+md5 de 25G332 de la tabla del §2.4 con el de `/System/Library/KernelCollections/` después de
+actualizar esta máquina a 26.7.2. Ejemplo de fila de registro (la que usa el
 HANDOFF para 25.6.0):
 
 | Build | macOS | Archivo | Tamaño | md5 |
@@ -196,8 +228,9 @@ y `c++filt` en el PATH) y escribe `vt_<Clase>.txt` con una línea por celda:
 
 - Los punteros del KC usan chained fixups: los 30 bits bajos son el desplazamiento del destino
   desde la vmaddr más baja del KC (`0xffffff8000100000`, `__HIB`), no desde `__TEXT`
-  (`0x...200000`) — `PHASE5_IO80211.md`. Esa base es constante de 25.6.0 dentro de `vt.py`:
-  en otra versión puede variar (?) y se re-deriva de los `SEG` del KC.
+  (`0x...200000`) — `PHASE5_IO80211.md`. Esa base es una constante de 25.6.0 dentro de `vt.py`.
+  `otool -l` da el mismo par `__HIB 0xffffff8000100000` / `__TEXT 0xffffff8000200000` en los KC
+  de 23J631, 24H232, 25G241 y 25G332, así que la constante vale para 14, 15 y 26.
 - La ruta del KC está fija dentro de `vt.py` (`/System/Library/KernelCollections/
   BootKernelExtensions.kc`): tal cual solo analiza el KC del sistema en marcha; para una copia de
   otra versión habría que apuntar esa constante a la copia (edición de código: pendiente de OK).

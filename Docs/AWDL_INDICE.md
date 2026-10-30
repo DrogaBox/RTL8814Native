@@ -234,4 +234,4 @@ a la sección 4 de `HANDOFF_AWDL.md`, de la que corrige dos puntos ya cerrados (
 
 | # | Punto abierto | Documento | Cierre |
 |---:|---|---|---|
-| 22 | Rutas de instaladores Intel de macOS 14/15, volumen sellado en Apple silicon y derivación de la base del KC en otra versión | `AWDL_KERNELCACHE_OBTENTION.md` §1, §2 y §6 | Ejecutar la guía sobre una imagen de cada versión |
+| 22 | ~~Rutas de instaladores Intel de macOS 14/15 y derivación de la base del KC en otra versión~~; quedan el volumen sellado en Apple silicon (fuera de alcance) y la igualdad del KC de instalador con el de un sistema instalado | `AWDL_KERNELCACHE_OBTENTION.md` §1, §2 y §6 | Instaladores y base cerrados por `AWDL_KERNELCACHE_OBTENTION.md` §2.4 (23J631, 24H232, 25G332, misma base `__HIB`); la igualdad se comprueba con el md5 de 25G332 tras actualizar |
