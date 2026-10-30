@@ -42,15 +42,30 @@ ningún bloque de protocolo de estos proyectos entra en el kext. Lo reutilizable
 | owly | Una segunda máquina Linux con una tarjeta de su lista (p. ej. MT7612U USB, RTL8852BU USB) | 2,4 y 5 GHz según tarjeta | Requiere un segundo equipo; el PC de desarrollo arranca macOS o CachyOS, no ambos, y el T9UH es su única tarjeta |
 | winawdl | PC con RTL8852CE y Windows 11 | 2,4 y 5 GHz | No aplicable: tarjeta concreta que el proyecto no tiene |
 
-El ESP32-S3 permanece en el canal 6 y se mantiene en paso con la ventana de disponibilidad del maestro
-de la malla; que sin otros pares actúe como su propio maestro es `?`. Eso basta para el primer paso del orden de pruebas de
-[AWDL_ESTADO_Y_BLOQUEO.md](AWDL_ESTADO_Y_BLOQUEO.md) §4 (RX primero): fijar el RTL8814AU en el canal 6
-y comprobar que los PSF/MIF del ESP32 llegan a `RxCompletionQueue` y a `actionFrameInput`. También da
-material para la elección (salir de `peers:0`) y para validar la TX (si el ESP32 registra al Mac como
-par, sus tramas salen bien; cómo exponer ese dato por el puerto serie es `?`). Limitaciones: solo canal 6, sin AirDrop simultáneo de envío y recepción en
-la misma compilación, y su descubrimiento de envío usa BLE, que el equipo de desarrollo no tiene
-operativo. Que el `IO80211AWDLPeerManager` acepte a un par que solo atiende el canal 6 es `?` hasta
-probarlo.
+El ESP32-S3 permanece en el canal 6 y no ejecuta una elección completa: nunca se elige a sí mismo,
+se anuncia como hoja con métrica baja (anunciarse como raíz hacía que iOS lo tratase como fuera de la
+malla) y sigue al maestro que oye. Sin maestro no transmite: `send_mif` se niega mientras no haya
+resultado de elección (`ESP32Drop/src/awdl/core/awdl_tick.h:55`, `awdl_elect.h`, `awdl_window.h:188`).
+Además ajusta su reloj a partir de los PSF del maestro (`awdl_gauge.h`, `awdl_port_esp32.cpp`).
+
+Por tanto, frente a un Mac con este driver el ESP32 no sirve para «RX primero». El orden se invierte:
+
+1. El `IO80211AWDLPeerManager` del Mac ya se elige a sí mismo maestro con `peers:0`
+   ([AWDL_STAGE3_CONFIGURE_RESULTS.md](AWDL_STAGE3_CONFIGURE_RESULTS.md)). Si la capa transmite sus
+   PSF/MIF en el canal 6 con tiempos coherentes, el ESP32 los oye, elige al Mac como maestro y empieza a
+   emitir MIF.
+2. Esa reacción, visible en el puerto serie del ESP32 (`awdl_status.h`, `awdl_diag.h`), valida la TX del
+   RTL8814AU sin otro receptor.
+3. Solo entonces hay tramas del ESP32 que recibir y la prueba de RX tiene contenido.
+
+Para disponer de una fuente de tramas sin TX propia, la alternativa es una compilación modificada del
+ESP32 que se anuncie como maestro cuando no oye a nadie. Cómo reaccionaría el peer manager de macOS a
+ese maestro es `?`; iOS lo rechazó según los comentarios de ESP32Drop.
+
+Otras limitaciones: solo canal 6, envío y recepción de AirDrop en compilaciones distintas, y el
+descubrimiento de envío usa BLE, que el equipo de desarrollo no tiene operativo. macOS rota su MAC AWDL
+cada 100 s aproximadamente (`ESP32AWDL.h`). Que el `IO80211AWDLPeerManager` acepte a un par que solo
+atiende el canal 6 es `?` hasta probarlo.
 
 ## 4. Contraste con las capturas de iOS 26
 
@@ -206,8 +221,8 @@ capturas o un emisor de tramas de prueba).
 
 | Paso de [AWDL_ESTADO_Y_BLOQUEO.md](AWDL_ESTADO_Y_BLOQUEO.md) §4 | Con un ESP32-S3 | Con las capturas de owly |
 |---|---|---|
-| 1. RX de action frames en el canal social | Sí, en el canal 6 | Solo inyección sintética en `actionFrameInput`, sin tiempos reales |
-| 2. TX de action frames y NDP | Sí: el ESP32 registra o deja de ver al Mac | No |
-| 3. Eventos 41/42/43 | Parcial: cadencia contra un maestro externo de 16 TU | Valores de referencia de §4.1 |
-| 4. Elección y PSF/MIF | Sí, salida de `peers:0` | No |
+| 1. RX de action frames en el canal social | Solo después del paso 2: el ESP32 calla mientras no tenga maestro (o con una compilación modificada que se anuncie como maestro) | Solo inyección sintética en `actionFrameInput`, sin tiempos reales |
+| 2. TX de action frames y NDP | Sí, y va primero: si el ESP32 elige al Mac como maestro, las tramas salen con formato y tiempos válidos | No |
+| 3. Eventos 41/42/43 | Parcial: el ESP32 solo se mantiene enganchado si la cadencia de 16 TU del Mac es estable | Valores de referencia de §4.1 |
+| 4. Elección y PSF/MIF | Sí: salida de `peers:0` cuando el ESP32 empieza a emitir MIF | No |
 | 5. AirDrop | Recepción en el Mac desde el ESP32 `?` (su envío necesita BLE para despertar al receptor) | No |
