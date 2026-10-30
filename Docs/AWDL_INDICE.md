@@ -72,6 +72,7 @@ Convención de estado:
 | [AWDL_RTL8814_RX_ACK.md](AWDL_RTL8814_RX_ACK.md) | Recepción y ACK para `awdl0`: direcciones reales de las tramas AWDL (A1 broadcast, A3 `00:25:00:FF:94:73`), dónde las descarta hoy el software, puerto 1 ad-hoc con la MAC de `awdl0`, `RCR_CBSSID_DATA` y punto de desvío en `validate_recv_frame` | Medido en código, volcado y capturas; comportamiento del MAC por puerto con `?` |
 | [AWDL_RTL8814_TX_RECIPE.md](AWDL_RTL8814_TX_RECIPE.md) | Cómo emitir PSF/MIF y datos de `awdl0` con el driver: patrón de inyección del vendor, direcciones intactas, tasa (VHT MCS9 a 20 MHz del helper no es válida), límite de reintentos 6/12 y ACK con el puerto 1 | Leído del código; tasas y latencia sin probar `?` |
 | [AWDL_DATA_ENCAP.md](AWDL_DATA_ENCAP.md) | Formato de los paquetes de `awdl0`: Ethernet II en la cola TX y en la RxCompletionQueue; Broadcom inserta y quita el SNAP AWDL en el host; stash de multicast en el manager; qué construye y quita el driver | Verificado; semántica del nibble AC de la secuencia con `?` |
+| [AWDL_BLOCK_ACK.md](AWDL_BLOCK_ACK.md) | Block Ack en `awdl0`: la familia no lo hace (handlers de `BLOCK_ACK` son stubs), Broadcom lo deja al firmware vía `PEER_CACHE_CONTROL` → `awdl_peer_op`; la capa debe responder ADDBA, procesar DELBA/BAR y reordenar | Verificado; selectores exactos con `?` |
 
 ## 4. Etapa 1: especificación, implementación y revisiones
 
