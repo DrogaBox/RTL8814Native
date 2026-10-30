@@ -353,9 +353,13 @@ hacer en software lo que Broadcom reparte entre firmware y host:
    RxCompletionQueue (`enqueuePackets` por lotes, como ya hace la capa STA, o `stagePacket` +
    `requestEnqueue(0,0)` por lote como Broadcom). Longitud mínima de trama bien formada antes del
    recorte: 30 (14+16) más payload; Broadcom sólo exige 28.
-5. El filtro de pares (SA desconocido → descarte) lo aplica después la familia
-   (`inputPacket`); el driver puede entregar tramas de emisores aún no dados de alta. El contador de
-   secuencia se descarta en RX: no requiere estado.
+5. Antes de encolar, el driver llama a `IO80211VirtualInterface::inputPacket` (slot +0x0B50), como
+   Broadcom en `0xffffff800154a65c`. Ahí la familia aplica el filtro de pares (SA desconocida →
+   descarte) y retiene los paquetes de un par hasta que `wifip2pd` envía el ioctl 415. Los
+   retenidos vuelven por los slots +0xF30/+0xF38 de la interfaz, que tiene que implementar el
+   driver ([AWDL_PEER_PRESENCE_PPP.md](AWDL_PEER_PRESENCE_PPP.md) §3 y §4). La familia no filtra
+   nada que el driver encole sin esa llamada. El contador de secuencia se descarta en RX: no
+   requiere estado.
 
 ## 8. Verificación de direcciones
 

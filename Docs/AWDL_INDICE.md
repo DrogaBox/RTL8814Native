@@ -73,6 +73,7 @@ Convención de estado:
 | [AWDL_RTL8814_TX_RECIPE.md](AWDL_RTL8814_TX_RECIPE.md) | Cómo emitir PSF/MIF y datos de `awdl0` con el driver: patrón de inyección del vendor, direcciones intactas, tasa (VHT MCS9 a 20 MHz del helper no es válida), límite de reintentos 6/12 y ACK con el puerto 1 | Leído del código; tasas y latencia sin probar `?` |
 | [AWDL_DATA_ENCAP.md](AWDL_DATA_ENCAP.md) | Formato de los paquetes de `awdl0`: Ethernet II en la cola TX y en la RxCompletionQueue; Broadcom inserta y quita el SNAP AWDL en el host; stash de multicast en el manager; qué construye y quita el driver | Verificado; semántica del nibble AC de la secuencia con `?` |
 | [AWDL_BLOCK_ACK.md](AWDL_BLOCK_ACK.md) | Block Ack en `awdl0`: la familia no lo hace (handlers de `BLOCK_ACK` son stubs), Broadcom lo deja al firmware vía `PEER_CACHE_CONTROL` → `awdl_peer_op`; la capa debe responder ADDBA, procesar DELBA/BAR y reordenar | Verificado; selectores exactos con `?` |
+| [AWDL_PEER_PRESENCE_PPP.md](AWDL_PEER_PRESENCE_PPP.md) | Evento 47 solo de ausencia (`u32@8 = 1`), ioctl 415 que libera la cola PPP del par, ruta RX `inputPacket` → `IO80211AWDLPeer::skywalkInputPacket`, slots +0xF30/+0xF38 que el driver debe implementar y condiciones de `setPeerRoutable` | Emisores, payload, colas y slots verificados en IDA (25G241); sitio del 415 en `wifip2pd`, umbral `PM+10276` y cerrojo de los slots `?` |
 
 ## 4. Etapa 1: especificación, implementación y revisiones
 
@@ -219,7 +220,7 @@ a la sección 4 de `HANDOFF_AWDL.md`, de la que corrige dos puntos ya cerrados (
 | 14 | Vínculo del `IO80211AWDLPeerManager` del kernel con la interfaz de un driver externo (ivars `+0x120`/`+0x28`) | `AWDL_APPLE80211_DISPATCH.md` §8.3; `AWDL_PROTOTYPE_DESIGN.md` §7 | Trazar la creación y publicación del manager para rol 6 (etapa 2) |
 | 15 | Qué objetos AWDL puede instanciar un kext externo y qué ocurre si la instanciación se rechaza; el fallback de vtable no cubre la creación sin factorías exportadas | `AWDL_KEXT_LINKAGE.md` §3 | Explorar `withInterface`/`createPeerManager` y probar la carga (etapa 2) |
 | 16 | Vía de TX de action frames en la etapa 3: ruta interna (tipo 120 u otros) o mecanismo propio del kext | `AWDL_PROTOTYPE_DESIGN.md` §5 y §7 | Seguir el emisor del evento 48 hacia atrás hasta el driver (etapa 3) |
-| 17 | Semántica del u32 `@+8` del evento 47 (`PEER_PRESENCE`) | `AWDL_PROTOTYPE_DESIGN.md` §5 | Leer el case 47 del daemon y el validador de la familia |
+| 17 | ~~Semántica del u32 `@+8` del evento 47 (`PEER_PRESENCE`)~~ | `AWDL_PROTOTYPE_DESIGN.md` §5 | Cerrado por [AWDL_PEER_PRESENCE_PPP.md](AWDL_PEER_PRESENCE_PPP.md) §1: `1` = ausencia (log `postPeerAbsence`), único valor que escribe el kernel |
 | 18 | Valor del campo `code` (payload+0) del tipo 293 en el camino AWDL y su semántica (el kernel no lo lee) | `AWDL_LLW_COMPANION.md` §1.1 y §5; `AWDL_STRUCTS.md` §3.4 | Trazar el quinto argumento del creador por rol en `sub_100047660` |
 
 ### 8.3 Los que cierra una prueba en el hardware RTL8814
