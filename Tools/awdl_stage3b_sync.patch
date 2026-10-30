@@ -1,0 +1,52 @@
+diff -ru a/Source/AirLayer/AWDLInterface.cpp b/Source/AirLayer/AWDLInterface.cpp
+--- a/Source/AirLayer/AWDLInterface.cpp	2026-10-30 00:19:06
++++ b/Source/AirLayer/AWDLInterface.cpp	2026-10-30 00:19:06
+@@ -350,6 +350,9 @@
+ AWDL_ACK(setAWDL_ELECTION_RSSI_THRESHOLDS, apple80211_awdl_election_rssi_thresholds)
+ AWDL_ACK(setAWDL_MIN_RATE, apple80211_awdl_min_rate)
+ AWDL_ACK(setAWDL_SYNC_STATE, apple80211_awdl_sync_state)
++AWDL_ACK(setAWDL_SYNC_PARAMS, apple80211_awdl_sync_params)
++AWDL_ACK(setAWDL_SYNC_ENABLED, apple80211_awdl_sync_enabled)
++AWDL_ACK(setAWDL_TXCAL_PERIOD, apple80211_awdl_txcal_period)
+ #undef AWDL_ACK
+ 
+ /* Publishes the interface on the controller, so getAwdlInterface() answers it.
+diff -ru a/Source/AirLayer/AWDLInterface.h b/Source/AirLayer/AWDLInterface.h
+--- a/Source/AirLayer/AWDLInterface.h	2026-10-30 00:19:06
++++ b/Source/AirLayer/AWDLInterface.h	2026-10-30 00:19:06
+@@ -308,7 +308,7 @@
+ 	uintptr_t disable(unsigned int opts) override;
+ 
+ 	/* Stage 3: the setters IO80211AWDLPeerManager::configure() sends through
+-	 * ioctl_internal (types 125, 122, 132, 135, 213, 134). It aborts on the first
++	 * ioctl_internal (types 125, 122, 132, 135, 213, 134) and the ones interfaceStateChange()/enableAWDL() send after it (116 sync params, 117 sync enabled, 226 txcal period). It aborts on the first
+ 	 * one that fails, which leaves _stateFlags bit 0 clear and every peer service
+ 	 * request answered with 6. They only acknowledge: nothing reaches the radio. */
+ #define AWDL_ACK(name, type) IOReturn name(type *) override;
+@@ -319,6 +319,9 @@
+ 	         apple80211_awdl_election_rssi_thresholds)
+ 	AWDL_ACK(setAWDL_MIN_RATE, apple80211_awdl_min_rate)
+ 	AWDL_ACK(setAWDL_SYNC_STATE, apple80211_awdl_sync_state)
++	AWDL_ACK(setAWDL_SYNC_PARAMS, apple80211_awdl_sync_params)
++	AWDL_ACK(setAWDL_SYNC_ENABLED, apple80211_awdl_sync_enabled)
++	AWDL_ACK(setAWDL_TXCAL_PERIOD, apple80211_awdl_txcal_period)
+ #undef AWDL_ACK
+ 
+ #define AWDL_STUB(name, type) \
+@@ -356,8 +359,6 @@
+ 	AWDL_STUB(getLLW_PARAMS, apple80211_llw_params)
+ 	AWDL_STUB(setSSID, apple80211_ssid_data)
+ 	AWDL_STUB(setCHANNEL, apple80211_channel_data)
+-	AWDL_STUB(setAWDL_SYNC_PARAMS, apple80211_awdl_sync_params)
+-	AWDL_STUB(setAWDL_SYNC_ENABLED, apple80211_awdl_sync_enabled)
+ 	AWDL_STUB(setAWDL_EXTENSION_STATE_MACHINE_PARAMETERS,
+ 	          apple80211_awdl_extension_state_machine_parameter)
+ 	AWDL_STUB(setAWDL_ELECTION_METRIC, apple80211_awdl_election_metric)
+@@ -376,7 +377,6 @@
+ 	AWDL_STUB(setAWDL_ENCRYPTION_KEYS, apple80211_key)
+ 	AWDL_STUB(setAWDL_ENCRYPTION_TYPE, apple80211_encrypt)
+ 	AWDL_STUB(setAWDL_OOB_AUTO_REQUEST, apple80211_awdl_oob_request)
+-	AWDL_STUB(setAWDL_TXCAL_PERIOD, apple80211_awdl_txcal_period)
+ 	AWDL_STUB(setAWDL_AWDL_ADVERTISERS, awdl_peer_advert_add)
+ 	AWDL_STUB(setAWDL_DFSP_CONFIG, apple80211_awdl_dfsp_config)
+ 	AWDL_STUB(setAWDL_DFSP_UCSA_CONFIG, apple80211_awdl_dfsp_ucsa_config)

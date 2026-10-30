@@ -307,6 +307,36 @@ public:
 	uintptr_t enable(unsigned int opts) override;
 	uintptr_t disable(unsigned int opts) override;
 
+	/* Stage 3: the setters IO80211AWDLPeerManager::configure() sends through
+	 * ioctl_internal (types 125, 122, 132, 135, 213, 134) and the ones interfaceStateChange()/enableAWDL() send after it (116, 117, 226) and the setters of the channel sequence, election, sync frame template, secondary master, AF TX mode, advertisers, extension state machine and PSF dwell (129, 155, 151, 205, 208, 229, 126, 118, 418). It aborts on the first
+	 * one that fails, which leaves _stateFlags bit 0 clear and every peer service
+	 * request answered with 6. They only acknowledge: nothing reaches the radio. */
+#define AWDL_ACK(name, type) IOReturn name(type *) override;
+	AWDL_ACK(setAWDL_BSSID, apple80211_awdl_bssid)
+	AWDL_ACK(setAWDL_ELECTION_ID, apple80211_awdl_election_id)
+	AWDL_ACK(setAWDL_MASTER_CHANNEL, apple80211_awdl_master_channel)
+	AWDL_ACK(setAWDL_ELECTION_RSSI_THRESHOLDS,
+	         apple80211_awdl_election_rssi_thresholds)
+	AWDL_ACK(setAWDL_MIN_RATE, apple80211_awdl_min_rate)
+	AWDL_ACK(setAWDL_SYNC_STATE, apple80211_awdl_sync_state)
+	AWDL_ACK(setAWDL_SYNC_PARAMS, apple80211_awdl_sync_params)
+	AWDL_ACK(setAWDL_SYNC_ENABLED, apple80211_awdl_sync_enabled)
+	AWDL_ACK(setAWDL_TXCAL_PERIOD, apple80211_awdl_txcal_period)
+	AWDL_ACK(setAWDL_SYNCHRONIZATION_CHANNEL_SEQUENCE,
+	         apple80211_awdl_sync_channel_sequence)
+	AWDL_ACK(setAWDL_ELECTION_PARAMS, apple80211_awdl_election_params)
+	AWDL_ACK(setAWDL_SYNC_FRAME_TEMPLATE,
+	         apple80211_awdl_sync_frame_template)
+	AWDL_ACK(setAWDL_SECONDARY_MASTER_CHANNEL,
+	         apple80211_awdl_secondary_master_channel)
+	AWDL_ACK(setAWDL_AF_TX_MODE, apple80211_awdl_af_tx_mode)
+	AWDL_ACK(setAWDL_AWDL_ADVERTISERS, awdl_peer_advert_add)
+	AWDL_ACK(setAWDL_ELECTION_METRIC, apple80211_awdl_election_metric)
+	AWDL_ACK(setAWDL_EXTENSION_STATE_MACHINE_PARAMETERS,
+	         apple80211_awdl_extension_state_machine_parameter)
+	AWDL_ACK(setPSF_DWELL, apple80211_awdl_psf_dwell_params)
+#undef AWDL_ACK
+
 #define AWDL_STUB(name, type) \
 	IOReturn name(type *) override { return kIOReturnUnsupported; }
 	AWDL_STUB(getSSID, apple80211_ssid_data)
@@ -342,35 +372,14 @@ public:
 	AWDL_STUB(getLLW_PARAMS, apple80211_llw_params)
 	AWDL_STUB(setSSID, apple80211_ssid_data)
 	AWDL_STUB(setCHANNEL, apple80211_channel_data)
-	AWDL_STUB(setAWDL_SYNC_PARAMS, apple80211_awdl_sync_params)
-	AWDL_STUB(setAWDL_SYNC_ENABLED, apple80211_awdl_sync_enabled)
-	AWDL_STUB(setAWDL_EXTENSION_STATE_MACHINE_PARAMETERS,
-	          apple80211_awdl_extension_state_machine_parameter)
-	AWDL_STUB(setAWDL_ELECTION_ID, apple80211_awdl_election_id)
-	AWDL_STUB(setAWDL_BSSID, apple80211_awdl_bssid)
-	AWDL_STUB(setAWDL_ELECTION_METRIC, apple80211_awdl_election_metric)
-	AWDL_STUB(setAWDL_SYNCHRONIZATION_CHANNEL_SEQUENCE,
-	          apple80211_awdl_sync_channel_sequence)
-	AWDL_STUB(setAWDL_MASTER_CHANNEL, apple80211_awdl_master_channel)
-	AWDL_STUB(setAWDL_SYNC_STATE, apple80211_awdl_sync_state)
-	AWDL_STUB(setAWDL_ELECTION_RSSI_THRESHOLDS,
-	          apple80211_awdl_election_rssi_thresholds)
 	AWDL_STUB(setAWDL_PRESENCE_MODE, apple80211_awdl_presence_mode)
 	AWDL_STUB(setPEER_CACHE_CONTROL, apple80211_peer_cache_control)
 	AWDL_STUB(setAWDL_OOB_REQUEST, apple80211_awdl_oob_request)
-	AWDL_STUB(setAWDL_SYNC_FRAME_TEMPLATE, apple80211_awdl_sync_frame_template)
-	AWDL_STUB(setAWDL_ELECTION_PARAMS, apple80211_awdl_election_params)
 	AWDL_STUB(setAWDL_PEER_TRAFFIC_REGISTRATION,
 	          apple80211_awdl_peer_traffic_registration)
-	AWDL_STUB(setAWDL_SECONDARY_MASTER_CHANNEL,
-	          apple80211_awdl_secondary_master_channel)
-	AWDL_STUB(setAWDL_AF_TX_MODE, apple80211_awdl_af_tx_mode)
-	AWDL_STUB(setAWDL_MIN_RATE, apple80211_awdl_min_rate)
 	AWDL_STUB(setAWDL_ENCRYPTION_KEYS, apple80211_key)
 	AWDL_STUB(setAWDL_ENCRYPTION_TYPE, apple80211_encrypt)
 	AWDL_STUB(setAWDL_OOB_AUTO_REQUEST, apple80211_awdl_oob_request)
-	AWDL_STUB(setAWDL_TXCAL_PERIOD, apple80211_awdl_txcal_period)
-	AWDL_STUB(setAWDL_AWDL_ADVERTISERS, awdl_peer_advert_add)
 	AWDL_STUB(setAWDL_DFSP_CONFIG, apple80211_awdl_dfsp_config)
 	AWDL_STUB(setAWDL_DFSP_UCSA_CONFIG, apple80211_awdl_dfsp_ucsa_config)
 	AWDL_STUB(setCOMPANION_SKYWALK_IF_CREATE,
@@ -380,7 +389,6 @@ public:
 	AWDL_STUB(setLLW_PARAMS, apple80211_llw_params)
 	AWDL_STUB(setTX_RATE, apple80211_tx_rate)
 	AWDL_STUB(setP2P_COEX_PROTECTION, apple80211_p2p_coex_protection)
-	AWDL_STUB(setPSF_DWELL, apple80211_awdl_psf_dwell_params)
 	AWDL_STUB(setAWDL_CONFIG, apple80211_awdl_config_request)
 	AWDL_STUB(setAWDL_RTG_PEER_STATS_CONFIG, apple80211_rtg_peer_stats_cfg)
 #undef AWDL_STUB

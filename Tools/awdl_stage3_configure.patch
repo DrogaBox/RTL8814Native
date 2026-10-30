@@ -1,0 +1,97 @@
+diff --git a/Source/AirLayer/AWDLInterface.h b/Source/AirLayer/AWDLInterface.h
+--- a/Source/AirLayer/AWDLInterface.h
++++ b/Source/AirLayer/AWDLInterface.h
+@@ -307,6 +307,20 @@
+ 	uintptr_t enable(unsigned int opts) override;
+ 	uintptr_t disable(unsigned int opts) override;
+ 
++	/* Stage 3: the setters IO80211AWDLPeerManager::configure() sends through
++	 * ioctl_internal (types 125, 122, 132, 135, 213, 134). It aborts on the first
++	 * one that fails, which leaves _stateFlags bit 0 clear and every peer service
++	 * request answered with 6. They only acknowledge: nothing reaches the radio. */
++#define AWDL_ACK(name, type) IOReturn name(type *) override;
++	AWDL_ACK(setAWDL_BSSID, apple80211_awdl_bssid)
++	AWDL_ACK(setAWDL_ELECTION_ID, apple80211_awdl_election_id)
++	AWDL_ACK(setAWDL_MASTER_CHANNEL, apple80211_awdl_master_channel)
++	AWDL_ACK(setAWDL_ELECTION_RSSI_THRESHOLDS,
++	         apple80211_awdl_election_rssi_thresholds)
++	AWDL_ACK(setAWDL_MIN_RATE, apple80211_awdl_min_rate)
++	AWDL_ACK(setAWDL_SYNC_STATE, apple80211_awdl_sync_state)
++#undef AWDL_ACK
++
+ #define AWDL_STUB(name, type) \
+ 	IOReturn name(type *) override { return kIOReturnUnsupported; }
+ 	AWDL_STUB(getSSID, apple80211_ssid_data)
+@@ -346,15 +360,9 @@
+ 	AWDL_STUB(setAWDL_SYNC_ENABLED, apple80211_awdl_sync_enabled)
+ 	AWDL_STUB(setAWDL_EXTENSION_STATE_MACHINE_PARAMETERS,
+ 	          apple80211_awdl_extension_state_machine_parameter)
+-	AWDL_STUB(setAWDL_ELECTION_ID, apple80211_awdl_election_id)
+-	AWDL_STUB(setAWDL_BSSID, apple80211_awdl_bssid)
+ 	AWDL_STUB(setAWDL_ELECTION_METRIC, apple80211_awdl_election_metric)
+ 	AWDL_STUB(setAWDL_SYNCHRONIZATION_CHANNEL_SEQUENCE,
+ 	          apple80211_awdl_sync_channel_sequence)
+-	AWDL_STUB(setAWDL_MASTER_CHANNEL, apple80211_awdl_master_channel)
+-	AWDL_STUB(setAWDL_SYNC_STATE, apple80211_awdl_sync_state)
+-	AWDL_STUB(setAWDL_ELECTION_RSSI_THRESHOLDS,
+-	          apple80211_awdl_election_rssi_thresholds)
+ 	AWDL_STUB(setAWDL_PRESENCE_MODE, apple80211_awdl_presence_mode)
+ 	AWDL_STUB(setPEER_CACHE_CONTROL, apple80211_peer_cache_control)
+ 	AWDL_STUB(setAWDL_OOB_REQUEST, apple80211_awdl_oob_request)
+@@ -365,7 +373,6 @@
+ 	AWDL_STUB(setAWDL_SECONDARY_MASTER_CHANNEL,
+ 	          apple80211_awdl_secondary_master_channel)
+ 	AWDL_STUB(setAWDL_AF_TX_MODE, apple80211_awdl_af_tx_mode)
+-	AWDL_STUB(setAWDL_MIN_RATE, apple80211_awdl_min_rate)
+ 	AWDL_STUB(setAWDL_ENCRYPTION_KEYS, apple80211_key)
+ 	AWDL_STUB(setAWDL_ENCRYPTION_TYPE, apple80211_encrypt)
+ 	AWDL_STUB(setAWDL_OOB_AUTO_REQUEST, apple80211_awdl_oob_request)
+diff --git a/Source/AirLayer/AWDLInterface.cpp b/Source/AirLayer/AWDLInterface.cpp
+--- a/Source/AirLayer/AWDLInterface.cpp
++++ b/Source/AirLayer/AWDLInterface.cpp
+@@ -90,6 +90,8 @@
+ 
+ #define AWDL_IFACE_ID           2       /* Broadcom: interface id 2 for AWDL */
+ #define AWDL_ROLE               6       /* IO80211VirtualInterfaceRole AirLink */
++#define AWDL_LINK_DOWN          1       /* linkState() values the PeerManager tests */
++#define AWDL_LINK_UP            2
+ 
+ OSDefineMetaClassAndStructors(RTLAwdInterface, IO80211AWDLProtocol)
+ 
+@@ -319,16 +321,36 @@
+ 	LOG("awdl: enable 0x%x", opts);
+ 	void *qs[3] = { _txCompQ, _rxCompQ, _txSubQ };
+ 	rtlAwdSetQueues(qs, true);
++	/* linkState() reads 1 or 0 until this: interfaceStateChange stops at "link
++	 * is down" and updateLocalRequests answers 6. Going to 2 also makes the
++	 * family call IO80211PeerManager::enable, which runs configure(). */
++	setLinkState((IO80211LinkState)AWDL_LINK_UP, 1);
+ 	return kIOReturnSuccess;
+ }
+ 
+ uintptr_t RTLAwdInterface::disable(unsigned int opts)
+ {
+ 	LOG("awdl: disable 0x%x", opts);
++	setLinkState((IO80211LinkState)AWDL_LINK_DOWN, 1);
+ 	void *qs[3] = { _txSubQ, _rxCompQ, _txCompQ };
+ 	rtlAwdSetQueues(qs, false);
+ 	return kIOReturnSuccess;
+ }
++
++/* Stage 3: see the AWDL_ACK block of AWDLInterface.h. */
++#define AWDL_ACK(name, type) \
++	IOReturn RTLAwdInterface::name(type *) \
++	{ \
++		LOG("awdl: %s acked", #name); \
++		return kIOReturnSuccess; \
++	}
++AWDL_ACK(setAWDL_BSSID, apple80211_awdl_bssid)
++AWDL_ACK(setAWDL_ELECTION_ID, apple80211_awdl_election_id)
++AWDL_ACK(setAWDL_MASTER_CHANNEL, apple80211_awdl_master_channel)
++AWDL_ACK(setAWDL_ELECTION_RSSI_THRESHOLDS, apple80211_awdl_election_rssi_thresholds)
++AWDL_ACK(setAWDL_MIN_RATE, apple80211_awdl_min_rate)
++AWDL_ACK(setAWDL_SYNC_STATE, apple80211_awdl_sync_state)
++#undef AWDL_ACK
+ 
+ /* Publishes the interface on the controller, so getAwdlInterface() answers it.
+  * The handler calls it once the start succeeded; NULL unpublishes. */
