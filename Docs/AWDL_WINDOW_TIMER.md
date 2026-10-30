@@ -109,7 +109,7 @@ Payload de 36 B ([AWDL_PEERMANAGER_DRIVER_ABI.md](AWDL_PEERMANAGER_DRIVER_ABI.md
 | Offset | Valor |
 |---:|---|
 | `+0x00` | `AwNumber` de la primera AW de la franja (`u16`) |
-| `+0x04` | estado de sync (`u32`; solo se compara con el anterior y se publica al cambiar) |
+| `+0x04` | estado de sync (`u32`): 1 si la capa es maestra (§3.1), 2 si sigue a otro maestro (§3.2); 0 = parado, 3 = NeMaster ([AWDL_PEERMANAGER_DRIVER_ABI.md](AWDL_PEERMANAGER_DRIVER_ABI.md) §2.2) |
 | `+0x08` | MAC del maestro (la del 134, o la de `awdl0` si es maestra) |
 | `+0x0e` | MAC del maestro raíz (`root` del 229, o la de `awdl0`) |
 | `+0x14` | `FwAwStartTime` = inicio de la franja en µs, **big-endian** |

@@ -334,7 +334,7 @@ Payload (36 B leídos; el manager no valida `len`):
 |---:|---|---|---|
 | `+0x00` | `uint16_t` | `AwNumber` | `monitorTimeline` (`0xffffff80021e11ca`) lo compara con el anterior; en la misma rama del 41 se copia a `ivars+16104` como `uint32_t` |
 | `+0x02` | `uint8_t[6]` | reservado, copiado tal cual | copia íntegra de 36 B a `ivars+776..811` |
-| `+0x04` | `uint32_t` | estado de sync del firmware | comparado con `ivars+17028`; si cambia se guarda `mach_absolute_time()` en `ivars+42728` y se copia el valor |
+| `+0x04` | `uint32_t` | estado de sync del firmware: 0 Stopped, 1 Master, 2 Slave, 3 NeMaster (nombres de `printState`, `0xffffff800222220e`) | comparado con `ivars+17028`; si cambia se guarda `mach_absolute_time()` en `ivars+42728` y se copia el valor. El mismo ivar lo escribe `setAwdlSyncState` tras un 134 aceptado y lo ponen a 0 `disableAWDL`, `reset` y `awdlChipReset`; `logAWStart`/`logAWEnd` escriben `Start:`/`End:` en mayúscula cuando vale 1, y `setInfraTxState` solo actúa si es distinto de 0 |
 | `+0x08` | `uint8_t[6]` | MAC del maestro actual | `monitorTimeline` (`memcmp` con `ivars+784`) y log |
 | `+0x0e` | `uint8_t[6]` | MAC del top master (raíz) | `monitorTimeline` (`memcmp` con `ivars+790`); en la rama del 41 se copia a `ivars+37231` si cambia y `ivars+16289` está activo |
 | `+0x14` | `uint32_t` | `FwAwStartTime` **big-endian** | `monitorTimeline` hace `_byteswap_ulong` y lo compara con el esperado |
