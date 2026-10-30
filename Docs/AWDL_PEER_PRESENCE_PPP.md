@@ -56,8 +56,18 @@ ivars AWDL del par (`this+0x20`):
   `IO80211AWDLPeerManager::removePeer` (`0xffffff800221721c`, tras `flushPacketsWaitingForPPP` en
   `0xffffff80022177e4`, llamada en `0xffffff80022177ee`) y `cleanUpForPeerRemovedFromNDP`.
 
-El 415 lo genera el daemon. El sitio exacto del ioctl dentro de `wifip2pd` no está localizado
-`?`. El struct `apple80211_awdl_ppp_done` es de 12 B ([AWDL_STRUCTS.md](AWDL_STRUCTS.md)).
+El 415 lo genera `wifip2pd`. En el binario hay exactamente dos inmediatos `0x19F`, y los dos están
+en funciones que registran `"Post peer presence for %s"`:
+
+| Función | Envío | Payload |
+|---|---|---|
+| `sub_1000CA0F0` (sin llamadas directas: método de protocolo) | `0x1000ca412` → `sub_1000CABE0(415, …)` | `apple80211_awdl_ppp_done` con la MAC del par |
+| `sub_1000D6000` (vía el thunk `sub_1000CA0C0`, desde la tabla de testigos `0x100517bf8`) | `0x1000d6229` → `sub_10004A490(415, …)`, solo si el byte `+32` del objeto vale 1 | `{u32 version = 1, MAC del par}` |
+
+El struct `apple80211_awdl_ppp_done` es de 12 B ([AWDL_STRUCTS.md](AWDL_STRUCTS.md)). Ese método de
+publicación lo llama la tabla de vecinos (`sub_1002823D0`, log `"Posted peer presence for %s on
+%s"`). A esta, a su vez, llegan varias rutas Swift (`sub_10028F280`, `sub_100305990`,
+`sub_10040B650`, `sub_10041C470`). Qué evento del par dispara cada ruta no está trazado `?`.
 
 ## 3. La cola de espera PPP (*post peer presence*)
 
@@ -161,7 +171,7 @@ llegar con −45 dBm o más (−58 en el juego ampliado) para pasar a enrutable.
 
 ## 6. Pendiente
 
-- Sitio del ioctl 415 en `wifip2pd` y qué dispara la publicación de la presencia en el daemon.
+- Qué evento del par dispara, en `wifip2pd`, las rutas que acaban en `sub_1002823D0` y el ioctl 415 (§2).
 - Qué cambio de estado de la interfaz activa `LLAValid` (`PM+65308`) y quién activa el bit 1 de
   `PM+16096` (hay escrituras completas del campo en `enableAWDL`, `setAwdlSyncState`, `reset` y
   otras).
