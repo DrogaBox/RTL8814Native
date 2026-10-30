@@ -326,9 +326,11 @@ ejecución **síncrona** en el hilo llamador (en USB no hay work item; los callb
   `Docs/ARCHITECTURE.md:1078`). `RXFLTMAP0` no lo escribe el driver en modo normal (solo el modo
   monitor y MP, §6.3): el valor 0xFFFF es el default de reset del chip `?` (coherente: no hay
   escritor).
-- Los action frames AWDL van con A1 multicast (no broadcast) y A2 = MAC del peer (sin `sta_info`):
-  los bits CBSSID no los tocan (solo aplican a beacon/data) y `RCR_AAP|AM` los deja pasar al RX
-  DMA.
+- Los action frames AWDL van con A1 broadcast (4893 de 4893 en capturas de iOS 26,
+  [AWDL_RTL8814_RX_ACK.md](AWDL_RTL8814_RX_ACK.md) §1), A2 = MAC del peer (sin `sta_info`) y A3 =
+  `00:25:00:FF:94:73`: los bits CBSSID no los tocan (solo aplican a beacon/data) y `RCR_AB|AMF` los
+  deja pasar al RX DMA. Las tramas de datos AWDL sí chocan con `RCR_CBSSID_DATA`
+  ([AWDL_RTL8814_RX_ACK.md](AWDL_RTL8814_RX_ACK.md) §2.3).
 
 ### 6.2 Filtrado software: aquí se pierden hoy
 
@@ -337,11 +339,14 @@ ejecución **síncrona** en el hilo llamador (en USB no hay work item; los callb
   `:1969-2032`, que busca `psta` por A2 sin descartar si es NULL) → `mgt_dispatcher`
   (`Source/rtl8814au/core/rtw_mlme_ext.c:1259`).
 - `mgt_dispatcher` descarta todo frame cuyo A1 no sea la MAC propia o broadcast
-  (`Source/rtl8814au/core/rtw_mlme_ext.c:1317-1331`) — un action frame AWDL multicast muere aquí.
-- `OnAction` despacha por categoría contra `OnAction_tbl` y **ignora las categorías
-  desconocidas** (`Source/rtl8814au/core/rtw_mlme_ext.c:7463-7483`); la categoría AWDL (127, OUI
-  Apple) no está en la tabla `?` (valor de categoría según el protocolo AWDL, no verificado en
-  este árbol).
+  (`Source/rtl8814au/core/rtw_mlme_ext.c:1317-1331`). Los action frames AWDL, con A1 broadcast,
+  pasan; los unicast de management a la MAC de `awdl0` (p. ej. ADDBA) mueren aquí.
+- `OnAction` despacha por categoría contra `OnAction_tbl` e ignora las categorías desconocidas
+  (`Source/rtl8814au/core/rtw_mlme_ext.c:7463-7483`). La categoría 127 sí está:
+  `RTW_WLAN_CATEGORY_P2P = 0x7f` (`Source/rtl8814au/include/ieee80211.h:1525`) →
+  `OnAction_p2p` (`Source/rtl8814au/core/rtw_mlme_ext.c:96`, `:7398`), que descarta la trama AWDL
+  porque exige A1 propio y el OUI Wi-Fi Direct `0x506F9A09`. Recorrido completo y punto de desvío en
+  [AWDL_RTL8814_RX_ACK.md](AWDL_RTL8814_RX_ACK.md) §3 y §4.
 - Para TX/RX de control (RXFLTMAP1) el driver solo toca el bit de RX BAR
   (`Source/rtl8814au/hal/hal_com.c:12385-12398`).
 

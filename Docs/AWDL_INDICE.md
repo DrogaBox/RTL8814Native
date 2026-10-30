@@ -66,6 +66,7 @@ Convención de estado:
 | [AWDL_PEERMANAGER_DRIVER_ABI.md](AWDL_PEERMANAGER_DRIVER_ABI.md) | Contrato binario driver↔PeerManager: inyección de AF, eventos 41/42/43, ioctls internos y tirón de TX | Cerrado con `?` en su núcleo; constructores de TLV 6/8/10/11 y contenido exacto del tirón TX sin nombrar (etapa 2, tabla §3) |
 | [AWDL_FIRMWARE_DUTIES.md](AWDL_FIRMWARE_DUTIES.md) | Qué delega Broadcom en el firmware para el rol 6: iovars, comandos y suscripción de eventos | Cerrado y verificado como inventario; unidad del guard time y mapas finos de payload en `?` |
 | [AWDL_RTL8814_HW_SUPPORT.md](AWDL_RTL8814_HW_SUPPORT.md) | Qué ofrece el RTL8814AU para cada obligación del firmware: feasible / parcial / missing | Cerrado como inventario estático; ninguna conclusión está probada en hardware |
+| [AWDL_RTL8814_RX_ACK.md](AWDL_RTL8814_RX_ACK.md) | Recepción y ACK para `awdl0`: direcciones reales de las tramas AWDL (A1 broadcast, A3 `00:25:00:FF:94:73`), dónde las descarta hoy el software, puerto 1 ad-hoc con la MAC de `awdl0`, `RCR_CBSSID_DATA` y punto de desvío en `validate_recv_frame` | Medido en código, volcado y capturas; comportamiento del MAC por puerto con `?` |
 
 ## 4. Etapa 1: especificación, implementación y revisiones
 
