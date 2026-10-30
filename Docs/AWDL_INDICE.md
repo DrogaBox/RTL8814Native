@@ -60,6 +60,7 @@ Convención de estado:
 |---|---|---|
 | [AWDL_FRAME_WIRE_FORMAT.md](AWDL_FRAME_WIRE_FORMAT.md) | Trama AWDL en el aire tal como la parsea el kernel: cabeceras, validaciones y TLVs | Cerrado y verificado; `?` sobre quién retira la cabecera 802.11 y el FCS |
 | [AWDL_TLV_BODIES.md](AWDL_TLV_BODIES.md) | Cuerpos de los TLV sync params (tipo 4) y secuencia de canales (tipo 18) | Cerrado y verificado; ampliado por [AWDL_OPEN_QUESTIONS_1.md](AWDL_OPEN_QUESTIONS_1.md) |
+| [AWDL_CHANNEL_SEQUENCE_CONTROL.md](AWDL_CHANNEL_SEQUENCE_CONTROL.md) | Quién decide la secuencia de canales (estrategia, estado, tabla de 56×16 tipos de ranura), cómo baja al driver (129, 132/205, 136, 118) y por qué el driver compone los TLV 4 y 18: una radio fija puede anunciar canal 0 en las ranuras que no atiende | Verificado; semántica de varias fuentes de canal con `?` |
 | [AWDL_OPEN_QUESTIONS_1.md](AWDL_OPEN_QUESTIONS_1.md) | TLV de elección v2 (tipo 24), `monitorPeersTimeline` y los bytes aún sin nombre | Cerrado y verificado; los nombres canónicos del protocolo no son verificables desde el binario |
 | [AWDL_PEERMANAGER_SOFTWARE.md](AWDL_PEERMANAGER_SOFTWARE.md) | Qué calcula `IO80211AWDLPeerManager` en software y qué exige al driver que tiene debajo | Cerrado y verificado |
 | [AWDL_PEERMANAGER_DRIVER_ABI.md](AWDL_PEERMANAGER_DRIVER_ABI.md) | Contrato binario driver↔PeerManager: inyección de AF, eventos 41/42/43, ioctls internos y tirón de TX | Cerrado con `?` en su núcleo; constructores de TLV 6/8/10/11 y contenido exacto del tirón TX sin nombrar (etapa 2, tabla §3) |
