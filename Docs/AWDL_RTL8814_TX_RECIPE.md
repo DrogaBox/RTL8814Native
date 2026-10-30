@@ -95,10 +95,10 @@ FC 0x08 0x00 (o 0x88 con QoS) | A1 MAC del par | A2 MAC awdl0 | A3 00:25:00:FF:9
 AA AA 03 | 00 17 F2 | 08 00 | 03 04 | seq AWDL (u16 LE) | 00 00 | ethertype | IPv6
 ```
 
-Quién añade la cabecera AWDL antes de que el paquete llegue al driver es la pregunta abierta del
-borrador `AWDL_DATA_ENCAP.md`. `IO80211AWDLPeerManager::addAwdlSnapHeader` (`0xffffff8002216cd0`)
-construye una cabecera 802.3 + SNAP con el campo `+10` a cero, que en el aire lleva la secuencia: el
-driver tendría que rellenarla `?`.
+El paquete llega al driver como Ethernet II puro y la cabecera AWDL la pone el driver, con un contador
+de secuencia propio por destino ([AWDL_DATA_ENCAP.md](AWDL_DATA_ENCAP.md) §1 y §7).
+`IO80211AWDLPeerManager::addAwdlSnapHeader` (`0xffffff8002216cd0`) no tiene referencias en 25G241: la
+familia no la usa.
 
 ## 5. Momento de emisión
 

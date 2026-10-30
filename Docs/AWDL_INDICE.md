@@ -71,6 +71,7 @@ Convención de estado:
 | [AWDL_RTL8814_HW_SUPPORT.md](AWDL_RTL8814_HW_SUPPORT.md) | Qué ofrece el RTL8814AU para cada obligación del firmware: feasible / parcial / missing | Cerrado como inventario estático; ninguna conclusión está probada en hardware |
 | [AWDL_RTL8814_RX_ACK.md](AWDL_RTL8814_RX_ACK.md) | Recepción y ACK para `awdl0`: direcciones reales de las tramas AWDL (A1 broadcast, A3 `00:25:00:FF:94:73`), dónde las descarta hoy el software, puerto 1 ad-hoc con la MAC de `awdl0`, `RCR_CBSSID_DATA` y punto de desvío en `validate_recv_frame` | Medido en código, volcado y capturas; comportamiento del MAC por puerto con `?` |
 | [AWDL_RTL8814_TX_RECIPE.md](AWDL_RTL8814_TX_RECIPE.md) | Cómo emitir PSF/MIF y datos de `awdl0` con el driver: patrón de inyección del vendor, direcciones intactas, tasa (VHT MCS9 a 20 MHz del helper no es válida), límite de reintentos 6/12 y ACK con el puerto 1 | Leído del código; tasas y latencia sin probar `?` |
+| [AWDL_DATA_ENCAP.md](AWDL_DATA_ENCAP.md) | Formato de los paquetes de `awdl0`: Ethernet II en la cola TX y en la RxCompletionQueue; Broadcom inserta y quita el SNAP AWDL en el host; stash de multicast en el manager; qué construye y quita el driver | Verificado; semántica del nibble AC de la secuencia con `?` |
 
 ## 4. Etapa 1: especificación, implementación y revisiones
 
