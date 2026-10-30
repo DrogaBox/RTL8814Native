@@ -1,0 +1,69 @@
+# awdl_offsets_24H232.tsv - accesos sensibles a la version del stack AWDL (macOS 15.8.2, 24H232, Darwin 24)
+# Port de Tools/awdl_offsets_25G241.tsv leido en IDA headless sobre copia de boot_24H232.kc.i64.
+# Mismo formato y orden de filas que la tabla 25G241; el desplazamiento va literal en cada patron.
+# Convencion de la columna offset: en filas ifnet/eparams/RegInfo es el campo del struct; en filas
+# vtable es la ranura relativa al vptr, salvo las super-llamadas por ZTV (0x5d8, 0xe68->0xe70) donde
+# es el desplazamiento codificado sobre la base de la ZTV (vptr = celda - 0x10).
+# Fila NOT-FOUND esperada (explicada en Docs/AWDL_VERSION_SENSITIVE_OFFSETS_14_15.md):
+#   ifnet +0x900 (puerta netem fuera del helper en Darwin 23 y 24).
+reginfo	RegistrationInfo	+0x04 tamaño >= 0x108	0x4	__ZN25IOSkywalkNetworkInterface24registerNetworkInterfaceEPKNS_16RegistrationInfoEP20IOSkywalkLogicalLinkP25IOSkywalkPacketBufferPoolS6_j	41 81 7C 24 04 08 01 00 00	1	0	visible	0xffffff8002983ee4
+reginfo	RegistrationInfo	+0x3C headroom (getTxDataOffset)	0x3c	__ZN25IOSkywalkNetworkInterface15getTxDataOffsetEv	0F B7 ?? 3C	1	0	silencio	0xffffff80029851be
+reginfo	RegistrationInfo	+0x3E (lectura del start del cliente BSD)	0x3e	__ZN25IOSkywalkNetworkBSDClient5startEP9IOService	0F B7 ?? 3E	1	0	silencio	0xffffff8002979d02
+reginfo	RegistrationInfo	+0x48/+0x4C par MTU (resta Broadcom)	0x48	__ZN28AppleBCMWLANSkywalkInterface5startEP16AppleBCMWLANCorePN26IOSkywalkEthernetInterface16RegistrationInfoE	41 29 ?? 48 41 29 ?? 4C	1	0	silencio	0xffffff800156a6ff
+reginfo	RegistrationInfo	+0x108 MAC	0x108	__ZN26IOSkywalkEthernetInterface26initBSDInterfaceParametersEP18ifnet_init_eparamsPP11sockaddr_dl	8B ?? 08 01 00 00	4	0	silencio	0xffffff800298a200
+eparams	ifnet_init_eparams	+0x00 version == 2 (initBSD)	0x0	__ZN26IOSkywalkEthernetInterface26initBSDInterfaceParametersEP18ifnet_init_eparamsPP11sockaddr_dl	83 3E 02	0	0	feature	0xffffff800298a1c3
+eparams	ifnet_init_eparams	+0x04 tamaño == 0x158 (initBSD)	0x158	__ZN26IOSkywalkEthernetInterface26initBSDInterfaceParametersEP18ifnet_init_eparamsPP11sockaddr_dl	81 7E 04 58 01 00 00	0	0	feature	0xffffff800298a1dc
+eparams	ifnet_init_eparams	+0x00 version == 2 (alloc)	0x0	_ifnet_allocate_extended	83 3F 02	0	0	feature	0xffffff800069b655
+eparams	ifnet_init_eparams	+0x04 tamaño >= 0x158 (alloc)	0x158	_ifnet_allocate_extended	81 7F 04 58 01 00 00	0	0	feature	0xffffff800069b663
+eparams	ifnet_init_eparams	+0x144 tx data offset (escritura del start)	0x144	__ZN25IOSkywalkNetworkBSDClient5startEP9IOService	66 41 89 ?? 3C 01 00 00	4	8	silencio	0xffffff8002979cf3
+eparams	ifnet_init_eparams	+0x144 tx data offset (lectura del alloc)	0x144	_ifnet_allocate_extended	44 0F B7 ?? 44 01 00 00	4	0	silencio	0xffffff800069b846
+eparams	ifnet_init_eparams	+0x146 (lectura del alloc)	0x146	_ifnet_allocate_extended	0F B7 ?? 46 01 00 00	4	0	silencio	0xffffff800069b84e
+ifnet	ifnet	+0x78 if_refflags (& 7 == 2)	0x78	_ifnet_enqueue_pkt	8B ?? 78 83 E0 07 83 F8 02	1	0	analisis	0xffffff8000647495
+ifnet	ifnet	+0xBE if_flags (gate IFF_UP)	0xbe	_ifnet_enqueue_pkt	F6 ?? BE 00 00 00 01	4	0	analisis	0xffffff80006474a0
+ifnet	ifnet	+0xC0 IFEF_TXSTART (gate ifnet_enqueue_pkt)	0xc0	_ifnet_enqueue_pkt	F6 ?? C0 00 00 00 80	4	0	analisis	0xffffff800064748c
+ifnet	ifnet	+0xC0 IFEF_TXSTART (gate del hilo de arranque)	0xc0	sub_FFFFFF80006470D0	F6 83 C0 00 00 00 80	4	0	analisis	0xffffff800064720e
+ifnet	ifnet	+0xC0 IFEF_TXSTART (escritura del alta)	0xc0	_ifnet_allocate_extended	F0 41 81 ?? C0 00 00 00 80 00 00 00	4	0	analisis	0xffffff800069be06
+ifnet	ifnet	+0xC3 IFEF_SKYWALK_NATIVE	0xc3	sub_FFFFFF800064B200	F6 83 C3 00 00 00 04	4	0	analisis	0xffffff800064b26d
+ifnet	ifnet	+0x228 if_output = _dlil_output_handler (era +0x248)	0x228	_ifnet_allocate_extended	49 89 ?? 28 02 00 00	4	0	silencio	0xffffff800069be52
+ifnet	ifnet	+0x230 if_start = _ifp_if_start (era +0x250)	0x230	_ifnet_allocate_extended	4D 89 B7 30 02 00 00	4	0	panico	0xffffff800069ba9b
+ifnet	ifnet	+0x238 output_handler (salto de la pila; era +0x258)	0x238	_dlil_output_handler	48 8B ?? 38 02 00 00	4	0	silencio	0xffffff800064fdc4
+ifnet	ifnet	+0x238 output_handler (cmpxchg de instalacion)	0x238	_ifnet_set_output_handler	F0 48 0F B1 ?? 38 02 00 00	4	0	silencio	0xffffff800064fe0d
+ifnet	ifnet	+0x240 output del alta (escritura; era +0x260)	0x240	_ifnet_allocate_extended	49 89 ?? 40 02 00 00	4	0	silencio	0xffffff800069ba94
+ifnet	ifnet	+0x240 output del alta (lectura de respaldo)	0x240	_ifnet_allocate_extended	49 8B ?? 40 02 00 00	4	0	silencio	0xffffff800069be12
+ifnet	ifnet	+0x578 if_start por defecto (era +0x598)	0x578	_ifnet_allocate_extended	4D 89 B7 78 05 00 00	4	0	silencio	0xffffff800069beed
+ifnet	ifnet	+0x580 handler por defecto (escritura; era +0x5A0)	0x580	_ifnet_allocate_extended	49 89 ?? 80 05 00 00	4	0	feature	0xffffff800069bf9f
+ifnet	ifnet	+0x580 handler por defecto (ancla del cmpxchg)	0x580	_ifnet_set_output_handler	48 8B ?? 80 05 00 00	4	0	feature	0xffffff800064fe04
+ifnet	ifnet	+0x2E0 bit 1 (hilo en marcha; era +0x300)	0x2e0	sub_FFFFFF80006470D0	F6 83 E0 02 00 00 01	4	0	analisis	0xffffff8000647229
+ifnet	ifnet	+0x2E4 contador de arranque (era +0x304)	0x2e4	sub_FFFFFF80006470D0	FF 83 E4 02 00 00	4	0	analisis	0xffffff8000647232
+ifnet	ifnet	+0x2E9 byte de puerta (era +0x309)	0x2e9	sub_FFFFFF80006470D0	80 BB E9 02 00 00 00	4	0	analisis	0xffffff8000647238
+ifnet	ifnet	+0x310 hilo de arranque (panico si nulo tras attach; era +0x330)	0x310	_ifnet_attach	48 83 BB 10 03 00 00 00	4	0	analisis	0xffffff8000649fb2
+ifnet	ifnet	+0x310 hilo de arranque (assert_wait; era +0x330)	0x310	sub_FFFFFF800064B200	4C 8D BB 10 03 00 00	4	0	analisis	0xffffff800064b3bc
+ifnet	ifnet	+0x318 ifclassq (hilo de arranque; era +0x338)	0x318	sub_FFFFFF80006470D0	48 8B BB 18 03 00 00	4	0	analisis	0xffffff80006471db
+ifnet	ifnet	+0x318 ifclassq (alta)	0x318	_ifnet_allocate_extended	49 8B ?? 18 03 00 00	4	0	analisis	0xffffff800069c004
+ifnet	ifnet	+0x56C tx data offset (escritura; era +0x58C)	0x56c	_ifnet_allocate_extended	66 41 89 ?? 6C 05 00 00	4	0	silencio	0xffffff800069bf42
+ifnet	ifnet	+0x56E (escritura; era +0x58E)	0x56e	_ifnet_allocate_extended	66 41 89 ?? 6E 05 00 00	4	0	silencio	0xffffff800069bf4e
+ifnet	ifnet	+0x570 u32 (escritura; era +0x590)	0x570	_ifnet_allocate_extended	41 89 ?? 70 05 00 00	4	0	silencio	0xffffff800069bf5c
+ifnet	ifnet	+0x900 cola netem empotrada [AUSENTE 24H232: fuera del helper]	0x900	sub_FFFFFF80005E6110	48 83 ?? 00 09 00 00 00	4	0	analisis	0xffffff80005e6133
+ifclassq	ifclassq	+0x4C bit 1 de purga	0x4c	_if_qflush	F6 43 4C 02	1	0	analisis	0xffffff8000636c98
+ifclassq	ifclassq	+0x68 tabla de la disciplina	0x68	_fq_if_enqueue_classq	48 8B ?? 68	1	0	analisis	0xffffff80007688ef
+ifclassq	disciplina	tabla+0x18 operacion enqueue (llamada directa a fq_if_enqueue_classq)	0x18	sub_FFFFFF80006470D0	E8 AB 16 12 00	0	0	analisis	0xffffff80006471f0
+ifclassq	ifclassq	+0x5C limite 0x800	0x5c	_ifnet_allocate_extended	C7 40 5C 00 08 00 00	1	0	analisis	0xffffff800069c00b
+llink	netif_llink	+0x3C nll_state = 1 (alta)	0x3c	_nx_netif_llink_add	41 C6 ?? 3C 01	1	0	analisis	0xffffff8000a2bcdf
+llink	netif_llink	+0x3C nll_state = 2 (destruccion)	0x3c	_nx_netif_llink_add	C6 ?? 3C 02	1	0	analisis	0xffffff8000a2bf13
+llink	netif_llink	+0x3C == 2 puerta ENXIO del dequeue	0x3c	_kern_netif_queue_tx_dequeue	80 ?? 3C 02	1	0	analisis	0xffffff8000a1bbc9
+vtable	IOSkywalkNetworkInterface	vptr+0x9B8 getTxDataOffset (era +0x9C0)	0x9b8	__ZN25IOSkywalkNetworkBSDClient5startEP9IOService	FF ?? B8 09 00 00	4	0	silencio	0xffffff8002979ced
+vtable	IOSkywalkNetworkInterface	vptr+0x9B8 (codificacion SIB)	0x9b8	__ZN26IOSkywalkEthernetInterface20initRegistrationInfoEPNS_16RegistrationInfoEjm	41 FF 94 24 B8 09 00 00	4	0	silencio	0xffffff8002989f67
+vtable	IOSkywalkEthernetInterface	vptr+0x8E0 initBSDInterfaceParameters	0x8e0	__ZN25IOSkywalkNetworkBSDClient5startEP9IOService	FF ?? E0 08 00 00	4	0	feature	0xffffff8002979d3b
+vtable	IOSkywalkNetworkInterface	vptr+0x8E8 prepareBSDInterface	0x8e8	__ZN25IOSkywalkNetworkBSDClient17gatedPrepareNexusEP7__ifnet	FF ?? E8 08 00 00	4	0	feature	0xffffff800297a95a
+vtable	IOService	vptr+0x600 terminate(uint)	0x600	__ZN16AppleBCMWLANCore23destroySkywalkInterfaceEj	FF ?? 00 06 00 00	4	0	analisis	0xffffff800163ae0a
+vtable	IOService	vptr+0x5B0 registerService(uint)	0x5b0	__ZN30AppleBCMWLANProximityInterface5startEP16AppleBCMWLANCorePN26IOSkywalkEthernetInterface16RegistrationInfoE	FF ?? B0 05 00 00	4	0	feature	0xffffff80016b9b16
+vtable	IOSkywalkBSDClient	vptr+0x5D0 start	0x5d0	__ZN25IOSkywalkNetworkBSDClient5startEP9IOService	FF ?? D0 05 00 00	4	0	analisis	0xffffff800297982c
+vtable	IOSkywalkInterface	vptr+0x5D8 stop (super por ZTV; ranura 0x5C8)	0x5d8	__ZN25IOSkywalkNetworkInterface4stopEP9IOService	FF A0 D8 05 00 00	4	0	analisis	0xffffff8002983b4e
+vtable	OSOrderedSet	vptr+0x1D8 lastObject	0x1d8	__ZN25IOSkywalkNetworkInterface26deregisterNetworkInterfaceEj	FF ?? D8 01 00 00	4	0	analisis	0xffffff8002983b74
+vtable	OSOrderedSet	vptr+0x1F8 getObject	0x1f8	__ZN25IOSkywalkNetworkBSDClient5startEP9IOService	FF ?? F8 01 00 00	4	0	analisis	0xffffff8002979ae8
+vtable	IO80211VirtualInterface	vptr+0xE60 init (super por ZTV+0xE70; era +0xE68)	0xe60	__ZN30AppleBCMWLANProximityInterface4initEP16AppleBCMWLANCoreP10ether_addrjPc	FF ?? 70 0E 00 00	4	0	panico	0xffffff80016a9381
+vtable	AppleBCMWLANSkywalkInterface	vptr+0x1478 start(core, RegInfo) (era +0x14E0)	0x1478	__ZN16AppleBCMWLANCore22createSkywalkInterfaceEPP28AppleBCMWLANSkywalkInterfaceP33apple80211SkywalkIfCreateParams_tP23IO80211VirtualInterface	FF ?? 78 14 00 00	4	0	analisis	0xffffff800163ab91
+bsdclient	IOSkywalkNetworkBSDClient	+0xE8 interfaz	0xe8	__ZN25IOSkywalkNetworkBSDClient5startEP9IOService	48 8B ?? E8 00 00 00	4	0	analisis	0xffffff8002979949
+bsdclient	IOSkywalkNetworkBSDClient	+0xF0 copia del RegInfo	0xf0	__ZN25IOSkywalkNetworkBSDClient5startEP9IOService	48 89 ?? F0 00 00 00	4	0	analisis	0xffffff80029799b1
+bsdclient	IOSkywalkNetworkBSDClient	+0xF8 puntero del ifnet	0xf8	__ZN25IOSkywalkNetworkBSDClient17gatedPrepareNexusEP7__ifnet	4C 89 ?? F8 00 00 00	4	0	analisis	0xffffff800297a978
+bsdclient	IOSkywalkNetworkBSDClient	+0x120 estado de wake (init pone qword a 0; era dword +0x13C = 1)	0x120	__ZN25IOSkywalkNetworkBSDClient4initEP12OSDictionary	48 C7 83 20 01 00 00 00 00 00 00	4	0	analisis	0xffffff80029797b4
