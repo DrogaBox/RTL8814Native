@@ -156,18 +156,31 @@ leídos por el manager y campos escritos por Broadcom:
 | `+0x08` | `uint8_t[4]` | sin uso (`?`) | queda a cero |
 | `+0x0c` | `apple80211_channel` (12 B) | canal del AF | escrito con `ChanSpecConvToApple80211Channel` en `0xffffff800171795c`; no leído por el manager |
 | `+0x18` | `uint8_t[16]` | ceros | — |
-| `+0x28` | `uint32_t` BE | campo de tiempo 1 (`?`) | escrito en `0xffffff800171795c`; no leído por el manager |
-| `+0x2c` | `uint32_t` BE | **timestamp del AF** | leído en `0xffffff800220e8b0` como `*(u32*)(hdr+44)` y comparado con el umbral `ivars+10268` |
-| `+0x30` | `uint32_t` BE | campo de tiempo 2 (`?`) | escrito en `0xffffff800171795c`; no leído por el manager |
+| `+0x28` | `uint32_t` | tasa de RX (`rate` del evento) | escrito en `0xffffff800171795c`; no leído por el manager |
+| `+0x2c` | `int32_t` | **RSSI del AF en dBm** (`rssi` del evento) | leído en `actionFrameProcessInput` (`mov eax, [r15+2Ch]` en `0xffffff800220ecac` y `0xffffff800220ecce`) y comparado **con signo** con el umbral RSSI de borde `ivars+10268` |
+| `+0x30` | `uint32_t` | `mactime` del evento, µs `?` | escrito en `0xffffff800171795c`; no leído por el manager |
 | `+0x34` | `uint8_t[10]` | ceros | — |
 | `+0x40` | `uint32_t` | `1` (sólo versión 2) | escrito en `0xffffff800171795c`; no leído |
 | `+0x44` | `uint8_t[4]` | copia de 4 B del evento (sólo v2) | escrito en `0xffffff800171795c`; no leído |
 
 Notas:
 
-- El `+0x2c` se compara **sin byteswap** contra `*(u32*)(ivars+10268)` en `0xffffff800220e8b0`
-  (`if (*(u32*)(hdr+44) < *(u32*)(ivars+10268)) return`): un AF con marca temporal anterior al umbral
-  se descarta sin crear peer. El escritor de `ivars+10268` no se localizó `?`.
+- El `+0x2c` es el RSSI, no una marca temporal (corrección de la versión anterior de esta nota). Los
+  tres valores de `+0x28/+0x2c/+0x30` salen de `struct brcmf_rx_mgmt_data` (`version`, `chanspec`,
+  `rssi`, `mactime`, `rate`, todos big-endian), que sigue a la cabecera de evento de 48 B
+  (`brcmf_event_msg_be`). Por eso en v1 `rssi` está en `ev+52`, `mactime` en `ev+56` y `rate` en
+  `ev+60` (definiciones públicas de brcmfmac, `fwil_types.h` y `fweh.h`; que el firmware de Apple use
+  la misma estructura es coherente con los offsets, `?`). Broadcom los guarda ya en orden de host
+  (`_byteswap_ulong`).
+- `ivars+10268` es el **umbral RSSI de borde del firmware**: `initParamsToDefaults` lo pone a −70
+  (`mov dword ptr [rcx+281Ch], 0FFFFFFBAh` en `0xffffff80021c7cdf`), lo cambian
+  `determineAndSetEdgeRssiThreshold` y `setAwdlElectionRssiThresholds`, lo devuelve `getEdgeRssi`, y
+  `printState` lo imprime como «Firmware edge RSSI threshold». En `actionFrameProcessInput`, con un
+  par conocido, `cmp eax, [rcx+281Ch]` / `jge` (`0xffffff800220ecb4`) deja pasar el AF si el RSSI
+  llega al umbral; si no, se libera el par y se descarta el frame. Con un emisor desconocido,
+  `cmp`/`jl` (`0xffffff800220ecd6`) descarta el AF sin llamar a `addAWDLPeer`. Un driver que inyecte
+  con `+0x2c = 0` pasa siempre el filtro; debe poner el RSSI real del frame para que el manager
+  ignore pares lejanos.
 - El manager **no** obtiene el cuerpo del frame de este header: el cuerpo viaja en el
   `IO80211Buffer`. El header es sólo metadato (MAC, canal, tiempos).
 - MAC destino, BSSID y RSSI no aparecen en ningún acceso del manager a este header; si el driver los
@@ -220,8 +233,8 @@ La cadena real es **indirecta a través del tap BPF**, no una llamada directa al
 2. Construye en stack un `apple80211_act_frm_hdr` de 72 B: copia la MAC de origen desde `ev+24`/`ev+28`,
    convierte el canal del evento (`AppleBCMWLANChanSpec::getAppleChannelSpec` +
    `ChanSpecConvToApple80211Channel`) al `apple80211_channel` de `+0x0c`, y rellena los tres
-   `uint32_t` big-endian con `_byteswap_ulong`: en v1 `+0x2c ← ev+52`, `+0x30 ← ev+56`,
-   `+0x28 ← ev+60`; en v2 `+0x2c ← ev+56`, `+0x30 ← ev+60`, `+0x28 ← ev+64`. En v2 añade `1` en
+   `uint32_t` big-endian del evento con `_byteswap_ulong` (quedan en orden de host): en v1
+   `+0x2c ← ev+52` (rssi), `+0x30 ← ev+56` (mactime), `+0x28 ← ev+60` (rate); en v2 `+0x2c ← ev+56`, `+0x30 ← ev+60`, `+0x28 ← ev+64`. En v2 añade `1` en
    `+0x40` y copia 4 B de `ev+68..71` en `+0x44`.
 3. Pide un `IO80211Buffer` al pool de management frames (`getMgmtFramePool` → `alloc` →
    `+0x148 getCursor` → `IO80211BufferCursor::copyFrom` → `+0x138 setLength(len)`) y copia el cuerpo
@@ -879,8 +892,9 @@ resultado a contadores (`ivars+16360` y `ivars+16368`).
 ## 5. Mínimos que debe cumplir un driver sin firmware AWDL
 
 1. **Inyectar AF** por `bpfTapInput(iface, buf, 12, hdr, 72)` con un `IO80211Buffer` de un pool
-   válido y un `apple80211_act_frm_hdr` de exactamente 72 B, MAC de origen en `+0` y timestamp en
-   `+0x2c`. Nunca reutilizar el buffer después: el manager lo devuelve a su pool (`+0x118`).
+   válido y un `apple80211_act_frm_hdr` de exactamente 72 B, MAC de origen en `+0` y RSSI en dBm
+   (`int32_t`, en orden de host) en `+0x2c`; por debajo del umbral de borde (−70 por defecto) el AF se
+   descarta. Nunca reutilizar el buffer después: el manager lo devuelve a su pool (`+0x118`).
 2. **Publicar los eventos 41/42/43** con los payloads de §2: 36 B para el 41 (`AwNumber` en `+0`,
    maestro en `+8`, top master en `+0x0e`, `FwAwStartTime` big-endian en `+0x14`, canal en `+0x1c`),
    4 B para el 42 (`sn` de la ventana), 40 B para el 43 (bandera CCA en `+0x10`, base en `+0x18`,
