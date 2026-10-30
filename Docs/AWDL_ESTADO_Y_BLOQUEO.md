@@ -47,6 +47,11 @@ no haya ventanas.
 
 ## 3. Por qué no hay sustituto
 
+Actualización 2026-10-30: existe un sustituto parcial. ESP32Drop implementa AWDL en un ESP32-S3 y
+funciona contra Mac e iPhone. Con este driver valida primero la TX: el ESP32 solo emite tras elegir un
+maestro. Detalle y orden de pruebas en [AWDL_REFERENCIAS_EXTERNAS.md](AWDL_REFERENCIAS_EXTERNAS.md) §3 y
+§10. Lo que sigue describe la situación sin ese hardware.
+
 - **No hay dispositivos Apple en el proyecto.** AWDL es un protocolo propietario de Apple; sin un iPhone,
   iPad o Mac no hay contraparte.
 - **El teléfono Android disponible (A53, SCSC S620) no sirve de par.** No hay soporte AWDL conocido en
