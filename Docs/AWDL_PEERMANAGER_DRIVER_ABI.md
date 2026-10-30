@@ -786,17 +786,48 @@ espera el aire; la plantilla del 151 es sólo la parte "estática" de los TLVs).
 ### 3.12 229 — advertisers del maestro (`0xffffff80021ec4b6`)
 
 ```c
-struct awdl_advertisers {      // 44 B
-    uint8_t  mi_copy[44];      // copia de los campos del MI del maestro
+struct awdl_advertisers {      // 44 B: calendario del maestro elegido, tal como lo anunció
+    uint16_t aw;               // +0x00  sn: número de la próxima AW        priv+106 (0x6A)
+    uint16_t dc;               // +0x02  TU hasta el límite de franja      priv+758 (0x2F6)
+    uint16_t tx_delay;         // +0x04  phy_tx - target_tx, µs            priv+752 (0x2F0)
+    uint16_t period;           // +0x06  periodo entre AF, TU (110)        priv+764 (0x2FC)
+    uint16_t common_aw_len;    // +0x08  longitud de AW común (16)         priv+772 (0x304)
+    uint16_t ext_aw_len;       // +0x0a  constante 16 (exigida antes)
+    uint16_t aw_period;        // +0x0c  periodo de AW, TU (16)            priv+762 (0x2FA)
+    int8_t   rssi;             // +0x0e  peer+0x4A4, o peer+0x49C - 10, o -100 si ambos son 0 (?)
+    uint8_t  pad0;             // +0x0f  0
+    uint8_t  presence_mode;    // +0x10  AW por franja (4)                 priv+748 (0x2EC)
+    uint8_t  pad1;             // +0x11  0
+    uint8_t  distance;         // +0x12  distancia al maestro raíz         priv+575 (0x23F)
+    uint8_t  pad2;             // +0x13  0 (dword +0x10 puesto a cero antes)
+    uint32_t mactime;          // +0x14  mactime del último AF del maestro priv+912 (0x390), bswap
+    uint32_t self_metric;      // +0x18  métrica propia del maestro (?)    priv+583 (0x247)
+    uint32_t master_metric;    // +0x1c  métrica del maestro raíz          priv+579 (0x243)
+    uint8_t  root[6];          // +0x20  MAC del maestro raíz              priv+559 (0x22F)
+    uint8_t  master[6];        // +0x26  MAC del par maestro               peer+0x58
 };
 ```
 
-Se construye copiando, campo a campo, el MI del peer maestro (`*(peer+0x20)`): 10 bytes iniciales
-(contador AW y fechas), el canal normalizado con la misma regla `-10`/`-100` que aplica el log
-`aw %u dc %u tx_delay %u period %u ...`, un `bswap` de un contador de tramas y las MACs de
-root/relay del árbol del maestro. El mapeo byte a byte de cada campo depende del layout de ivars de
-`IO80211AWDLPeer` y queda sin fijar aquí (`?`); lo vinculante es el tamaño (44 B) y que el contenido
-es una copia literal del MI del maestro, no una estructura propia del driver.
+Leído instrucción a instrucción entre `0xffffff80021ec673` y `0xffffff80021ec72c`, con
+`priv = *(peer+0x20)` (bloque privado del `IO80211AWDLPeer`) y el destino en `rbp+var_80`, que el log
+`"aw %u dc %u tx_delay %u period %u ms %u (%u) ..."` imprime en ese orden. Origen de cada ivar:
+- `+106`, `+748`, `+752`, `+758`, `+762`, `+764` y `+772` los escribe `parseAwdlSyncParamsTlv`
+  desde el TLV 4 del maestro ([AWDL_TLV_BODIES.md](AWDL_TLV_BODIES.md) §1.2 y §1.3).
+- `+912` lo escribe `actionFrameReport` (`mov [rcx+390h], edx` en `0xffffff80021afaa4`) como
+  `bswap` del `mactime` (`+0x30`) de la cabecera de 72 B del último AF del maestro, junto al canal
+  `+0x10` de esa cabecera en `+1432`.
+- `+559..+590` siguen el orden del cuerpo del TLV 24 (maestro, sync, contador, distancia, métrica
+  del maestro, métrica propia). `parseAwdlSyncTreeTLV` escribe la distancia en `+575`
+  (`0xffffff80021b57ee`) y `parseAwdlElectionParamsV2` compara `+579` como métrica del maestro y
+  `+559` como su MAC. El nombre de `+583` es una inferencia por posición `?`.
+
+**Uso para el temporizador del driver.** El 229 llega en cada cambio de maestro. Con él, un driver
+sin firmware puede alinear su reloj de franjas al del maestro igual que owly (`Clock::update` en
+`crates/owly-awdl/src/sync.rs`): el límite de la siguiente franja está `dc` TU después del instante
+en que se recibió el AF del maestro (`mactime`), y la AW que empieza allí es la `aw`. La franja dura
+`presence_mode × aw_period` TU (4 × 16 = 64 TU). `tx_delay` corrige el retraso entre el instante
+previsto y el real de esa transmisión del maestro. Mientras el maestro no cambie, el driver debe
+seguir ajustando el reloj con los TLV 4 de sus PSF/MIF recibidos, porque el 229 no se reenvía.
 
 Precondición: `memcmp(ivars+37231, ivars+37216, 6) != 0` (no se es maestro) o `ivars+37484` bit 0
 (maestro forzado). Antes de emitir se hace `lockDataPath`, se busca el peer maestro
