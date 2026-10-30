@@ -125,22 +125,45 @@ Consecuencias para la interfaz `awdl0` del RTL8814:
 
 - **Par visto en 5 GHz o con RSSI suficiente.** Si `isDualBandPeerDiscoveredOn5GHz` es falso, el
   RSSI del par (`+1188`, o `+1180 − 10`; −100 si los dos valen 0) tiene que ser mayor o igual que el
-  umbral en `PM+10276`. Si no, registra `"Not Routable … outside bubble"`. Este umbral es otro campo
-  que el de borde de `PM+10268` (−70). Su valor por defecto no está leído `?`.
+  umbral en `PM+10276`. Si no, registra `"Not Routable … outside bubble"`. Los valores los pone
+  `determineAndSetEdgeRssiThreshold` (§5.1).
 - **Fin de la guarda de publicación** (`waitForPostingPeer` `0xffffff80021b801c`). Si
   `PM+65193` bit 0 o `+1756` del par están activos, espera `ndpPostingGuardTimemSec` (`PM+65216`;
   128 ms si vale 0) desde el primer AF (`+736`), salvo que `+1757` esté activo.
-- **`LLAValid` y `AWDLOn`.** `PM+16096` bit 1 y `PM+65308` bit 0. Si falta alguno, registra
-  `"Cannot post peer presence … (LLAValid %d AWDLOn %d)"`. Quién pone `LLAValid` no está trazado
-  `?`; el nombre apunta a la dirección IPv6 de enlace local de `awdl0`.
+- **`LLAValid` y `AWDLOn`.** Si falta alguno, registra
+  `"Cannot post peer presence … (LLAValid %d AWDLOn %d)"`. Por el orden de los argumentos del log:
+  - `LLAValid` es `PM+65308` bit 0. Lo escriben `initParamsToDefaults` (`0xffffff80021c818f`),
+    `interfaceStateChange` (1 en `0xffffff80021d9b39`, 0 en `0xffffff80021d9b44`) y
+    `monitorAWDLState` (`0xffffff80021ed932`). Qué estado de la interfaz lo activa no está trazado
+    `?`.
+  - `AWDLOn` es `PM+16096` bit 1. `reportDataPathEvents` registra ese mismo bit como `isAwdlOn`.
+
+### 5.1 Umbrales de RSSI
+
+`IO80211AWDLPeerManager::determineAndSetEdgeRssiThreshold(uint)` (`0xffffff80021e0f5e`, escrituras
+en `0xffffff80021e0fc1`–`0xffffff80021e1107`) elige entre dos juegos:
+
+| Campo | Normal | Ampliado |
+|---|---:|---:|
+| `PM+10268` (borde del firmware; descarte de AF en `actionFrameProcessInput`) | −70 | −78 |
+| `PM+10272` (borde del host) | −65 | −78 |
+| `PM+10276` (enrutable solo en 2,4 GHz) | −45 | −58 |
+
+El juego ampliado se usa si el argumento (número de servicios AirPlay) no es 0, si `PM+16156` bit 0
+está activo o si `increaseRssiThresholdForSingleStreamDevice` lo pide. Cuando cambia el borde, el
+kernel manda el valor del firmware al driver con el **ioctl 135**
+(`APPLE80211_IOC_AWDL_ELECTION_RSSI_THRESHOLDS`, `apple80211RouteInternal(0x802869C8, 135, …)`).
+Es un buffer de 20 B con ceros en los primeros 16 bytes y el umbral en `+16`.
 
 Para el RTL8814 la primera condición importa: con la radio fija en un canal de 5 GHz el par se ve
-en 5 GHz y el umbral de 2,4 GHz no se aplica. Si la radio se queda en el canal 6, un par lejano
-puede no pasar nunca a enrutable `?`.
+en 5 GHz y el umbral de 2,4 GHz no se aplica. Si la radio se queda en el canal 6, el par tiene que
+llegar con −45 dBm o más (−58 en el juego ampliado) para pasar a enrutable.
 
 ## 6. Pendiente
 
 - Sitio del ioctl 415 en `wifip2pd` y qué dispara la publicación de la presencia en el daemon.
-- Valor por defecto de `PM+10276` y quién escribe `PM+16096` bit 1.
+- Qué cambio de estado de la interfaz activa `LLAValid` (`PM+65308`) y quién activa el bit 1 de
+  `PM+16096` (hay escrituras completas del campo en `enableAWDL`, `setAwdlSyncState`, `reset` y
+  otras).
 - Cerrojo con el que se llaman +0xF30/+0xF38 y si el array que reciben se libera después
   (`IOFreeData` lo libera `pppDone`; los paquetes no).
