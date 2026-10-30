@@ -156,7 +156,24 @@ las conoce: entrega los paquetes en cuanto `inAvailabilityWindow()` es cierto.
   equipo `?`. El margen es de 5120 µs para que el manager no registre desfases y de 3 TU para que las
   tramas caigan dentro de la AW del par.
 
-## 8. Orden de implementación
+## 8. Canal de la infraestructura en el equipo de pruebas
+
+Leído con `system_profiler SPAirPortDataType` el 2026-10-30: `en2` asociado en el canal 153, 80 MHz,
+802.11ac. `awdl0` existe y está `UP` (MAC `56:0d:25:02:1f:ce`).
+
+El bloque de 80 MHz 149–161 contiene el canal social 149, pero el primario del enlace es el 153. Las
+tramas AWDL van a 20 MHz por el primario 149, y una radio sintonizada con primario 153 no las
+decodifica `?` (comportamiento estándar de 802.11; no medido en el RTL8814AU).
+
+Con la radio fija en el canal de la infraestructura (modo «shared» de owly,
+[AWDL_REFERENCIAS_EXTERNAS.md](AWDL_REFERENCIAS_EXTERNAS.md) §6), el camino más corto es configurar
+el router con **primario 149** (o 44) a 20/40/80 MHz. Así `en2` y `awdl0` comparten canal: el iPhone
+visita el 149 en varias franjas de cada 16 y la radio no tiene que saltar. Con el router en otro
+primario hacen falta saltos de canal o el modo exclusivo (la estación fuera durante la sesión AWDL).
+El ESP32-S3 solo usa el canal 6, que con la infraestructura en 5 GHz exige salir del canal en cada
+franja servida.
+
+## 9. Orden de implementación
 
 1. Reloj libre (§3.1) + eventos 41/43 en las franjas servidas: el manager deja de estar fuera de
    ventana y pide paquetes (TX de PSF/MIF según el borrador `AWDL_PSF_MIF_EMISSION.md`, en curso).
