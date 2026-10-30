@@ -249,6 +249,28 @@ Consecuencia para un driver propio: **la puerta soportada es `bpfTapInput` con D
 71 directamente. Llamar a la celda 71 exige replicar el contrato de propiedad del buffer (el manager
 lo devuelve a su pool, por lo que el buffer debe venir de un pool válido y no debe reutilizarse).
 
+**Variante con `mbuf`, sin pool propio.** La sobrecarga exportada
+`IO80211VirtualInterface::bpfTapInput(mbuf*, unsigned, void*, size_t)` (`0xffffff8002330e7a`, sin
+llamadores en el kernel) hace el trabajo del productor:
+1. Obtiene el controlador por la celda `+0xBA8` de la interfaz (`getController`) y, de su bloque
+   privado (`+288`), el pool `+2904`.
+2. Pide un `IO80211Buffer` al pool (celda `+280`).
+3. Copia el mbuf o la cadena de mbufs (`writeBytes` `+0x178`, o `getBytesNoCopy` `+0x158` y
+   `memmove`) y fija la longitud (`setLength` `+0x138`).
+4. Llama a la sobrecarga de `IO80211Buffer` (`0xffffff8002331070`).
+
+No libera el mbuf: sigue siendo del llamante. No comprueba la capacidad del buffer al copiar una
+cadena, así que el frame debe caber en 2048 B. Si el pool no existe, retorna sin hacer nada.
+
+El pool lo crea `IO80211Controller::allocFramePool` (`0xffffff800229280a`, escritura en
+`0xffffff800229289e`), llamado desde `IO80211Controller::start` (`0xffffff8002292451`). Es el `mngPool`
+de `getActionFramePoolCapacity()` buffers de 2048 B; la celda es `0xDB0` (slot 438), cuya
+implementación base (`0xffffff800229a1e2`) devuelve 256. `IO80211Controller::getMgmtFramePool`
+(`0xffffff800229a1ee`) lo devuelve. La capa propia llama a `IO80211Controller::start` y no sobrescribe
+el slot 438 (`Source/AirLayer/RTLAirLayer.cpp:1516`, `Source/IO80211/IO80211_25_6_0.h:863`), así que
+el pool existe. Para cada action frame recibido basta un mbuf con el cuerpo desde el byte de categoría
+y la cabecera de 72 B de §1.3: `awdl0->bpfTapInput(m, 12, &hdr, 72)` y después `mbuf_freem(m)`.
+
 ### 1.6 Qué valida el manager y qué descarta
 
 `isValidAF` → `actionFrameHasCorrectOUI` (`0xffffff8002210200`) sobre el **cursor del buffer**, no
