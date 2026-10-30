@@ -542,7 +542,7 @@ de `AWDL_ESTADO_Y_BLOQUEO.md` §4, que este plan no sustituye.
 | # | Punto | Cierre |
 |---:|---|---|
 | 1 | Firma y nombre de las nuevas funciones de plataforma (`AWDL_PORT`, `AWDL_HOOK`, `AWDL_TX`) | Diseño de `RTLRadioABI.h` antes de P1/P2/P6 |
-| 2 | Vía de programación del puerto 1 (registros directos frente a llamadas con `hw_port = HW_PORT1`) y efecto del tipo ad-hoc sobre beacons/TSF | Prueba de P1; `AWDL_RTL8814_RX_ACK.md` §5 |
+| 2 | Vía de programación del puerto 1 y efecto del tipo ad-hoc sobre beacons/TSF | Acotado en `AWDL_RTL8814_RX_ACK.md` §5: escribir `MSR`/`REG_MACID1`/`REG_BSSID1` sin `hw_var_set_opmode` y dejar `REG_BCN_CTRL_1` en el `0x10` medido (beacon apagado, TSF sin actualizar); falta la captura en monitor de P1 |
 | 3 | ~~Campo exacto de RSSI/tasa/mactime que la radio entrega con el frame crudo~~ | Cerrado en el paso 2: `recv_signal_power`, `data_rate`, TSFL del descriptor sin leer aún; queda abierto el valor para tramas sin informe de PHY |
 | 4 | Captura del puntero del manager (`createPeerManager` heredado frente a `getP2PSkywalkPeerMgr`) | P5; punto 15 de `AWDL_INDICE.md` §8.2 |
 | 5 | Cuerpo exacto del TLV 5 y su mapeo con el 155 | P6; `AWDL_PSF_MIF_EMISSION.md` §10 |

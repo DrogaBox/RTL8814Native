@@ -121,6 +121,18 @@ directamente, o llamar a esas funciones con un adaptador cuyo `hw_port` sea `HW_
   `?`. Se resuelve en hardware: con el puerto 1 programado y `CBSSID_DATA` activo, ¿llegan los datos
   AWDL?
 - Si el tipo ad-hoc del puerto 1 activa por sí mismo la emisión de beacons o la actualización del TSF
-  con beacons del mismo BSSID (`DIS_TSF_UDT` en `REG_BCN_CTRL_1`) `?`.
+  con beacons del mismo BSSID `?`. Lo que hay medido y leído:
+  - En los volcados vivos del driver en macOS, el dword `0x0550` vale `0x00001009`
+    (`Docs/regdumps/macos_c896a978_idle.txt:341`, igual en arranque en frío y en caliente). Así,
+    `REG_BCN_CTRL_1` (`0x0551`) = `0x10`: solo `DIS_TSF_UDT` (`include/hal_com_reg.h:1540`), con
+    `EN_BCN_FUNCTION` (bit 3) apagado. El puerto 1 tiene hoy la función de beacon apagada y el TSF
+    sin actualizar.
+  - Lo que enciende el beacon del puerto 1 en el árbol es la rama ad-hoc de `hw_var_set_opmode`
+    (`hal/rtl8814a/rtl8814a_hal_init.c:3266-3274`): `ResumeTxBeacon` y
+    `REG_BCN_CTRL_1 = DIS_TSF_UDT | EN_BCN_FUNCTION | DIS_BCNQ_SUB`. Esa rama solo compila con
+    `CONFIG_CONCURRENT_MODE`, que está desactivado.
+  - Por tanto, la programación del puerto 1 debe escribir `MSR`, `REG_MACID1` y `REG_BSSID1` sin
+    pasar por `hw_var_set_opmode`, y dejar `REG_BCN_CTRL_1` en `0x10`. Que el tipo ad-hoc en `MSR`
+    con `EN_BCN_FUNCTION` apagado no emita nada se comprueba con una captura en modo monitor `?`.
 - Si el MAC necesita una entrada de `macid` o del CAM de seguridad para el par antes de enviar el ACK
   de sus A-MPDU `?`.
