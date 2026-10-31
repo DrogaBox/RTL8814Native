@@ -916,7 +916,6 @@ struct macid_ctl_t {
 #define OFFCHS_LEAVING_OP	1
 #define OFFCHS_LEAVE_OP		2
 #define OFFCHS_BACKING_OP	3
-#define OFFCHS_AWDL		4	/* AWDL slot on another channel (AWDLTx.c) */
 
 struct rf_ctl_t {
 	const struct country_chplan *country_ent;

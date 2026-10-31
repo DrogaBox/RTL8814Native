@@ -265,8 +265,6 @@ int  rtl8814native_radio_tx_80211(const uint8_t *frame, uint32_t len);
 int  rtl8814native_radio_awdl_port(const uint8_t *mac);
 /* AWDLTx.c: park on a channel at 20 MHz while not associated */
 int  rtl8814native_radio_set_channel(uint8_t ch);
-/* AWDLTx.c: while associated, an AWDL slot on ch; 0 = back to the BSS */
-int  rtl8814native_radio_awdl_offch(uint8_t ch);
 void rtl8814native_get_link_status(struct rtl8814_link_status *out);
 /* Live register access for diagnostics: op 0=MAC read, 1=MAC write, 2=RF read (addr = path<<8 | reg),
  * 3=set driver option (addr = RTL_OPT_*, out = previous value) */

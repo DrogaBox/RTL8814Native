@@ -2081,7 +2081,6 @@ phy_SwChnlAndSetBwMode8814A(
 {
 	HAL_DATA_TYPE		*pHalData = GET_HAL_DATA(Adapter);
 	struct dm_struct		*pDM_Odm = &pHalData->odmpriv;
-	u8			keep_txpwr;
 
 	/* RTW_INFO("phy_SwChnlAndSetBwMode8814A(): bSwChnl %d, bSetChnlBW %d\n", pHalData->bSwChnl, pHalData->bSetChnlBW); */
 	if (Adapter->bNotifyChannelChange) {
@@ -2098,10 +2097,6 @@ phy_SwChnlAndSetBwMode8814A(
 		return;
 	}
 
-	/* AWDL moving the primary inside one 80 MHz block keeps the channel
-	 * index and the width: the power tables would be written unchanged */
-	keep_txpwr = pHalData->awdl_keep_txpwr && !pHalData->bSwChnl;
-
 	if (pHalData->bSwChnl) {
 		phy_SwChnl8814A(Adapter);
 		pHalData->bSwChnl = FALSE;
@@ -2113,10 +2108,8 @@ phy_SwChnlAndSetBwMode8814A(
 	}
 
 	if (Adapter->registrypriv.mp_mode == 0) {
-		if (!keep_txpwr) {
-			odm_clear_txpowertracking_state(pDM_Odm);
-			rtw_hal_set_tx_power_level(Adapter, pHalData->current_channel);
-		}
+		odm_clear_txpowertracking_state(pDM_Odm);
+		rtw_hal_set_tx_power_level(Adapter, pHalData->current_channel);
 		if (pHalData->bNeedIQK == _TRUE) {
 			/*phy_iq_calibrate_8814a(pDM_Odm, _FALSE);*/
 			halrf_iqk_trigger(&pHalData->odmpriv, _FALSE);

@@ -86,17 +86,6 @@ typedef void (*rtl_radio_awdl_rx_fn)(void *ctx, const uint8_t *frame, uint32_t l
  * radio sits. Older builds answer kIOReturnUnsupported.
  */
 #define RTL_RADIO_FN_SET_CHANNEL  "rtlRadioSetChannel" /* p1: const uint32_t *channel */
-/*
- * While associated, moves the radio to another channel for an AWDL slot, or
- * back to the BSS with channel 0. Leaving sends a null frame with PM set and
- * holds the data queues; returning sends PM clear. Inside the BSS's 40 or
- * 80 MHz block only the primary sub-channel moves; elsewhere it goes at
- * 20 MHz. Synchronous (USB register writes): not from inside a radio hook.
- * rtl_radio_status keeps reporting the BSS channel. kIOReturnBusy unless
- * linked with no scan or join running; older builds answer
- * kIOReturnUnsupported.
- */
-#define RTL_RADIO_FN_AWDL_OFFCH   "rtlRadioAwdlOffch"  /* p1: const uint32_t *channel (0 = BSS) */
 
 /* rtl_radio_status.state */
 #define RTL_RADIO_S_IDLE          0
