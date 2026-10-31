@@ -103,9 +103,11 @@ construye un `apple80211_scan_data` con `flags |= 0x28`, `scanType` 5, un canal,
 
 ### 3.3 Otras
 
-- `isOpModeScanFriendly` (`0xffffff80022e1dac`): lee `OP_MODE` (ioctl `0xC02869C9` sub 0xF) y rechaza
-  con 16 si los bits 0x1800000000 del modo están puestos ("Rejecting scan request because of
-  interface's operational mode").
+- `isOpModeScanFriendly` (`0xffffff80022e1dac`): lee `OP_MODE` por WCL (`0xC02869C9` sub 0xF) o, si
+  WCL no responde, con `apple80211getOP_MODE`, y devuelve falso si el modo tiene puestos los bits
+  0x1800000000. `startScan` rechaza entonces con "Rejecting scan request because of interface's
+  operational mode", y `WCLScanManager::sendRequest` tiene su propia variante del mismo mensaje.
+  Un driver que anuncie esos bits en `OP_MODE` se queda sin scans.
 - WCL mantiene además un rechazo por scan en curso: `WCLScanManager::handleScanRequest`
   (`0xffffff800219c882`) devuelve 16 con "scan in progress rejecting" cuando ya hay petición en
   progreso, y `scanRequestHandler` (`0xffffff800219a4a6`) valida longitud 5528 y sanea con
@@ -129,8 +131,8 @@ llamador) si:
 (`0xffffff80022fe1de`) → `IO80211ScanRequest::getScanRequestForDriver` (`0xffffff80022eb05e`) y la
 manda al controller como comando de user client 441 con 5456 bytes.
 
-`updateScanTimeout` (`0xffffff800219c1b4`): el timeout del scan es 20000 ms; con AWDL activo y ≥100
-canales pasa a 60000 ms con el log `"Long scan while AWDL is enabled, giving more time (60000)"`; un
+`updateScanTimeout` (`0xffffff800219c1b4`): el timeout del scan es 20000 ms; con AWDL activo, ≥100
+canales (u16 en +0x44) y el canal de la primera entrada (+0x4C) fuera de 1..20 pasa a 60000 ms con el log `"Long scan while AWDL is enabled, giving more time (60000)"`; un
 flag de dispositivo (+0x40) añade 10000 ms. `timeoutScan` (`0xffffff800219a15c`) dispara el evento 6
 de la FSM al vencer. Ese es el único límite temporal del lado anfitrión; nada en la familia mide
 canal a canal.
