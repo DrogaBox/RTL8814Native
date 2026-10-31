@@ -83,7 +83,8 @@ En el cuerpo común (`0xffffff80021d8cc8`), tras la log de entrada:
    `0xffffff80021d9bb1`–`0xffffff80021d9bb6`).
 3. Con 1: escribe `PM+65308 = 1` (`0xffffff80021d9b39`) y sigue.
 4. Decisión de activación (`0xffffff80021d9bc2`–`0xffffff80021d9be6`): sale de inmediato si
-   `ivars+4 == 0` (`cmp dword ptr [rcx+4], 0` en `0xffffff80021d9bc2`); si no,
+   `channelSequenceStrategy == AwdlFollowsInfra` (`ivars+4 == 0`, `cmp dword ptr [rcx+4], 0` en
+   `0xffffff80021d9bc2`; §1.5); si no,
    `enable = (LLAValidAcabaDePonerse | fuente == 3) & !(AWDLOn & 8)`; el test de fuente es
    `cmp r15d, 3` en `0xffffff80021d9bc8` y el de suspensión `test al, 8` en
    `0xffffff80021d9bd7`. Sin activación y sin servicios/AirPlay/sidecar, sale
@@ -123,6 +124,40 @@ fuentes {5, 9, 11, 13, 14}; la fuente 6 produce la log `"Recovering Reset due to
 
 Para el RTL8814: `reportDataPathEvents` es la vía del driver (eventos 41/42/43) y las fuentes que
 emite (5, 6, 9, 11) entran todas por el bloque LLA cuando hay servicios válidos.
+
+### 1.5 `ivars+4` = `channelSequenceStrategy`
+
+El dword `ivars+4` es la estrategia de secuencia de canales. `setChannelSequenceStrategy`
+(`0xffffff80021ca958`) lo imprime con la tabla `0xffffff800245b6d0` (log
+`"set channelSequenceStrategy %s => %s (reason %d) force=%d"`) e `initChannelSequenceStrategy`
+(`0xffffff80021c2cfc`) lo escribe sin más:
+
+| Valor | Nombre |
+|---|---|
+| 0 | `AwdlFollowsInfra` |
+| 1 | `AwdlStateMachine` |
+| 2 | `AwdlFixed` |
+| 3 | `AwdlUserConfigured` |
+
+`setChannelSequenceStrategy(strategy, reason, force)` solo cambia el valor si `force` o si el valor
+actual no es ya el pedido ni 3 (`AwdlUserConfigured` es pegajoso sin `force`). Escritores:
+
+| Sitio | Dirección | Valor (motivo, force) |
+|---|---|---|
+| `initWithInterface` | `0xffffff80021c15d3` | 1 por defecto |
+| `initWithInterface` (`awdl_oper_mode=1`), `setAwdlManualMode`, `setAwdlOperatingMode` modo 1 | `0xffffff80021c16c8`, `0xffffff80021c2d12`, `0xffffff800221ec89` | 3, escritura directa |
+| `configure` | `0xffffff80021c5b75` | 1 (0, sí) |
+| `setAwdlCtl` | `0xffffff80021cffba` | dword del payload (3, sí) |
+| `setAwdlChannelSequence` | `0xffffff800221d150` | 3 (3, sí) |
+| `setAwdlAutoMode`, `setAwdlOperatingMode` otro modo | `0xffffff800221e976`, `0xffffff800221ecbc` | 1 (6, sí) |
+| `interfaceStateChange` | `0xffffff80021d900a` | (4, no): con `ivars+0xA648 != 0`, 0 si el bit 0 de `ivars+0x3FA1` está a 0; 1 (log `"Transitioning to Solo mode"`) si está a 1 y `ivars+0xA6A4` o `ivars+0xA65C` no son 0; sin llamada si ambos son 0 |
+| `monitorAWDLState` | `0xffffff80021ee3ae` | 0 (5, no), log `"Transitioning back to InfraAs…"`: con `ivars+0xA6A4 == 0`, estrategia 1, sin sockets activos (`activeSockets(false)`) y dos condiciones locales en `r14b`/`r15b` `?` |
+
+Consecuencia: el bloque de activación de §1.3 solo llama a `enableAWDL` con una estrategia distinta
+de `AwdlFollowsInfra`. `configure` deja 1, de modo que tras la configuración la activación es
+posible; si `monitorAWDLState` devuelve la interfaz a `AwdlFollowsInfra` (vuelta a infraestructura
+sin sockets), la siguiente activación necesita que algo vuelva a subir la estrategia. Los campos
+`ivars+0xA648`, `+0x3FA1`, `+0xA6A4` y `+0xA65C` que la gobiernan no tienen nombre todavía `?`.
 
 ## 2. AWDLOn (`PM+16096`, dword en `ivars+0x3EE0`)
 
@@ -267,10 +302,29 @@ El contexto lo pone el enrutador de peticiones:
 
 Comparación de contextos para el driver RTL8814: +0xF30 llega por el gate del controlador desde un
 ioctl; +0xF38 llega desde `ageoutPacketsWaitingForPPP` (`0xffffff80021aa984`) en el workqueue con el
-data-path lock, y desde `flushPacketsWaitingForPPP` (`0xffffff80021bff87`) en los contextos de
-borrado de peer (`removePeer` `0xffffff80022177ee`, `cleanUpForPeerRemovedFromNDP`) — el cerrojo de
-esa última ruta no está trazado `?`. La implementación de ambos slots debe ser segura en workloop y
-no dormir con el data-path lock tomado `?`.
+data-path lock, y desde `flushPacketsWaitingForPPP` (`0xffffff80021bff87`) en el borrado del par.
+
+La ruta del borrado está trazada así: `flushPacketsWaitingForPPP` tiene un único llamador,
+`IO80211AWDLPeerManager::removePeer(IO80211Peer*)` (`0xffffff800221721c`, llamada en
+`0xffffff80022177e4`), que no tiene xrefs directas y ocupa la celda +0x278 (632) de
+`__ZTV22IO80211AWDLPeerManager`. La única llamada a esa celda en el código de los managers está en
+`IO80211PeerManager::removeFlushedPeers` (`0xffffff800224f73a`, `call [rcx+278h]` en
+`0xffffff800224f768`), que vacía con `IO80211CommandQueue::lockDequeue` la cola de pares a borrar
+de `ivars base+1880` (`0x758`). `removeFlushedPeers` tiene dos llamadores:
+
+- `IO80211PeerManager::interfaceMonitor`, en este orden: `lockDataPath` (celda +0x118 del objeto en
+  `ivars base+0x78`, `0xffffff800224e8f3`), `IO80211CommandQueue::map(_doMonitoring)`
+  (`0xffffff800224e95a`), `unlockDataPath` (celda +0x120, `0xffffff800224e96a`) y
+  `removeFlushedPeers` (`0xffffff800224e973`). El flush corre en el workqueue del controlador pero
+  **sin** el data-path lock: el `ageout` lo hace con el cerrojo y el flush justo después de
+  soltarlo.
+- `IO80211PeerManager::removeAllPeers` (`0xffffff80022542e4`, llamada en `0xffffff800225441e`),
+  alcanzado desde `IO80211AWDLPeerManager::removeAllPeers` (`0xffffff800222be5f`) y desde tres
+  vtables; el contexto de esos llamadores no está trazado `?`.
+
+`cleanUpForPeerRemovedFromNDP` (`0xffffff8002214cf2`) no llama a `flushPacketsWaitingForPPP`
+directamente. La implementación de +0xF38 debe ser segura en el workloop, con o sin el data-path
+lock tomado, y no dormir.
 
 ### 3.3 Qué se libera tras +0xF30/+0xF38
 
@@ -328,8 +382,8 @@ en el camino de error; no verificado en runtime).
 ## 5. Pendiente
 
 - Emisores de las fuentes 0, 1, 3, 8, 10, 12 y 13 de `StateChangedSource` (§1.4).
-- Significado de `ivars+4` (1 por defecto, 3 en modo manual), que corta la decisión de activación
-  (§1.3).
-- El cerrojo de la ruta `removePeer` → `flushPacketsWaitingForPPP` (§3.2).
+- Nombres de `ivars+0xA648`, `+0x3FA1`, `+0xA6A4` y `+0xA65C`, que deciden la estrategia en
+  `interfaceStateChange` y `monitorAWDLState` (§1.5).
+- Contexto de los llamadores de `removeAllPeers` (§3.2).
 - Las llamadas a las celdas +0x180 de los objetos en `ivars base+0x530/0x538` dentro de
   `interfaceMonitor` (§3.1) y el significado del bit 5 de `PM+16096` que fija `configure` (§2.1).
