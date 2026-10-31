@@ -28,14 +28,23 @@ Las tramas de datos AWDL solo se cuentan; su entrega a la `RxCompletionQueue` de
 1. Compilar las dos kexts desde el árbol actual (`./build.sh` y `./build_airlayer.sh`) y anotar los md5 de
    `Build/RTL8814Native.kext/Contents/MacOS/RTL8814Native` y
    `Build/RTL8814AirLayer.kext/Contents/MacOS/RTL8814AirLayer`.
-2. Montar el EFI interno y desplegar las dos, con `rtlawdl=1` (y `rtlawdl_tx=1` para la TX del §6):
+2. Montar el EFI interno y desplegar las dos, con `rtlawdl=1`, `rtlawdl_tx=1` para la TX del §6 y
+   `rtlawdl_mcc=1` para el tiempo compartido con la red asociada (§3):
 
    ```bash
    sudo ./Tools/phase5_deploy.sh "<EFI>" driver
-   sudo RTL8814_AWDL=1 RTL8814_AWDL_TX=1 ./Tools/phase5_deploy.sh "<EFI>" layer 2
+   sudo RTL8814_AWDL=1 RTL8814_AWDL_TX=1 RTL8814_AWDL_MCC=1 ./Tools/phase5_deploy.sh "<EFI>" layer 2
    ```
 
-3. Reiniciar y comprobar en el registro que la RX AWDL quedó enganchada:
+   La capa tiene que anunciar la capacidad 29 (doble banda): sin ella el manager no pone el 149 en la
+   secuencia ([AWDL_CAP29_DOBLE_BANDA_RIESGOS.md](AWDL_CAP29_DOBLE_BANDA_RIESGOS.md) §4). Hasta que entre
+   en el árbol, es la compilación de prueba `3699d28e` (`RTL8814_LAYER_SRC`/`RTL8814_LAYER_MD5`).
+3. Bluetooth para AirDrop: un dongle BLE en un puerto de la placa y `sudo ./Tools/bt_deploy.sh "<EFI>"`
+   (BlueToolFixup y las claves de NVRAM, `a03b20b`). Sin Bluetooth encendido el Mac no se publica como
+   receptor de AirDrop ([AWDL_AIRDROP_SIN_BLUETOOTH.md](AWDL_AIRDROP_SIN_BLUETOOTH.md)); la prueba de
+   tramas AWDL de los §4 a §6 no lo necesita.
+
+4. Reiniciar y comprobar en el registro que la RX AWDL quedó enganchada:
 
    ```bash
    log show --last 10m --predicate 'eventMessage CONTAINS "awdl: rx"'
@@ -65,6 +74,12 @@ AWDL usa los canales sociales 6 (2,4 GHz) y 44 o 149 (5 GHz)
   desconectar el Wi-Fi del Mac de la red del router y quitarle la conexión automática, sin tocar el
   router.
 
+- **asociado con tiempo compartido** (`rtlawdl_mcc=1` y capacidad 29): la radio sigue en la red y, en
+  las franjas que la secuencia 129 pone en un social, pasa a ese canal y vuelve
+  ([AWDL_MCC_TIEMPO_COMPARTIDO.md](AWDL_MCC_TIEMPO_COMPARTIDO.md)). Medido el 2026-10-31 con la red en el
+  157 a 80 MHz: ida al 149 en unos 4,4 ms, vuelta en 2,4 ms, sin pérdida de ping al router. Con esto no
+  hace falta desconectar el Mac de la red para la prueba.
+
 Si los peer manager y `wifip2pd` mantienen AWDL activo con la infraestructura sin asociar es `?`. En qué
 canal pone un iPhone su AWDL cuando está asociado a otro canal de infraestructura también es `?`; si no
 llega nada en 149, repetir con `rtlawdl_ch=6`.
@@ -73,7 +88,11 @@ llega nada en 149, repetir con `rtlawdl_ch=6`.
 
 1. En el iPhone: desbloqueado, cerca del Mac, Wi-Fi activado, AirDrop en «Todos durante 10 minutos» y la
    hoja de compartir abierta en AirDrop (eso mantiene AWDL activo `?`).
-2. En el Mac, abrir AirDrop en el Finder para que `wifip2pd` pida AWDL (petición 120).
+2. En el Mac, abrir AirDrop en el Finder para que `wifip2pd` pida AWDL (petición 120). Con la red
+   asociada, la secuencia pasa por los estados 24 (escaneo), 45 (descubrimiento rápido, el 149 en 10
+   franjas), 3 y 31 (reposo, el 149 solo en las franjas 2 y 10)
+   ([AWDL_SECUENCIAS_OBSERVADAS.md](AWDL_SECUENCIAS_OBSERVADAS.md)); conviene acercar el iPhone en el
+   primer minuto, mientras dura el 45, y repetir abriendo de nuevo la ventana de AirDrop si no aparece.
 3. Dejarlo un minuto y recoger:
 
    ```bash
@@ -167,4 +186,5 @@ Limitaciones conocidas:
 - no hay evento 42 (extensiones de ventana);
 - si el tipo ad-hoc del puerto 1 hace emitir algo por sí mismo es `?`
   ([AWDL_RTL8814_RX_ACK.md](AWDL_RTL8814_RX_ACK.md) §5);
-- AirDrop además necesita Bluetooth, que este equipo no tiene operativo.
+- AirDrop además necesita Bluetooth: el dongle (CSR8510) y BlueToolFixup del §2; si el CSR8510 sostiene
+  el descubrimiento BLE de AirDrop en macOS 26 es `?`.
