@@ -1199,6 +1199,8 @@ void rtl8814native_radio_status(struct rtl_radio_status *st)
 	st->scanning = check_fwstate(pmlmepriv, _FW_UNDER_SURVEY) ? 1 : 0;
 	st->rsn = wpa != 0;
 	st->port_valid = st->state == RTL_RADIO_S_LINKED && (!st->rsn || wpa == 3);
+	if (st->state == RTL_RADIO_S_IDLE)
+		st->idle_channel = pmlmeext->cur_channel;
 	if (st->state != RTL_RADIO_S_LINKED)
 		return;
 

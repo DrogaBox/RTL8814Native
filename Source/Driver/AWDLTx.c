@@ -15,6 +15,7 @@
 
 int rtl8814native_radio_tx_80211(const uint8_t *frame, uint32_t len);
 int rtl8814native_radio_awdl_port(const uint8_t *mac);
+int rtl8814native_radio_set_channel(uint8_t ch);
 extern _adapter *rtl8814native_get_primary_adapter(void);
 
 int rtl8814native_radio_tx_80211(const uint8_t *frame, uint32_t len)
@@ -97,5 +98,30 @@ int rtl8814native_radio_awdl_port(const uint8_t *mac)
 		rtl8814native_awdl_port1 = 0;
 	}
 	rtw_hal_rcr_set_chk_bssid(padapter, MLME_ACTION_NONE);
+	return 0;
+}
+
+/*
+ * Parks the radio on ch at 20 MHz while it is not associated, so awdl0 can
+ * stay on a social channel without a network there. rtw_set_chbw_hdl runs
+ * on the command thread, after any scan or join already queued, and sets
+ * cur_channel, which survey_done_set_ch_bw returns to after later scans. A
+ * join moves the radio to its BSS as usual.
+ */
+int rtl8814native_radio_set_channel(uint8_t ch)
+{
+	_adapter *padapter = rtl8814native_get_primary_adapter();
+
+	if (!padapter || !padapter->bup || RTW_CANNOT_RUN(padapter))
+		return -ENODEV;
+	if (rtw_chset_search_ch(adapter_to_chset(padapter), ch) < 0)
+		return -EINVAL;
+	if (check_fwstate(&padapter->mlmepriv, _FW_LINKED | _FW_UNDER_LINKING | _FW_UNDER_SURVEY))
+		return -EBUSY;
+	/* AWDL frames go at OFDM 6 Mb/s on either band, never CCK on 5 GHz */
+	update_mgnt_tx_rate(padapter, IEEE80211_OFDM_RATE_6MB);
+	if (rtw_set_chbw_cmd(padapter, ch, CHANNEL_WIDTH_20, HAL_PRIME_CHNL_OFFSET_DONT_CARE, 0)
+	    != _SUCCESS)
+		return -ENOMEM;
 	return 0;
 }

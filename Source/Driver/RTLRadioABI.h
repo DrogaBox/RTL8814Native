@@ -73,6 +73,16 @@ typedef void (*rtl_radio_awdl_rx_fn)(void *ctx, const uint8_t *frame, uint32_t l
  */
 #define RTL_RADIO_FN_AWDL_PORT    "rtlRadioAwdlPort"   /* p1: const uint8_t mac[6] or NULL */
 
+/*
+ * Parks the radio on one channel at 20 MHz while it is not associated, so
+ * AWDL can sit on a social channel without a network there. Queued behind
+ * any command already pending; later scans come back to it. kIOReturnBusy
+ * while linked, joining or scanning, kIOReturnBadArgument for a channel
+ * outside the channel plan. rtl_radio_status.idle_channel shows where the
+ * radio sits. Older builds answer kIOReturnUnsupported.
+ */
+#define RTL_RADIO_FN_SET_CHANNEL  "rtlRadioSetChannel" /* p1: const uint32_t *channel */
+
 /* rtl_radio_status.state */
 #define RTL_RADIO_S_IDLE          0
 #define RTL_RADIO_S_SCAN          1
@@ -144,7 +154,9 @@ struct rtl_radio_status {
 	uint8_t  scanning;         /* a scan is running (state stays LINKED during a
 	                            * scan while associated); 0 from builds before 4.11 */
 	int8_t   noise_dbm;        /* noise floor estimate, 0 = unknown (and before 4.16) */
-	uint8_t  reserved[1];
+	uint8_t  idle_channel;     /* channel the radio sits on while IDLE, 0 in the
+	                            * other states and from builds without
+	                            * rtlRadioSetChannel */
 };
 
 #endif /* _RTL8814_RADIO_ABI_H */
