@@ -2,10 +2,11 @@
  * RTL8814Native — raw 802.11 frame sender for the radio ABI
  *
  * Another kext (the AWDL layer) hands a complete management frame, or an AWDL
- * data frame: 802.11 header and body, no FCS. It goes out on the current operating channel
- * through the shared management TX queue, as SAEAuth.c does for its
- * authentication frames. The sequence number is the driver's; everything
- * else is sent as given. Category 127 action frames are not robust, so the
+ * data frame: 802.11 header and body, no FCS. It goes out on the current
+ * operating channel through the shared management TX queue, as SAEAuth.c
+ * does for its authentication frames. The hardware numbers it (HWSEQ_EN for non-QoS
+ * frames); everything else is sent as given. Frames on the AWDL BSSID never
+ * go at a CCK rate. Category 127 action frames are not robust, so the
  * PMF hook in dump_mgntframe leaves them alone.
  *
  * Copyright (c) 2026 DrogaBox — GPL-2.0
@@ -27,21 +28,26 @@ int rtl8814native_radio_tx_80211(const uint8_t *frame, uint32_t len)
 	struct xmit_frame *pmgntframe;
 	struct pkt_attrib *pattrib;
 	u8 *pframe;
+	bool awdl, data;
 
 	if (!frame || len < WLAN_HDR_A3_LEN || len > MAX_XMIT_EXTBUF_SZ - TXDESC_OFFSET)
 		return -EINVAL;
 	/* Management frames, or AWDL data frames: data or QoS data, To/From DS 0
 	 * (3-address header), A3 the AWDL BSSID. The MGNT descriptor does not look
 	 * at the frame type, and the PMF hook leaves non-management frames alone. */
-	if (GetFrameType(frame) != WIFI_MGT_TYPE &&
-	    (GetFrameType(frame) != WIFI_DATA_TYPE || (frame[1] & 0x03) ||
-	     _rtw_memcmp(frame + 16, rtl_awdl_bssid, ETH_ALEN) != _TRUE))
+	awdl = _rtw_memcmp(frame + 16, rtl_awdl_bssid, ETH_ALEN) == _TRUE;
+	data = GetFrameType(frame) == WIFI_DATA_TYPE;
+	if (GetFrameType(frame) != WIFI_MGT_TYPE && (!data || !awdl || (frame[1] & 0x43)))
 		return -EINVAL;
 	if (!padapter || !padapter->bup || RTW_CANNOT_TX(padapter))
 		return -ENODEV;
 	if (rtw_rfctl_is_tx_blocked_by_ch_waiting(adapter_to_rfctl(padapter)))
 		return -EBUSY;
 
+	/* Data shares the 32 management xmit frames with the sync frames and the
+	 * infrastructure's own management TX: it may only use half of them. */
+	if (data && padapter->xmitpriv.free_xframe_ext_cnt < NR_XMIT_EXTBUFF / 2)
+		return -ENOMEM;
 	pmgntframe = alloc_mgtxmitframe(&padapter->xmitpriv);
 	if (pmgntframe == NULL)
 		return -ENOMEM;
@@ -49,6 +55,12 @@ int rtl8814native_radio_tx_80211(const uint8_t *frame, uint32_t len)
 	pmlmeext = &padapter->mlmeextpriv;
 	pattrib = &pmgntframe->attrib;
 	update_mgntframe_attrib(padapter, pattrib);
+	/* Never CCK on the AWDL BSSID: while associated on a 2.4 GHz BSS the
+	 * management rate is CCK 1 Mb/s. Action frames at OFDM 6, data at 12. */
+	if (awdl) {
+		pattrib->rate = data ? IEEE80211_OFDM_RATE_12MB : IEEE80211_OFDM_RATE_6MB;
+		pattrib->raid = rtw_get_mgntframe_raid(padapter, WIRELESS_11G);
+	}
 
 	_rtw_memset(pmgntframe->buf_addr, 0, TXDESC_OFFSET);
 	pframe = (u8 *)(pmgntframe->buf_addr) + TXDESC_OFFSET;
@@ -56,7 +68,10 @@ int rtl8814native_radio_tx_80211(const uint8_t *frame, uint32_t len)
 	SetSeqNum(pframe, pmlmeext->mgnt_seq);
 	pmlmeext->mgnt_seq++;
 
-	/* group-addressed frames get no ACK: no retries */
+	/* The descriptor sets HWSEQ_EN for non-QoS frames, so the hardware
+	 * overwrites this number on air. Group-addressed frames go out once
+	 * because of the descriptor's BMC bit (taken from A1); retry_ctrl only
+	 * picks the unicast retry limit. */
 	if (IS_MCAST(GetAddr1Ptr(pframe)))
 		pattrib->retry_ctrl = _FALSE;
 	pattrib->pktlen = len;
