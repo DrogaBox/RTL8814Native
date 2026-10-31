@@ -53,10 +53,14 @@ AWDL usa los canales sociales 6 (2,4 GHz) y 44 o 149 (5 GHz)
   en el 153 a 80 MHz: el bloque incluye el 149, pero el primario es el 153 y las tramas AWDL van a
   20 MHz por el 149 ([AWDL_WINDOW_TIMER.md](AWDL_WINDOW_TIMER.md) §8). Fuera de 6, 44 y 149 la capa no
   transmite ni abre ventanas y lo registra una vez (`radio on channel N, not a social channel`);
-- **sin asociación** (`07a41e8`, `ab11c69`): con la TX activa, la capa fija la radio en el 149 a
-  20 MHz con `rtlRadioSetChannel` y sirve ese canal en cuanto la radio está en él (registro
-  `awdl: parking the radio on channel 149 (was N)`). El boot-arg `rtlawdl_ch=6` o `rtlawdl_ch=44`
-  cambia el canal; otro valor desactiva la fijación. Tras una desconexión la petición se repite como
+- **sin asociación** (`07a41e8`, `ab11c69`): con la TX activa, la capa fija la radio a 20 MHz con
+  `rtlRadioSetChannel` y sirve ese canal en cuanto la radio está en él (registro
+  `awdl: parking the radio on channel C (was N)`). El canal es el social (6, 44, 149) que más
+  franjas ocupa en la secuencia 129 del manager; antes de la primera 129, en un empate o si la 129 no
+  trae ninguno, el 149. Sin asociación la secuencia por defecto del manager pone el 6 en las franjas
+  0 y 8 ([AWDL_SIN_ASOCIACION_INFRA.md](AWDL_SIN_ASOCIACION_INFRA.md) §3), así que la radio puede
+  acabar en el 6. El boot-arg `rtlawdl_ch=6` o `rtlawdl_ch=44` cambia el canal preferido; otro valor
+  desactiva la fijación. Tras una desconexión la petición se repite como
   mucho una vez por segundo, y un escaneo vuelve a ese canal al terminar. Para la prueba basta con
   desconectar el Wi-Fi del Mac de la red del router y quitarle la conexión automática, sin tocar el
   router.
