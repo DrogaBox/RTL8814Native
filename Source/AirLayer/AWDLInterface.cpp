@@ -68,6 +68,8 @@ void rtl_vif_bpfTapInput(void *self, mbuf_t m, uint32_t dlt, void *hdr, size_t h
 /* RX data packets, as the STA path builds them (Source/AirLayer/RTLAirLayer.cpp
  * rxFrames; Docs/AWDL_RX_DATA_TO_SKYWALK.md §4, §7). */
 uint64_t rtl_pkt_base(void *pkt) __asm("__ZNK15IOSkywalkPacket21getDataVirtualAddressEv");
+uint16_t rtl_pkt_off(void *pkt) __asm("__ZNK15IOSkywalkPacket13getDataOffsetEv");
+uint32_t rtl_pkt_len(void *pkt) __asm("__ZNK15IOSkywalkPacket13getDataLengthEv");
 uint32_t rtl_pkt_bufsize(void *pkt) __asm("__ZNK15IOSkywalkPacket13getBufferSizeEv");
 uint32_t rtl_pkt_bufcount(void *pkt) __asm("__ZNK15IOSkywalkPacket20getPacketBufferCountEv");
 IOReturn rtl_pkt_prepare(void *pkt, void *queue, uint64_t dir, uint32_t opts)
@@ -110,6 +112,9 @@ struct rtl_awdl_pool_options {
 #define AWDL_REGINFO_MTU        0x48    /* u32 MTU and u32 max MTU (0x594)   */
 #define AWDL_REGINFO_MAC        0x108   /* 6 bytes, the MAC of the request   */
 
+#define AWDL_TX_RING            32      /* AWDL data frames waiting for a window */
+#define AWDL_TX_PER_TICK        16      /* data frames sent per AW tick, at most */
+#define AWDL_TX_AGE_US          500000  /* a queued data frame older than this is dropped */
 #define AWDL_IFACE_ID           2       /* Broadcom: interface id 2 for AWDL */
 #define AWDL_ROLE               6       /* IO80211VirtualInterfaceRole AirLink */
 #define AWDL_LINK_DOWN          1       /* linkState() values the PeerManager tests */
@@ -150,7 +155,8 @@ bool RTLAwdInterface::initWithController(RTLAirController *ctrl, const uint8_t m
 	_symTx80211 = OSSymbol::withCString(RTL_RADIO_FN_TX_80211);
 	_txLock = IOLockAlloc();
 	_txTick = thread_call_allocate(&RTLAwdInterface::txTickEntry, this);
-	if (!_symTx80211 || !_txLock || !_txTick) {
+	_txRing = (AwdlTxFrame *)IOMallocZero(sizeof(AwdlTxFrame) * AWDL_TX_RING);
+	if (!_symTx80211 || !_txLock || !_txTick || !_txRing) {
 		LOG("awdl: tx alloc failed");
 		return false;
 	}
@@ -202,7 +208,7 @@ bool RTLAwdInterface::createDatapath()
 		return false;
 	}
 	_txSubQ = rtl_txsub_withPool(_txPool, 128, 0, this,
-	                             (void *)&RTLAwdInterface::txNoop, nullptr, 0);
+	                             (void *)&RTLAwdInterface::txData, nullptr, 0);
 	_txCompQ = rtl_txcomp_withPool(_txPool, 128, 0, this, (void *)&rtlAwdIdleAction, nullptr, 0);
 	_rxCompQ = rtl_rxcomp_withPool(_rxPool, 128, 0, this, (void *)&rtlAwdIdleAction, nullptr, 0);
 	if (!_txSubQ || !_txCompQ || !_rxCompQ) {
@@ -296,17 +302,26 @@ IOReturn RTLAwdInterface::removeQueues(OSObject *owner, void *, void *, void *, 
 }
 
 /*
- * TX submission action, stage 1: nothing is transmitted. The packets go back
- * through the TX completion queue, which completes them under its gate and
- * returns them to the pool. legacyDequeue advances its ring by the returned
- * count, so returning 0 would stall the queue: consume the whole batch.
+ * TX submission action, on awdl0's work queue: each Ethernet II frame (at
+ * buffer base + data offset, as the STA path reads it) is turned into an AWDL
+ * data frame in the TX ring (queueData), then every packet goes back through
+ * the TX completion queue, which completes it under its gate and returns it
+ * to the pool. legacyDequeue advances its ring by the returned count, so
+ * returning less would stall the queue: the whole batch is consumed.
  */
-IOReturn RTLAwdInterface::txNoop(OSObject *owner, void *, void *const *pkts,
+IOReturn RTLAwdInterface::txData(OSObject *owner, void *, void *const *pkts,
                                  uint32_t count, void *)
 {
 	RTLAwdInterface *me = OSDynamicCast(RTLAwdInterface, owner);
 	if (!me || !count || !me->_txCompQ)
 		return 0;
+	for (uint32_t i = 0; i < count; i++) {
+		void *pkt = pkts[i];
+		if (!rtl_pkt_bufcount(pkt))
+			continue;
+		me->queueData((const uint8_t *)(uintptr_t)(rtl_pkt_base(pkt) + rtl_pkt_off(pkt)),
+		              rtl_pkt_len(pkt));
+	}
 	/* enqueuePackets requires count < queue capacity (128). */
 	for (uint32_t done = 0; done < count; done += 64) {
 		uint32_t n = count - done > 64 ? 64 : count - done;
@@ -354,6 +369,10 @@ void RTLAwdInterface::free()
 	if (_txLock) {
 		IOLockFree(_txLock);
 		_txLock = nullptr;
+	}
+	if (_txRing) {
+		IOFree(_txRing, sizeof(AwdlTxFrame) * AWDL_TX_RING);
+		_txRing = nullptr;
 	}
 	OSSafeReleaseNULL(_symTx80211);
 	OSSafeReleaseNULL(*(OSObject **)&_txSubQ);
@@ -886,8 +905,12 @@ void RTLAwdInterface::setRadioTx(bool on)
 		thread_call_cancel_wait(_txTick);
 		_ctrl->radio(RTL_RADIO_FN_AWDL_PORT, nullptr);
 	}
-	LOG("awdl: tx %s, psf %llu mif %llu fail %llu aligned %llu aw %llu", on ? "on" : "off",
-	    _txPsf, _txMif, _txFail, _clkAligned, _ev41);
+	if (!on)
+		flushRadioTx();
+	LOG("awdl: tx %s, psf %llu mif %llu fail %llu aligned %llu aw %llu, data queued %llu sent %llu "
+	    "dropped full %llu old %llu bad %llu fail %llu", on ? "on" : "off", _txPsf, _txMif,
+	    _txFail, _clkAligned, _ev41, _txDataQueued, _txDataSent, _txDataDropFull, _txDataDropOld,
+	    _txDataDropBad, _txDataFail);
 }
 
 void RTLAwdInterface::txTickEntry(thread_call_param_t p0, thread_call_param_t)
@@ -979,6 +1002,9 @@ void RTLAwdInterface::txTick()
 		*(uint32_t *)(ev41 + 0x1c) = ch;
 	}
 	uint64_t next = _clkBaseUs + (awIdx + 1) * AWDL_AW_TU * AWDL_TU_US;
+	/* Data goes only inside a served slot's window: a peer listens on this
+	 * channel only in the slots it shares with us. */
+	bool dataWindow = ch && served && _awOpen && _txRingCount;
 	IOLockUnlock(_txLock);
 
 	/* Events 43 then 41, outside the lock: postMessage takes the controller's
@@ -999,9 +1025,13 @@ void RTLAwdInterface::txTick()
 		if (mif && sendAf(AWDL_AF_MIF, ch, mask))
 			_txMif++;
 		if (psf && (_txPsf & 0x3FF) == 0)
-			LOG("awdl: tx psf %llu mif %llu fail %llu windows %llu ch %u", _txPsf, _txMif,
-			    _txFail, _ev41, ch);
+			LOG("awdl: tx psf %llu mif %llu fail %llu windows %llu ch %u, data queued %llu "
+			    "sent %llu dropped full %llu old %llu bad %llu fail %llu",
+			    _txPsf, _txMif, _txFail, _ev41, ch, _txDataQueued, _txDataSent,
+			    _txDataDropFull, _txDataDropOld, _txDataDropBad, _txDataFail);
 	}
+	if (dataWindow)
+		sendData();
 
 	IOLockLock(_txLock);
 	if (_txOn) {
@@ -1088,6 +1118,142 @@ bool RTLAwdInterface::sendAf(uint8_t subtype, uint8_t channel, uint16_t mask)
 		return false;
 	}
 	return true;
+}
+
+/*
+ * One Ethernet II frame from awdl0 into the TX ring as an AWDL data frame
+ * (Docs/AWDL_RX_DATA_TO_SKYWALK.md §2, Docs/AWDL_DATA_ENCAP.md §7): data
+ * without QoS as owly sends it, A1 = DA, A2 = SA, A3 = the AWDL BSSID, then
+ * the Apple SNAP, 03 04, a per-destination sequence number (low 12 bits, no
+ * AC nibble), 00 00, the ethertype and the payload. The radio numbers the
+ * 802.11 header. A full ring drops its oldest frame.
+ */
+void RTLAwdInterface::queueData(const uint8_t *eth, uint32_t len)
+{
+	static const uint8_t kSnap[8] = { 0xAA, 0xAA, 0x03, 0x00, 0x17, 0xF2, 0x08, 0x00 };
+	if (len < 14 || len - 14 > sizeof(_txRing->frame) - AWDL_WLAN_HDR - 16 ||
+	    memcmp(eth + 6, _mac, 6)) {
+		_txDataDropBad++;
+		return;
+	}
+	uint64_t now = awdlNowUs();
+	IOLockLock(_txLock);
+	if (!_txOn || _txDataOff || !_txRing) {
+		IOLockUnlock(_txLock);
+		return;
+	}
+	/* Sequence number of this destination; the least recently used entry
+	 * makes room for a new one, which starts at 0. */
+	AwdlTxSeq *e = nullptr, *lru = &_txSeqTab[0];
+	for (uint32_t i = 0; i < 16 && !e; i++) {
+		if (_txSeqTab[i].lastUs && !memcmp(_txSeqTab[i].da, eth, 6))
+			e = &_txSeqTab[i];
+		else if (_txSeqTab[i].lastUs < lru->lastUs)
+			lru = &_txSeqTab[i];
+	}
+	if (!e) {
+		e = lru;
+		memcpy(e->da, eth, 6);
+		e->seq = 0;
+	}
+	uint16_t seq = e->seq & 0xFFF;
+	e->seq = (uint16_t)(seq + 1);
+	e->lastUs = now;
+
+	if (_txRingCount == AWDL_TX_RING) {
+		_txRingHead = (_txRingHead + 1) % AWDL_TX_RING;
+		_txRingCount--;
+		_txDataDropFull++;
+	}
+	AwdlTxFrame *f = &_txRing[(_txRingHead + _txRingCount) % AWDL_TX_RING];
+	uint8_t *p = f->frame;
+	bzero(p, AWDL_WLAN_HDR);
+	p[0] = 0x08;
+	memcpy(p + 4, eth, 6);
+	memcpy(p + 10, eth + 6, 6);
+	memcpy(p + 16, kAwdlBssid, 6);
+	p += AWDL_WLAN_HDR;
+	memcpy(p, kSnap, sizeof(kSnap));
+	p[8] = 0x03;
+	p[9] = 0x04;
+	putLe16(p + 10, seq);
+	p[12] = p[13] = 0;
+	p[14] = eth[12];
+	p[15] = eth[13];
+	memcpy(p + 16, eth + 14, len - 14);
+	f->len = (uint16_t)(AWDL_WLAN_HDR + 16 + len - 14);
+	f->tsUs = (uint32_t)now;
+	_txRingCount++;
+	_txDataQueued++;
+	IOLockUnlock(_txLock);
+}
+
+/*
+ * Sends queued data frames while the window of a served slot is open, one at
+ * a time with _txLock dropped around the radio call. A transient refusal puts
+ * the frame back at the head and ends the batch; kIOReturnBadArgument means a
+ * driver without AWDL data TX, which turns data TX off. Called from txTick.
+ */
+void RTLAwdInterface::sendData()
+{
+	AwdlTxFrame f;
+	for (uint32_t n = 0; n < AWDL_TX_PER_TICK; n++) {
+		IOLockLock(_txLock);
+		if (!_txOn || !_txRingCount || !_txRing) {
+			IOLockUnlock(_txLock);
+			return;
+		}
+		memcpy(&f, &_txRing[_txRingHead], offsetof(AwdlTxFrame, frame) + _txRing[_txRingHead].len);
+		_txRingHead = (_txRingHead + 1) % AWDL_TX_RING;
+		_txRingCount--;
+		IOLockUnlock(_txLock);
+		if ((uint32_t)awdlNowUs() - f.tsUs > AWDL_TX_AGE_US) {
+			_txDataDropOld++;
+			continue;
+		}
+		uint32_t l = f.len;
+		IOReturn r = _radioSvc->callPlatformFunction(_symTx80211, false, f.frame, &l, nullptr,
+		                                             nullptr);
+		if (r == kIOReturnSuccess) {
+			if (_txDataSent++ == 0)
+				LOG("awdl: first data frame to %02x:%02x:%02x:%02x:%02x:%02x ethertype %02x%02x len %u",
+				    f.frame[4], f.frame[5], f.frame[6], f.frame[7], f.frame[8], f.frame[9],
+				    f.frame[AWDL_WLAN_HDR + 14], f.frame[AWDL_WLAN_HDR + 15], f.len);
+			continue;
+		}
+		if (r == kIOReturnBadArgument) {
+			LOG("awdl: radio refused a data frame: AWDL data TX off (driver without it?)");
+			IOLockLock(_txLock);
+			_txDataOff = true;
+			IOLockUnlock(_txLock);
+			flushRadioTx();
+			return;
+		}
+		if (r == kIOReturnBusy || r == kIOReturnNoResources || r == kIOReturnNotReady) {
+			IOLockLock(_txLock);
+			if (_txOn && _txRingCount < AWDL_TX_RING) {
+				_txRingHead = (_txRingHead + AWDL_TX_RING - 1) % AWDL_TX_RING;
+				memcpy(&_txRing[_txRingHead], &f, offsetof(AwdlTxFrame, frame) + f.len);
+				_txRingCount++;
+			} else {
+				_txDataDropFull++;
+			}
+			IOLockUnlock(_txLock);
+			return;
+		}
+		if (_txDataFail++ < AWDL_RX_LOG_FIRST)
+			LOG("awdl: tx data -> 0x%x", r);
+	}
+}
+
+void RTLAwdInterface::flushRadioTx()
+{
+	if (!_txLock)
+		return;
+	IOLockLock(_txLock);
+	_txDataDropOld += _txRingCount;
+	_txRingHead = _txRingCount = 0;
+	IOLockUnlock(_txLock);
 }
 
 size_t RTLAwdInterface::buildAf(uint8_t *out, size_t cap, uint8_t subtype, uint8_t channel,

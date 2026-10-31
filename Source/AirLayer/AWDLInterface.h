@@ -404,7 +404,7 @@ private:
 
 	bool createDatapath();
 	void teardownDatapath();
-	static IOReturn txNoop(OSObject *owner, void *queue, void *const *pkts,
+	static IOReturn txData(OSObject *owner, void *queue, void *const *pkts,
 	                       uint32_t count, void *refCon);
 	static IOReturn removeQueues(OSObject *owner, void *, void *, void *, void *);
 
@@ -457,6 +457,30 @@ private:
 	uint64_t _parkReqUs;        /* last rtlRadioSetChannel request */
 	uint8_t _clkMaster[6];      /* master the AW clock follows (alignClock) */
 	uint64_t _clkMasterUs;      /* last frame from it, 0 = none */
+
+	/* AWDL data TX: frames built from awdl0's TX submission packets wait in a
+	 * ring until the window of a served slot is open (txTick). Under _txLock;
+	 * the radio is only called with it dropped. */
+	struct AwdlTxFrame {
+		uint32_t tsUs;          /* low 32 bits of awdlNowUs() when queued */
+		uint16_t len;
+		uint8_t frame[24 + 16 + 1428];  /* 802.11 + AWDL data header + MTU */
+	};
+	struct AwdlTxSeq {
+		uint8_t da[6];
+		uint16_t seq;
+		uint64_t lastUs;
+	};
+	AwdlTxFrame *_txRing;
+	uint32_t _txRingHead, _txRingCount;
+	AwdlTxSeq _txSeqTab[16];
+	bool _txDataOff;            /* the radio refused a data frame (older driver) */
+	uint64_t _txDataQueued, _txDataSent, _txDataDropFull, _txDataDropOld, _txDataDropBad,
+	         _txDataFail;
+
+	void queueData(const uint8_t *eth, uint32_t len);
+	void sendData();
+	void flushRadioTx();
 	uint64_t _txPsf, _txMif, _txFail, _clkAligned, _ev41, _ev43;
 
 	void setRadioTx(bool on);
