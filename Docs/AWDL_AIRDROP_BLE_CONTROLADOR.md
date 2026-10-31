@@ -284,4 +284,30 @@ que el daemon de compartir consulta.
   especificación pública y de las herramientas de la comunidad, no verificados
   aquí.
 - Internos de wirelessproxd: gates propios de Continuity (si los hay) fuera de
-  bluetoothd.
+  bluetoothd. Cerrado para la recepción en §7.
+
+## 7. wirelessproxd vive dentro de bluetoothd
+
+En 25G241 no hay un binario `wirelessproxd`: el servicio Mach `com.apple.wirelessproxd` lo
+publica `bluetoothd` (`/System/Library/LaunchDaemons/com.apple.bluetoothd.plist`,
+`MachServices`). El arranque de `bluetoothd` (`sub_100032940`) crea `CBDaemonServer` y, sobre el
+mismo `CBStackAdaptorBTStack`, un `WPDaemonServer` (clase importada del framework privado de
+WirelessProximity del shared cache) al que llama `startListening`.
+
+El estado que `sharingd` exige a `WPAWDL` (3, §2.4-5) sale de
+`+[WPDState getWPStateFromCBManagerState:]` (`0x7ff919fa2db4` en la imagen del framework
+extraída del shared cache): una tabla de 11 entradas indexada por el estado de CoreBluetooth,
+`{2, 1, 2, 2, 2, 3, 0, 0, 0, 0, 3}`. El 3 corresponde sólo a los estados 5 (poweredOn) y 10, los
+mismos que `bluetoothEnabledIncludingRestricted` acepta en `sharingd`; estados fuera de rango dan 0.
+`-[WPDState coalesceState:Restricted:UpdateCache:]` (`0x7ff919fa2963`) toma el mínimo entre los
+gestores registrados. No aparece ninguna condición de fabricante ni de capacidades: el estado 3
+es «Bluetooth encendido» visto desde WirelessProximity.
+
+Para la prueba de recepción (el iPhone envía, el Mac recibe) el Mac sólo escanea: el emisor de
+AirDrop es quien anuncia por BLE y los receptores lo escuchan para levantar AWDL. El único gate
+de escaneo en `bluetoothd` es el escaneo activo de §3.1, que todo controlador BLE 4.0 cumple. La
+pregunta de las instancias múltiples (§3.2, error 101) sólo afecta al Mac como emisor; la entrada
+de anuncio de WPDaemon,
+`-[CBStackBLEAdvertiserBTStack shouldAdvertiseForWPDaemon:advData:advInstanceType:]`
+(`0x1000359E1`), filtra por `advInstanceType` y datos de fabricante de hasta 28 bytes, pero el
+tipo que pide AirDrop no quedó trazado `?`.
