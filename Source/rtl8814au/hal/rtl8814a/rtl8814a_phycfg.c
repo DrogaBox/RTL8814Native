@@ -2098,8 +2098,9 @@ phy_SwChnlAndSetBwMode8814A(
 		return;
 	}
 
-	/* AWDL moving the primary inside one 80 MHz block keeps the channel
-	 * index and the width: the power tables would be written unchanged */
+	/* AWDL moving the primary inside one 40/80 MHz block keeps the channel
+	 * index (the center) and the width: the power tables would be written
+	 * unchanged. A channel index change reloads them as always. */
 	keep_txpwr = pHalData->awdl_keep_txpwr && !pHalData->bSwChnl;
 
 	if (pHalData->bSwChnl) {
@@ -2308,6 +2309,10 @@ PHY_HandleSwChnlAndSetBW8814A(
 
 		pHalData->CurrentCenterFrequencyIndex1 = CenterFrequencyIndex1;
 	}
+
+	/* The power tables depend on the width too: a width change reloads them */
+	if (pHalData->awdl_keep_txpwr && (pHalData->bSwChnl || tmpBW != pHalData->current_channel_bw))
+		pHalData->awdl_keep_txpwr = 0;
 
 	/* Switch workitem or set timer to do switch channel or setbandwidth operation */
 	if (!RTW_CANNOT_RUN(Adapter))

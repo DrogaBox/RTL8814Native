@@ -180,7 +180,10 @@ int rtl8814native_radio_awdl_offch(uint8_t ch)
 	if (!ch || ch == home) {
 		/* back to the BSS; a scan that ran meanwhile already brought it back */
 		if (rfctl->offch_state == OFFCHS_AWDL) {
+			/* the HAL reloads the TX power anyway if the channel index moves */
+			hal->awdl_keep_txpwr = 1;
 			set_channel_bwmode(padapter, home, pmlmeext->cur_ch_offset, pmlmeext->cur_bwmode);
+			hal->awdl_keep_txpwr = 0;
 			rtw_hal_macid_wakeup_all_used(padapter);
 			issue_nulldata(padapter, NULL, 0, 0, 0);
 			rfctl->offch_state = OFFCHS_NONE;
