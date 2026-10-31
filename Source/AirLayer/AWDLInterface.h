@@ -467,6 +467,17 @@ private:
 	                             * (boot-arg rtlawdl_ch, 149 by default), used until
 	                             * a 129 names another; 0 = no parking */
 	uint64_t _parkReqUs;        /* last rtlRadioSetChannel request */
+	/* Time sharing while en2 is associated on a non-social channel (boot-arg
+	 * rtlawdl_mcc: 0 off, 1 the first slot of each run of the social channel
+	 * in the 129, 2 all of its slots): rtlRadioAwdlOffch takes the radio there
+	 * for those slots only. _mccLock orders the switches against tx off. */
+	uint32_t _mccMode;
+	bool _mccOff;               /* the driver has no rtlRadioAwdlOffch */
+	bool _mccActive;            /* servedMask keeps to _mccServe */
+	uint16_t _mccServe;
+	uint8_t _mccCur;            /* channel the radio was sent to, 0 = the BSS */
+	IOLock *_mccLock;
+	uint64_t _mccSwitches, _mccFail, _mccUsMax, _mccUsSum;
 	uint8_t _clkMaster[6];      /* master the AW clock follows (alignClock) */
 	uint64_t _clkMasterUs;      /* last frame from it, 0 = none */
 
@@ -500,6 +511,8 @@ private:
 	void txTick();
 	void armTick(uint64_t deadline);
 	uint8_t parkRadio(uint8_t idleCh, uint64_t nowUs);
+	uint8_t mccChannel(uint8_t home, uint64_t nowUs);
+	bool mccSwitch(uint8_t want);
 	uint16_t servedMask(uint8_t ch) const;
 	bool sendAf(uint8_t subtype, uint8_t channel, uint16_t mask, const uint8_t *da = nullptr);
 	size_t buildAf(uint8_t *out, size_t cap, uint8_t subtype, uint8_t channel, uint16_t mask,

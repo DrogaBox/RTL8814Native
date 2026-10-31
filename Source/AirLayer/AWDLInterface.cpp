@@ -197,6 +197,9 @@ bool RTLAwdInterface::initWithController(RTLAirController *ctrl, const uint8_t m
 	uint32_t park = 149;
 	PE_parse_boot_argn("rtlawdl_ch", &park, sizeof(park));
 	_parkCh = park == 6 || park == 44 || park == 149 ? (uint8_t)park : 0;
+	_mccMode = 0;
+	PE_parse_boot_argn("rtlawdl_mcc", &_mccMode, sizeof(_mccMode));
+	_mccLock = IOLockAlloc();
 	/* Same radio the controller drives (RTLAirController::start). */
 	IOService *nub = ctrl->getProvider();
 	_radioSvc = nub ? nub->getProvider() : nullptr;
@@ -206,7 +209,7 @@ bool RTLAwdInterface::initWithController(RTLAirController *ctrl, const uint8_t m
 	_txLock = IOLockAlloc();
 	_txTick = thread_call_allocate(&RTLAwdInterface::txTickEntry, this);
 	_txRing = (AwdlTxFrame *)IOMallocZero(sizeof(AwdlTxFrame) * AWDL_TX_RING);
-	if (!_symTx80211 || !_txLock || !_txTick || !_txRing) {
+	if (!_symTx80211 || !_txLock || !_txTick || !_txRing || !_mccLock) {
 		LOG("awdl: tx alloc failed");
 		return false;
 	}
@@ -441,6 +444,10 @@ void RTLAwdInterface::free()
 	if (_txLock) {
 		IOLockFree(_txLock);
 		_txLock = nullptr;
+	}
+	if (_mccLock) {
+		IOLockFree(_mccLock);
+		_mccLock = nullptr;
 	}
 	if (_txRing) {
 		IOFree(_txRing, sizeof(AwdlTxFrame) * AWDL_TX_RING);
@@ -1072,6 +1079,9 @@ void RTLAwdInterface::setRadioTx(bool on)
 		IOLockUnlock(_txLock);
 		_ctrl->radio(RTL_RADIO_FN_AWDL_PORT, nullptr);
 		_port1On = false;
+		/* After _txOn went false: a tick that switches later sees it under
+		 * _mccLock and stays on the BSS */
+		mccSwitch(0);
 	}
 	if (!on)
 		flushRadioTx();
@@ -1124,12 +1134,31 @@ void RTLAwdInterface::txTick()
 
 	struct rtl_radio_status st;
 	uint8_t ch = 0;
-	if (_ctrl && _ctrl->radioStatus(&st) == kIOReturnSuccess && !st.scanning) {
-		if (st.state == RTL_RADIO_S_LINKED)
+	bool linked = false, mcc = false;
+	if (_ctrl && _ctrl->radioStatus(&st) == kIOReturnSuccess) {
+		linked = st.state == RTL_RADIO_S_LINKED;
+		if (st.scanning) {
+			/* the scan's own back-op brings the radio home at its end */
+			if (_mccLock) {
+				IOLockLock(_mccLock);
+				_mccCur = 0;
+				IOLockUnlock(_mccLock);
+			}
+		} else if (linked) {
 			ch = st.channel;
-		else if (st.state == RTL_RADIO_S_IDLE)
+			if (!awdlSocial(ch) && _mccMode && !_mccOff) {
+				mcc = true;
+				ch = mccChannel(ch, awdlNowUs());
+			}
+		} else if (st.state == RTL_RADIO_S_IDLE) {
 			ch = parkRadio(st.idle_channel, awdlNowUs());
+		}
 	}
+	if (!linked && _mccCur)
+		mccSwitch(0);
+	IOLockLock(_txLock);
+	_mccActive = mcc;
+	IOLockUnlock(_txLock);
 	if (ch && !awdlSocial(ch)) {
 		if (ch != _offSocialCh) {
 			_offSocialCh = ch;
@@ -1234,9 +1263,11 @@ void RTLAwdInterface::txTick()
 				_txUmi++;
 		if (psf && (_txPsf & 0x3FF) == 0)
 			LOG("awdl: tx psf %llu mif %llu fail %llu windows %llu ch %u, data queued %llu "
-			    "sent %llu dropped full %llu old %llu bad %llu fail %llu",
+			    "sent %llu dropped full %llu old %llu bad %llu fail %llu, mcc %llu fail %llu "
+			    "max %llu us avg %llu us",
 			    _txPsf, _txMif, _txFail, _ev41, ch, _txDataQueued, _txDataSent,
-			    _txDataDropFull, _txDataDropOld, _txDataDropBad, _txDataFail);
+			    _txDataDropFull, _txDataDropOld, _txDataDropBad, _txDataFail, _mccSwitches,
+			    _mccFail, _mccUsMax, _mccSwitches ? _mccUsSum / _mccSwitches : 0);
 	}
 	if (dataWindow)
 		sendData();
@@ -1313,7 +1344,93 @@ uint16_t RTLAwdInterface::servedMask(uint8_t ch) const
 	for (int i = 0; i < AWDL_SLOTS; i++)
 		if (_seq[i] == ch)
 			mask |= (uint16_t)(1u << i);
-	return mask;
+	return _mccActive ? mask & _mccServe : mask;
+}
+
+/*
+ * While associated on a non-social channel (Docs/AWDL_MCC_TIEMPO_COMPARTIDO.md
+ * §7): the social channel the 129 puts in most slots is served in the first
+ * slot of each of its runs (rtlawdl_mcc=1) or in all of them (2), and the
+ * radio goes there for those slots with rtlRadioAwdlOffch; in the others it
+ * stays on the BSS and AWDL is idle. Returns the channel the radio sits on
+ * for AWDL now, or 0. Called from txTick only.
+ */
+uint8_t RTLAwdInterface::mccChannel(uint8_t home, uint64_t nowUs)
+{
+	static const uint8_t social[3] = { 6, 44, 149 };
+	IOLockLock(_txLock);
+	uint8_t target = 0;
+	uint16_t serve = 0;
+	if (_seqValid) {
+		int best = 0;
+		for (int c = 0; c < 3; c++) {
+			int n = 0;
+			for (int i = 0; i < AWDL_SLOTS; i++)
+				n += _seq[i] == social[c];
+			/* on a tie, the one that shares the BSS's band */
+			if (n > best || (n == best && n && (social[c] > 14) == (home > 14))) {
+				best = n;
+				target = social[c];
+			}
+		}
+		for (int i = 0; target && i < AWDL_SLOTS; i++)
+			if (_seq[i] == target &&
+			    (_mccMode >= 2 || _seq[(i + AWDL_SLOTS - 1) % AWDL_SLOTS] != target))
+				serve |= (uint16_t)(1u << i);
+	}
+	/* the slot txTick is about to run, with the same slack */
+	uint64_t awIdx = (nowUs - _clkBaseUs + 500) / (AWDL_AW_TU * AWDL_TU_US);
+	uint32_t slot = ((uint16_t)(_clkBaseAw + awIdx) / AWDL_PM) % AWDL_SLOTS;
+	_mccServe = serve;
+	IOLockUnlock(_txLock);
+	uint8_t want = (serve >> slot) & 1 ? target : 0;
+	if (!mccSwitch(want))
+		return 0;
+	return want;
+}
+
+/*
+ * Moves the radio to want, or back to the BSS with 0, unless it is there
+ * already. A leave is refused once tx is off: setRadioTx(false) switches back
+ * under the same lock after clearing _txOn. Returns whether the radio is
+ * where asked.
+ */
+bool RTLAwdInterface::mccSwitch(uint8_t want)
+{
+	if (!_mccLock)
+		return false;
+	IOLockLock(_mccLock);
+	IOLockLock(_txLock);
+	bool on = _txOn;
+	IOLockUnlock(_txLock);
+	bool ok = want == _mccCur;
+	if (!ok && (on || !want) && !_mccOff) {
+		uint32_t c = want;
+		uint64_t t0 = awdlNowUs();
+		IOReturn r = _ctrl->radio(RTL_RADIO_FN_AWDL_OFFCH, &c);
+		uint64_t dt = awdlNowUs() - t0;
+		if (r == kIOReturnSuccess) {
+			_mccCur = want;
+			ok = true;
+			if (_mccSwitches++ < 4)
+				LOG("awdl: radio to channel %u (0 = the BSS) took %llu us", want, dt);
+			_mccUsSum += dt;
+			if (dt > _mccUsMax)
+				_mccUsMax = dt;
+		} else if (r == kIOReturnUnsupported) {
+			_mccOff = true;
+			LOG("awdl: the radio has no rtlRadioAwdlOffch: no AWDL while associated off the "
+			    "social channels");
+		} else {
+			if (_mccFail++ < 4)
+				LOG("awdl: rtlRadioAwdlOffch %u refused 0x%x", want, r);
+			/* a refused return leaves nothing to undo on our side */
+			if (!want)
+				_mccCur = 0;
+		}
+	}
+	IOLockUnlock(_mccLock);
+	return ok && want;
 }
 
 bool RTLAwdInterface::sendAf(uint8_t subtype, uint8_t channel, uint16_t mask, const uint8_t *da)
