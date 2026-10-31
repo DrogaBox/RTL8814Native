@@ -358,6 +358,14 @@ void RTLAwdInterface::stop(IOService *provider)
 {
 	setRadioTx(false);
 	setRadioRx(false);
+	/* The IOKit termination thread, no gate held
+	 * (Docs/AWDL_PEERMANAGER_TEARDOWN.md, step 6): wait for a tick or a drain
+	 * still running, so neither posts events nor enqueues on _rxCompQ once
+	 * the queues are gone. A cancelled pending call drops its reference. */
+	if (_txTick && thread_call_cancel_wait(_txTick))
+		release();
+	if (_rxDrain && thread_call_cancel_wait(_rxDrain))
+		release();
 	teardownDatapath();
 	IO80211VirtualInterface::stop(provider);
 }
@@ -374,7 +382,7 @@ void RTLAwdInterface::free()
 		IOLockFree(_rxLock);
 		_rxLock = nullptr;
 	}
-	/* stop() cancelled the tick and waited for it. */
+	/* A pending or running tick holds a reference, so none is here. */
 	if (_txTick) {
 		thread_call_free(_txTick);
 		_txTick = nullptr;
@@ -901,6 +909,8 @@ void RTLAwdInterface::setRadioTx(bool on)
 		_lastMifSlot = UINT32_MAX;
 		_lastTickAw = UINT32_MAX;
 		_parkReqUs = 0;
+		/* a driver swapped since the last refusal gets another try */
+		_txDataOff = false;
 	}
 	_awOpen = false;
 	IOLockUnlock(_txLock);
@@ -913,11 +923,20 @@ void RTLAwdInterface::setRadioTx(bool on)
 		if (r != kIOReturnSuccess)
 			LOG("awdl: port 1 refused 0x%x: no unicast data TX", r);
 		_port1On = r == kIOReturnSuccess;
-		thread_call_enter(_txTick);
+		/* A tick still running from before the last off rearms itself. */
+		IOLockLock(_txLock);
+		if (_txOn && !_tickBusy)
+			armTick(0);
+		IOLockUnlock(_txLock);
 	} else {
-		/* The tick rearms itself only while _txOn: after this nothing is
-		 * pending and nothing runs. */
-		thread_call_cancel_wait(_txTick);
+		/* No wait here: disable comes from the BSD client's ioctl, which
+		 * holds its gate, and a running tick may be waiting for the
+		 * controller's gate in postMessage. A running tick finds _txOn
+		 * false and does not rearm; stop() waits for it. */
+		IOLockLock(_txLock);
+		if (!_txOn && thread_call_cancel(_txTick))
+			release();
+		IOLockUnlock(_txLock);
 		_ctrl->radio(RTL_RADIO_FN_AWDL_PORT, nullptr);
 		_port1On = false;
 	}
@@ -931,7 +950,19 @@ void RTLAwdInterface::setRadioTx(bool on)
 
 void RTLAwdInterface::txTickEntry(thread_call_param_t p0, thread_call_param_t)
 {
-	((RTLAwdInterface *)p0)->txTick();
+	RTLAwdInterface *me = (RTLAwdInterface *)p0;
+	me->txTick();
+	/* the reference armTick took for this call */
+	me->release();
+}
+
+/* With _txLock held. The pending call owns a reference until txTickEntry
+ * ends, as the RX drain's does. */
+void RTLAwdInterface::armTick(uint64_t deadline)
+{
+	retain();
+	if (deadline ? thread_call_enter_delayed(_txTick, deadline) : thread_call_enter(_txTick))
+		release();
 }
 
 /* AWDL meets peers only on the social channels (AWDL-11 of owly's spec). */
@@ -948,6 +979,16 @@ static bool awdlSocial(uint8_t ch)
  */
 void RTLAwdInterface::txTick()
 {
+	/* One tick at a time: an enter right after an off can start a second
+	 * call while the first still runs. */
+	IOLockLock(_txLock);
+	bool run = _txOn && !_tickBusy;
+	if (run)
+		_tickBusy = true;
+	IOLockUnlock(_txLock);
+	if (!run)
+		return;
+
 	struct rtl_radio_status st;
 	uint8_t ch = 0;
 	if (_ctrl && _ctrl->radioStatus(&st) == kIOReturnSuccess && !st.scanning) {
@@ -968,6 +1009,7 @@ void RTLAwdInterface::txTick()
 	bool close = false, open = false, psf = false, mif = false;
 	IOLockLock(_txLock);
 	if (!_txOn) {
+		_tickBusy = false;
 		IOLockUnlock(_txLock);
 		return;
 	}
@@ -1052,12 +1094,13 @@ void RTLAwdInterface::txTick()
 		sendData();
 
 	IOLockLock(_txLock);
+	_tickBusy = false;
 	if (_txOn) {
 		uint64_t t = awdlNowUs();
 		uint64_t wait = next > t ? next - t : 1000;
 		uint64_t deadline;
 		clock_interval_to_deadline((uint32_t)wait, kMicrosecondScale, &deadline);
-		thread_call_enter_delayed(_txTick, deadline);
+		armTick(deadline);
 	}
 	IOLockUnlock(_txLock);
 }

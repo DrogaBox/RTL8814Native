@@ -439,6 +439,7 @@ private:
 	thread_call_t _txTick;
 	bool _txAllowed;
 	bool _txOn;
+	bool _tickBusy;             /* a txTick is running; it rearms itself */
 	uint8_t _tpl[512];
 	uint32_t _tplLen;
 	uint64_t _clkBaseUs;        /* start of the slot whose first AW is _clkBaseAw */
@@ -486,6 +487,7 @@ private:
 
 	void setRadioTx(bool on);
 	void txTick();
+	void armTick(uint64_t deadline);
 	uint8_t parkRadio(uint8_t idleCh, uint64_t nowUs);
 	uint16_t servedMask(uint8_t ch) const;
 	bool sendAf(uint8_t subtype, uint8_t channel, uint16_t mask);
