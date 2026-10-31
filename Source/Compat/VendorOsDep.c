@@ -631,6 +631,7 @@ s32 g_rx_noise_q4;
 /* Join event log (Driver/RTLJoinLog.h), read by kRTLUC_GetJoinLog */
 struct rtl_jlog g_jlog;
 u32 g_jlog_bcn;
+u8 g_jlog_bcn_auth_null;
 
 /*
  * Set by rtl8814native_radio_join to the cached BSS's channel: rtw_do_join then

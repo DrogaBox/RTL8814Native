@@ -1321,6 +1321,7 @@ static struct fwevent wlanevents[] = {
 #include "../../Driver/RTLJoinLog.h"
 void rtl8814native_jlog(u16 ev, s32 a, s32 b);
 extern u32 g_jlog_bcn;
+extern u8 g_jlog_bcn_auth_null;
 /* Channel of the BSS the next rtw_do_join targets: a directed one-channel survey
  * runs first (Compat/VendorOsDep.c) */
 extern u8 g_join_probe_ch;

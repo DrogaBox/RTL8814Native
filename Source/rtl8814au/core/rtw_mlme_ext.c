@@ -1866,6 +1866,14 @@ unsigned int OnBeacon(_adapter *padapter, union recv_frame *precv_frame)
 #endif
 #endif /* CONFIG_TDLS */
 
+	/* RTL8814Native: why a join that sees beacons never starts auth */
+	if ((pmlmeinfo->state & WIFI_FW_AUTH_NULL) && !g_jlog_bcn_auth_null) {
+		g_jlog_bcn_auth_null = 1;
+		rtl8814native_jlog(JL_BCN_AUTH_NULL, pmlmeext->sitesurvey_res.state |
+			(_rtw_memcmp(GetAddr3Ptr(pframe), get_my_bssid(&pmlmeinfo->network), ETH_ALEN) << 8) |
+			(rtw_sta_linking_test_wait_done() << 9) | (pmlmeext->join_abort << 10), len);
+	}
+
 	if (validate_beacon_len(pframe, len) == _FALSE)
 		return _SUCCESS;
 
@@ -11376,6 +11384,7 @@ void start_clnt_join(_adapter *padapter)
 	u8 ASIX_ID[] = {0x00, 0x0E, 0xC6};
 
 	g_jlog_bcn = 0;
+	g_jlog_bcn_auth_null = 0;
 	rtl8814native_jlog(JL_CLNT_JOIN, pmlmeext->cur_channel, pmlmeext->cur_bwmode);
 	/* update wireless mode */
 	update_wireless_mode(padapter);
