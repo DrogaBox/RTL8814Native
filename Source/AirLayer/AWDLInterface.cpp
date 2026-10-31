@@ -736,12 +736,18 @@ void RTLAwdInterface::setRadioTx(bool on)
 	IOLockUnlock(_txLock);
 	if (on == was)
 		return;
+	/* Port 1 answers for awdl0 while it transmits, so the unicast frames peers
+	 * send back get a hardware ACK (Docs/AWDL_RTL8814_RX_ACK.md §2.4). */
 	if (on) {
+		IOReturn r = _ctrl->radio(RTL_RADIO_FN_AWDL_PORT, _mac);
+		if (r != kIOReturnSuccess)
+			LOG("awdl: port 1 refused 0x%x", r);
 		thread_call_enter(_txTick);
 	} else {
 		/* The tick rearms itself only while _txOn: after this nothing is
 		 * pending and nothing runs. */
 		thread_call_cancel_wait(_txTick);
+		_ctrl->radio(RTL_RADIO_FN_AWDL_PORT, nullptr);
 	}
 	LOG("awdl: tx %s, psf %llu mif %llu fail %llu aligned %llu aw %llu", on ? "on" : "off",
 	    _txPsf, _txMif, _txFail, _clkAligned, _ev41);
