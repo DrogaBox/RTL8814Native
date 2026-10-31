@@ -1349,8 +1349,9 @@ uint16_t RTLAwdInterface::servedMask(uint8_t ch) const
 
 /*
  * While associated on a non-social channel (Docs/AWDL_MCC_TIEMPO_COMPARTIDO.md
- * §7): the social channel the 129 puts in most slots is served in the first
- * slot of each of its runs (rtlawdl_mcc=1) or in all of them (2), and the
+ * §7): the social channel of the BSS's band that the 129 puts in most slots is
+ * served in the first slot of each of its runs (rtlawdl_mcc=1) or in all of
+ * them (2), and the
  * radio goes there for those slots with rtlRadioAwdlOffch; in the others it
  * stays on the BSS and AWDL is idle. Returns the channel the radio sits on
  * for AWDL now, or 0. Called from txTick only.
@@ -1367,8 +1368,8 @@ uint8_t RTLAwdInterface::mccChannel(uint8_t home, uint64_t nowUs)
 			int n = 0;
 			for (int i = 0; i < AWDL_SLOTS; i++)
 				n += _seq[i] == social[c];
-			/* on a tie, the one that shares the BSS's band */
-			if (n > best || (n == best && n && (social[c] > 14) == (home > 14))) {
+			/* only the BSS's band: a band switch is a full retune, not measured */
+			if ((social[c] > 14) == (home > 14) && n > best) {
 				best = n;
 				target = social[c];
 			}
