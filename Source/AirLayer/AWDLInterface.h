@@ -406,6 +406,25 @@ private:
 	static IOReturn txNoop(OSObject *owner, void *queue, void *const *pkts,
 	                       uint32_t count, void *refCon);
 	static IOReturn removeQueues(OSObject *owner, void *, void *, void *, void *);
+
+	/* RX of AWDL frames from the radio (RTL_RADIO_FN_AWDL_HOOK): the hook
+	 * queues copies, a thread call hands the action frames to the peer
+	 * manager through bpfTapInput on the work queue. */
+	IOLock *_rxLock;
+	mbuf_t _rxHead, _rxTail;
+	uint32_t _rxCount;
+	thread_call_t _rxDrain;
+	bool _rxHooked;
+	bool _rxAllowed;            /* boot-arg rtlawdl_rx, 1 unless set to 0 */
+	uint64_t _rxAf, _rxData, _rxOther, _rxDropped;
+
+	void setRadioRx(bool on);
+	void flushRadioRx();
+	void injectFrame(mbuf_t m);
+	static void radioRxHook(void *ctx, const uint8_t *frame, uint32_t len,
+	                        int8_t rssi, uint8_t channel);
+	static void rxDrainEntry(thread_call_param_t p0, thread_call_param_t);
+	static IOReturn bpfTapAction(OSObject *owner, void *m, void *hdr, void *, void *);
 };
 
 /* Fails to compile if a pure slot is left unanswered, which would put

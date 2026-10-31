@@ -17,6 +17,7 @@
 #include <IOKit/IOLib.h>
 #include <IOKit/IOWorkLoop.h>
 #include <net/ethernet.h>
+#include <pexpert/pexpert.h>
 
 /* airLog() of RTLAirLayer.cpp, exposed by the hook patch so these lines land
  * in the RTLAirLayerLog array of the RTL8814Native node. */
@@ -58,6 +59,11 @@ IOReturn rtl_ctrl_setAwdlInterface(IO80211Controller *ctrl, void *awdl)
 IOReturn rtl_eth_register(void *self, void *regInfo, void **queues, uint32_t n,
                           void *txPool, void *rxPool, uint32_t flags)
 	__asm("__ZN26IOSkywalkEthernetInterface25registerEthernetInterfaceEPKNS_16RegistrationInfoEPP20IOSkywalkPacketQueuejP25IOSkywalkPacketBufferPoolS7_j");
+/* Copies the mbuf into a buffer of the controller's management frame pool and
+ * hands it to the peer manager's actionFrameInput when dlt is 12; the mbuf
+ * stays with the caller (Docs/AWDL_PEERMANAGER_DRIVER_ABI.md §1.5). */
+void rtl_vif_bpfTapInput(void *self, mbuf_t m, uint32_t dlt, void *hdr, size_t hdrLen)
+	__asm("__ZN23IO80211VirtualInterface11bpfTapInputEP6__mbufjPvm");
 }
 
 /* IOSkywalkPacketBufferPool::PoolOptions, same shape as the STA path
@@ -105,6 +111,15 @@ bool RTLAwdInterface::initWithController(RTLAirController *ctrl, const uint8_t m
 	memcpy(_mac, mac, 6);
 	if (!init()) {
 		LOG("awdl: init() failed");
+		return false;
+	}
+	uint32_t rx = 1;
+	PE_parse_boot_argn("rtlawdl_rx", &rx, sizeof(rx));
+	_rxAllowed = rx != 0;
+	_rxLock = IOLockAlloc();
+	_rxDrain = thread_call_allocate(&RTLAwdInterface::rxDrainEntry, this);
+	if (!_rxLock || !_rxDrain) {
+		LOG("awdl: rx alloc failed");
 		return false;
 	}
 	/* Sets IO80211VirtualInterfaceRole ("AirLink" for role 6) through
@@ -281,12 +296,23 @@ void RTLAwdInterface::teardownDatapath()
 
 void RTLAwdInterface::stop(IOService *provider)
 {
+	setRadioRx(false);
 	teardownDatapath();
 	IO80211VirtualInterface::stop(provider);
 }
 
 void RTLAwdInterface::free()
 {
+	/* A pending drain holds a reference, so none is queued or running here. */
+	if (_rxDrain) {
+		thread_call_free(_rxDrain);
+		_rxDrain = nullptr;
+	}
+	flushRadioRx();
+	if (_rxLock) {
+		IOLockFree(_rxLock);
+		_rxLock = nullptr;
+	}
 	OSSafeReleaseNULL(*(OSObject **)&_txSubQ);
 	OSSafeReleaseNULL(*(OSObject **)&_txCompQ);
 	OSSafeReleaseNULL(*(OSObject **)&_rxCompQ);
@@ -325,16 +351,203 @@ uintptr_t RTLAwdInterface::enable(unsigned int opts)
 	 * is down" and updateLocalRequests answers 6. Going to 2 also makes the
 	 * family call IO80211PeerManager::enable, which runs configure(). */
 	setLinkState((IO80211LinkState)AWDL_LINK_UP, 1);
+	setRadioRx(true);
 	return kIOReturnSuccess;
 }
 
 uintptr_t RTLAwdInterface::disable(unsigned int opts)
 {
 	LOG("awdl: disable 0x%x", opts);
+	setRadioRx(false);
 	setLinkState((IO80211LinkState)AWDL_LINK_DOWN, 1);
 	void *qs[3] = { _txSubQ, _rxCompQ, _txCompQ };
 	rtlAwdSetQueues(qs, false);
 	return kIOReturnSuccess;
+}
+
+/*
+ * RX of AWDL frames. The radio passes every frame whose A3 is the AWDL BSSID
+ * (Docs/AWDL_RTL8814_RX_ACK.md §1, §4) to radioRxHook on its RX thread, with
+ * its hook lock held: the hook only copies the frame behind a 4-byte prefix
+ * (RSSI, channel) and queues it. rxDrainEntry hands each AWDL action frame to
+ * IO80211VirtualInterface::bpfTapInput on the work queue, the gate Broadcom's
+ * event handlers run in; bpfTapInput passes it to the peer manager's
+ * actionFrameInput (Docs/AWDL_PEERMANAGER_DRIVER_ABI.md §1.5). Data frames are
+ * only counted: their path to the RX completion queue is not written yet.
+ * Boot-arg rtlawdl_rx=0 leaves the hook detached.
+ */
+#define AWDL_RX_META          4       /* rssi (s8), channel, 2 spare bytes */
+#define AWDL_RX_QUEUE_MAX     64
+#define AWDL_RX_FRAME_MAX     2048    /* management frame pool buffer size */
+#define AWDL_WLAN_HDR         24
+#define AWDL_DLT_IEEE802_11   12
+#define AWDL_AF_HDR_LEN       0x48    /* apple80211_act_frm_hdr; more traps */
+#define AWDL_AF_HDR_CHANNEL   0x0c    /* apple80211_channel: version, channel, flags */
+#define AWDL_AF_HDR_RSSI      0x2c    /* s32 dBm, compared with the edge threshold */
+#define AWDL_RX_LOG_FIRST     16
+
+void RTLAwdInterface::setRadioRx(bool on)
+{
+	if (on && !_rxAllowed)
+		return;
+	if (on == _rxHooked || !_ctrl)
+		return;
+	/* The radio takes its hook lock to swap the hook, so after a detach
+	 * returns radioRxHook is not running and will not run again. */
+	IOReturn r = _ctrl->radio(RTL_RADIO_FN_AWDL_HOOK,
+	                          on ? (void *)&RTLAwdInterface::radioRxHook : nullptr,
+	                          on ? this : nullptr);
+	if (on && r != kIOReturnSuccess) {
+		LOG("awdl: rx hook refused 0x%x", r);
+		return;
+	}
+	if (_rxLock) {
+		IOLockLock(_rxLock);
+		_rxHooked = on;
+		IOLockUnlock(_rxLock);
+	}
+	if (!on)
+		flushRadioRx();
+	LOG("awdl: rx %s, af %llu data %llu other %llu dropped %llu", on ? "attached" : "detached",
+	    _rxAf, _rxData, _rxOther, _rxDropped);
+}
+
+void RTLAwdInterface::flushRadioRx()
+{
+	if (!_rxLock)
+		return;
+	IOLockLock(_rxLock);
+	mbuf_t chain = _rxHead;
+	_rxHead = _rxTail = nullptr;
+	_rxCount = 0;
+	IOLockUnlock(_rxLock);
+	if (chain)
+		mbuf_freem_list(chain);
+}
+
+void RTLAwdInterface::radioRxHook(void *ctx, const uint8_t *frame, uint32_t len,
+                                  int8_t rssi, uint8_t channel)
+{
+	RTLAwdInterface *me = (RTLAwdInterface *)ctx;
+	if (len < AWDL_WLAN_HDR || len > AWDL_RX_FRAME_MAX) {
+		me->_rxDropped++;
+		return;
+	}
+	mbuf_t m;
+	if (mbuf_allocpacket(MBUF_DONTWAIT, AWDL_RX_META + len, nullptr, &m) != 0) {
+		me->_rxDropped++;
+		return;
+	}
+	uint8_t meta[AWDL_RX_META] = { (uint8_t)rssi, channel, 0, 0 };
+	if (mbuf_copyback(m, 0, AWDL_RX_META, meta, MBUF_DONTWAIT) != 0 ||
+	    mbuf_copyback(m, AWDL_RX_META, len, frame, MBUF_DONTWAIT) != 0) {
+		mbuf_freem(m);
+		me->_rxDropped++;
+		return;
+	}
+	bool kick = false;
+	IOLockLock(me->_rxLock);
+	if (me->_rxHooked && me->_rxCount < AWDL_RX_QUEUE_MAX) {
+		mbuf_setnextpkt(m, nullptr);
+		if (me->_rxTail)
+			mbuf_setnextpkt(me->_rxTail, m);
+		else
+			me->_rxHead = m;
+		me->_rxTail = m;
+		kick = me->_rxCount++ == 0;
+		m = nullptr;
+	}
+	IOLockUnlock(me->_rxLock);
+	if (m) {
+		mbuf_freem(m);
+		me->_rxDropped++;
+	} else if (kick) {
+		/* The pending call owns a reference until rxDrainEntry ends. */
+		me->retain();
+		if (thread_call_enter(me->_rxDrain))
+			me->release();
+	}
+}
+
+void RTLAwdInterface::rxDrainEntry(thread_call_param_t p0, thread_call_param_t)
+{
+	RTLAwdInterface *me = (RTLAwdInterface *)p0;
+	IOLockLock(me->_rxLock);
+	mbuf_t chain = me->_rxHead;
+	me->_rxHead = me->_rxTail = nullptr;
+	me->_rxCount = 0;
+	IOLockUnlock(me->_rxLock);
+	while (chain) {
+		mbuf_t m = chain;
+		chain = mbuf_nextpkt(m);
+		mbuf_setnextpkt(m, nullptr);
+		if (me->_rxHooked)
+			me->injectFrame(m);
+		else
+			mbuf_freem(m);
+	}
+	me->release();
+}
+
+IOReturn RTLAwdInterface::bpfTapAction(OSObject *owner, void *m, void *hdr, void *, void *)
+{
+	rtl_vif_bpfTapInput(owner, (mbuf_t)m, AWDL_DLT_IEEE802_11, hdr, AWDL_AF_HDR_LEN);
+	return kIOReturnSuccess;
+}
+
+void RTLAwdInterface::injectFrame(mbuf_t m)
+{
+	uint8_t h[AWDL_RX_META + AWDL_WLAN_HDR + 5];
+	size_t len = mbuf_pkthdr_len(m);
+	if (len < AWDL_RX_META + AWDL_WLAN_HDR ||
+	    mbuf_copydata(m, 0, len < sizeof(h) ? len : sizeof(h), h) != 0) {
+		_rxDropped++;
+		mbuf_freem(m);
+		return;
+	}
+	int8_t rssi = (int8_t)h[0];
+	uint8_t channel = h[1];
+	const uint8_t *f = h + AWDL_RX_META;
+	const uint8_t *body = f + AWDL_WLAN_HDR;
+	uint8_t type = (f[0] >> 2) & 3, subtype = f[0] >> 4;
+	uint64_t seen = _rxAf + _rxData + _rxOther;
+
+	/* Management action (0/13), category 127, OUI 00:17:F2, type 8: the bytes
+	 * isValidAF and actionFrameHasCorrectOUI check (ABI §1.6). */
+	bool af = type == 0 && subtype == 13 && len >= sizeof(h) && body[0] == 0x7F &&
+	          body[1] == 0x00 && body[2] == 0x17 && body[3] == 0xF2 && body[4] == 0x08;
+	if (seen < AWDL_RX_LOG_FIRST)
+		LOG("awdl: rx %s %02x:%02x:%02x:%02x:%02x:%02x rssi %d ch %u len %u",
+		    af ? "af" : type == 2 ? "data" : "other", f[10], f[11], f[12], f[13], f[14],
+		    f[15], rssi, channel, (unsigned)(len - AWDL_RX_META));
+	if (!af) {
+		if (type == 2)
+			_rxData++;
+		else
+			_rxOther++;
+		mbuf_freem(m);
+		return;
+	}
+	_rxAf++;
+	if ((_rxAf & 0xFF) == 0)
+		LOG("awdl: rx af %llu data %llu other %llu dropped %llu", _rxAf, _rxData, _rxOther,
+		    _rxDropped);
+
+	/* Source MAC, channel and RSSI: the manager reads +0x00 and +0x2c; the
+	 * channel only travels to the BPF tap (ABI §1.3). */
+	uint8_t hdr[AWDL_AF_HDR_LEN];
+	bzero(hdr, sizeof(hdr));
+	memcpy(hdr, f + 10, 6);
+	*(uint32_t *)(hdr + AWDL_AF_HDR_CHANNEL) = 1;
+	*(uint32_t *)(hdr + AWDL_AF_HDR_CHANNEL + 4) = channel;
+	*(int32_t *)(hdr + AWDL_AF_HDR_RSSI) = rssi;
+
+	/* The buffer starts at the category byte. */
+	mbuf_adj(m, AWDL_RX_META + AWDL_WLAN_HDR);
+	IOWorkLoop *wq = (IOWorkLoop *)rtl_sky_getWorkQueue(this);
+	if (wq)
+		wq->runAction(&RTLAwdInterface::bpfTapAction, this, m, hdr);
+	mbuf_freem(m);
 }
 
 /* Stage 3: see the AWDL_ACK block of AWDLInterface.h. */
