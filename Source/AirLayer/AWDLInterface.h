@@ -458,9 +458,8 @@ private:
 	void txTick();
 	uint8_t parkRadio(uint8_t idleCh, uint64_t nowUs);
 	uint16_t servedMask(uint8_t ch) const;
-	bool sendAf(uint8_t subtype, uint64_t nowUs, uint8_t channel, uint16_t mask);
-	size_t buildAf(uint8_t *out, size_t cap, uint8_t subtype, uint64_t nowUs, uint8_t channel,
-	               uint16_t mask);
+	bool sendAf(uint8_t subtype, uint8_t channel, uint16_t mask);
+	size_t buildAf(uint8_t *out, size_t cap, uint8_t subtype, uint8_t channel, uint16_t mask);
 	void alignClock(mbuf_t m, const uint8_t *src);
 	static void txTickEntry(thread_call_param_t p0, thread_call_param_t);
 };

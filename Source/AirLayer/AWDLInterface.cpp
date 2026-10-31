@@ -794,12 +794,13 @@ void RTLAwdInterface::txTick()
 
 	uint8_t ev41[36], ev43[40];
 	bool close = false, open = false, psf = false, mif = false;
-	uint64_t now = awdlNowUs();
 	IOLockLock(_txLock);
 	if (!_txOn) {
 		IOLockUnlock(_txLock);
 		return;
 	}
+	/* After the lock, so it is never before a _clkBaseUs set by alignClock. */
+	uint64_t now = awdlNowUs();
 	/* 500 µs of slack: a tick that fires just before its boundary counts as on it. */
 	uint64_t awIdx = (now - _clkBaseUs + 500) / (AWDL_AW_TU * AWDL_TU_US);
 	uint32_t aw = (uint16_t)(_clkBaseAw + awIdx);
@@ -860,9 +861,9 @@ void RTLAwdInterface::txTick()
 			LOG("awdl: window aw %u slot %u ch %u", aw, slot, ch);
 	}
 	if (ch && _tplLen) {
-		if (psf && sendAf(AWDL_AF_PSF, now, ch, mask))
+		if (psf && sendAf(AWDL_AF_PSF, ch, mask))
 			_txPsf++;
-		if (mif && sendAf(AWDL_AF_MIF, now, ch, mask))
+		if (mif && sendAf(AWDL_AF_MIF, ch, mask))
 			_txMif++;
 		if (psf && (_txPsf & 0x3FF) == 0)
 			LOG("awdl: tx psf %llu mif %llu fail %llu windows %llu ch %u", _txPsf, _txMif,
@@ -921,10 +922,10 @@ uint16_t RTLAwdInterface::servedMask(uint8_t ch) const
 	return mask;
 }
 
-bool RTLAwdInterface::sendAf(uint8_t subtype, uint64_t nowUs, uint8_t channel, uint16_t mask)
+bool RTLAwdInterface::sendAf(uint8_t subtype, uint8_t channel, uint16_t mask)
 {
 	uint8_t buf[AWDL_AF_MAX];
-	size_t len = buildAf(buf, sizeof(buf), subtype, nowUs, channel, mask);
+	size_t len = buildAf(buf, sizeof(buf), subtype, channel, mask);
 	if (!len)
 		return false;
 	uint32_t l = (uint32_t)len;
@@ -937,10 +938,13 @@ bool RTLAwdInterface::sendAf(uint8_t subtype, uint64_t nowUs, uint8_t channel, u
 	return true;
 }
 
-size_t RTLAwdInterface::buildAf(uint8_t *out, size_t cap, uint8_t subtype, uint64_t nowUs,
-                                uint8_t channel, uint16_t mask)
+size_t RTLAwdInterface::buildAf(uint8_t *out, size_t cap, uint8_t subtype, uint8_t channel,
+                                uint16_t mask)
 {
 	IOLockLock(_txLock);
+	/* Read under the lock: alignClock may have moved _clkBaseUs past an
+	 * earlier sample, and nowUs - _clkBaseUs would wrap. */
+	uint64_t nowUs = awdlNowUs();
 	uint32_t tplLen = _tplLen;
 	size_t need = AWDL_WLAN_HDR + 16 + (3 + AWDL_SYNC_LEN + AWDL_CHANSEQ_LEN + 2) + (3 + 21) +
 	              (3 + AWDL_CHANSEQ_LEN + 3) + tplLen;
