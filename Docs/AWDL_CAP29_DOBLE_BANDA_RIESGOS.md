@@ -101,5 +101,8 @@ tras el arranque con `3699d28e` la asociación al 153/80 cambia, la vuelta es re
 - Conmutación por ranura del driver: ida al 149 en 4357 y 4355 µs, vuelta a la BSS en 2389 y
   2415 µs, dentro de una franja de 64 TU (65,5 ms). Primera trama de datos por `awdl0`:
   multicast mDNS IPv6 a `33:33:00:00:00:fb`, 179 B.
+- Primer resumen de TX (a los 1024 PSF, canal 149): 1024 PSF y 731 MIF sin fallos en 744
+  ventanas; datos 11 encolados, 6 enviados, 5 descartados por antigüedad, ninguno por cola llena
+  ni por error; 1464 conmutaciones sin fallo, máximo 5407 µs, media 3381 µs.
 - Veredicto: el bit 29 era la puerta que faltaba para el social de 5 GHz; el riesgo de §3 no se
   materializó en la infraestructura.
