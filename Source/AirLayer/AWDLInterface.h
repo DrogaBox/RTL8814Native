@@ -449,10 +449,14 @@ private:
 	bool _seqValid;
 	bool _awOpen;               /* between events 41 and 43 */
 	bool _offSocialLogged;
+	uint8_t _parkCh;            /* social channel while not associated (boot-arg
+	                             * rtlawdl_ch, 149 by default), 0 = no parking */
+	uint64_t _parkReqUs;        /* last rtlRadioSetChannel request */
 	uint64_t _txPsf, _txMif, _txFail, _clkAligned, _ev41, _ev43;
 
 	void setRadioTx(bool on);
 	void txTick();
+	uint8_t parkRadio(uint8_t idleCh, uint64_t nowUs);
 	uint16_t servedMask(uint8_t ch) const;
 	bool sendAf(uint8_t subtype, uint64_t nowUs, uint8_t channel, uint16_t mask);
 	size_t buildAf(uint8_t *out, size_t cap, uint8_t subtype, uint64_t nowUs, uint8_t channel,

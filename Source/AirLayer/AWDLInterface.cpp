@@ -126,6 +126,9 @@ bool RTLAwdInterface::initWithController(RTLAirController *ctrl, const uint8_t m
 	uint32_t tx = 0;
 	PE_parse_boot_argn("rtlawdl_tx", &tx, sizeof(tx));
 	_txAllowed = tx != 0;
+	uint32_t park = 149;
+	PE_parse_boot_argn("rtlawdl_ch", &park, sizeof(park));
+	_parkCh = park == 6 || park == 44 || park == 149 ? (uint8_t)park : 0;
 	/* Same radio the controller drives (RTLAirController::start). */
 	IOService *nub = ctrl->getProvider();
 	_radioSvc = nub ? nub->getProvider() : nullptr;
@@ -731,6 +734,7 @@ void RTLAwdInterface::setRadioTx(bool on)
 		_nextPsfUs = _clkBaseUs;
 		_lastMifSlot = UINT32_MAX;
 		_lastTickAw = UINT32_MAX;
+		_parkReqUs = 0;
 	}
 	_awOpen = false;
 	IOLockUnlock(_txLock);
@@ -774,9 +778,12 @@ void RTLAwdInterface::txTick()
 {
 	struct rtl_radio_status st;
 	uint8_t ch = 0;
-	if (_ctrl && _ctrl->radioStatus(&st) == kIOReturnSuccess && st.state == RTL_RADIO_S_LINKED &&
-	    !st.scanning)
-		ch = st.channel;
+	if (_ctrl && _ctrl->radioStatus(&st) == kIOReturnSuccess && !st.scanning) {
+		if (st.state == RTL_RADIO_S_LINKED)
+			ch = st.channel;
+		else if (st.state == RTL_RADIO_S_IDLE)
+			ch = parkRadio(st.idle_channel, awdlNowUs());
+	}
 	if (ch && !awdlSocial(ch)) {
 		if (!_offSocialLogged) {
 			_offSocialLogged = true;
@@ -871,6 +878,32 @@ void RTLAwdInterface::txTick()
 		thread_call_enter_delayed(_txTick, deadline);
 	}
 	IOLockUnlock(_txLock);
+}
+
+/*
+ * Without an association the radio is parked on _parkCh (rtlRadioSetChannel):
+ * returns the channel to serve, or 0 until the radio sits there. A disconnect
+ * leaves it on the old BSS channel, so the request is repeated, at most once
+ * a second. Called from txTick only.
+ */
+uint8_t RTLAwdInterface::parkRadio(uint8_t idleCh, uint64_t nowUs)
+{
+	if (!_parkCh)
+		return 0;
+	if (idleCh == _parkCh)
+		return idleCh;
+	if (_parkReqUs && nowUs - _parkReqUs < 1000000)
+		return 0;
+	_parkReqUs = nowUs;
+	uint32_t want = _parkCh;
+	IOReturn r = _ctrl->radio(RTL_RADIO_FN_SET_CHANNEL, &want);
+	if (r == kIOReturnUnsupported) {
+		LOG("awdl: radio cannot park on a channel, AWDL only on an associated social channel");
+		_parkCh = 0;
+	} else if (r == kIOReturnSuccess) {
+		LOG("awdl: parking the radio on channel %u (was %u)", want, idleCh);
+	}
+	return 0;
 }
 
 /* Slots the radio serves on channel ch: those the 129 puts on ch, or all of
