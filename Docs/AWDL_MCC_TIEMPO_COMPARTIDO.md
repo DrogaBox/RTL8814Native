@@ -66,8 +66,9 @@ redundante.
 **La dependencia real es el firmware.** El comentario de cabecera de los H2C comunes
 (`include/hal_com_h2c.h:21`) lista «88e, 8723b, 8812, 8821, 92e use the same FW code base» — el
 8814A no está en esa lista y lleva sus propias imágenes (`array_mp_8814a_fw_ap/nic`,
-`hal/rtl8814a/hal8814a_fw.c:29,5319`). Que ese firmware implemente los H2C 0x15–0x1A y el C2H
-0x17 es `?`: solo se cierra con prueba en hardware o con inspección del blob de firmware.
+`hal/rtl8814a/hal8814a_fw.c:29,5319`). La inspección del blob (`AWDL_FW_8814A_MCC.md`) cierra la
+pregunta: el firmware v33.6 que baja el driver manda los H2C 0x10 y 0x15–0x1A a su ruta de
+error y no emite ningún C2H 0x17, así que la vía MCC de firmware no existe con esta imagen.
 
 **Diferencia con el modo concurrente.** `CONFIG_CONCURRENT_MODE` + `core/rtw_mi.c`
 (`rtw_mi_status` en `rtw_mi.c:274`, uniones de canal en `include/rtw_mi.h:120-122`) es salto de
@@ -377,9 +378,8 @@ hace menos de N slots. La (b) es local a `PHY_SetTxPowerLevel8814`/`phy_set_tx_p
 
 Compilar `CONFIG_MCC_MODE + CONFIG_CONCURRENT_MODE` y añadir `hal/hal_mcc.c` a `build.sh` es el
 camino corto a la alternancia con TSF y null data descargados al firmware — pero solo si el
-firmware 8814A responde a los H2C MCC (`?`, §2). Probarlo en hardware es barato (habilitar y
-observar si el C2H `0x17` contesta); hasta entonces, la vía manual de §7.1-7.2 no depende del
-firmware.
+firmware 8814A responde a los H2C MCC. No responde (§2, `AWDL_FW_8814A_MCC.md` §7): la
+prueba en hardware ya no hace falta y la vía manual de §7.1-7.2 es la única.
 
 ## 8. Qué medir en hardware
 
