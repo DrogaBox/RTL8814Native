@@ -163,7 +163,7 @@ flag y `0xffffff80021b4a11` camino normal), `monitorPeerRssi` (`0xffffff80021aa4
 | contador de AFs sin estado 1 (`priv+124`) y contadores de reachability del manager (`ivars+42800 + 4*estado`) | `0xffffff80021b49fb`, `0xffffff80021b4b37`/`0xffffff80021b4b3f` | sólo estadística |
 | par tvOS (OS 8) o watchOS (OS 4) o flag `priv+0x31` bit 0 | `0xffffff80021b4943`-`0xffffff80021b4949` | se salta la lógica RSSI y va directo a `setPeerRoutable` (si estado ≠ 1) y retorno 0 |
 | estado 1: seguimiento de RSSI fiable (umbral −60/−55/`ivars+10272` según versión del par) | `0xffffff80021b4981`-`0xffffff80021b49f6` | marca `priv+128`/`priv+136` para la caducidad posterior; sin efecto sobre el 48 |
-| estado 3 (recuperación): RSSI de la cabecera (`hdr+0x2C`) contra `ivars+10276` si canal ≤ 14 o `ivars+10284` si > 14; «NO ROUTE -> ROUTABLE» | `0xffffff80021b4a1f`-`0xffffff80021b4a54` | única condición de canal de todo el camino: elige el umbral, no prohibe canales |
+| estado 3 (recuperación): RSSI de la cabecera (`hdr+0x2C`) contra `ivars+10276` si canal ≤ 14 o `ivars+10284` si > 14 (`getGoodRssiThreshold5G`, −55 por defecto: `initParamsToDefaults` lo escribe con el qword `0xFFFFFFC9FFFFFFD3` en `ivars+0x2828` en `0xffffff80021c7cf3`, y ningún otro acceso con desplazamiento `0x2828` o `0x282C` en las funciones AWDL de IO80211Family lo escribe; lo leen `isPeerRoutable`, `shouldStopAFProcessing` y `determinePeerReachability`); «NO ROUTE -> ROUTABLE» | `0xffffff80021b4a1f`-`0xffffff80021b4a54` | única condición de canal de todo el camino: elige el umbral, no prohibe canales |
 
 ## 5. Subtipo, canal y estado de sync: qué papel tienen de verdad
 
@@ -224,6 +224,3 @@ flag y `0xffffff80021b4a11` camino normal), `monitorPeerRssi` (`0xffffff80021aa4
 - Origen del bit 0 de `ctx+0x3A` (gates el procesado del TLV 32 en `0xffffff80021afe3b` y la
   llamada a `extractVersionTlvForLegacyPeerProcessing` en `0xffffff80021afc2d`): no se trazó su
   escritura.
-- `ivars+10284` (umbral 5 GHz de la recuperación 3→1): quién lo escribe y su valor por defecto no
-  aparecen en `determineAndSetEdgeRssiThreshold` (`0xffffff80021e0f5e` sólo cubre
-  10268/10272/10276).
