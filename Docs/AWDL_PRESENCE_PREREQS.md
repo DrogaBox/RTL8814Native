@@ -102,20 +102,20 @@ de cadenas en `0xffffff800245d450` (0..14, >14 = `"unknown"`):
 
 | Valor | Nombre | Emisor verificado (inmediato en el emisor) |
 |---|---|---|
-| 0 | `Init` | ninguno visto `?` |
-| 1 | `BSSIDChanged` | ninguno visto `?` |
+| 0 | `Init` | ninguno con inmediato `?` |
+| 1 | `BSSIDChanged` | ninguno con inmediato `?` |
 | 2 | `Mdns` | `updateLocalRequests` `0xffffff8002212951` y `0xffffff8002212f97` |
-| 3 | `setSyncEnabled` | ninguno visto; aparece solo como caso especial en la decisión de `interfaceStateChange` (`0xffffff80021d9bc8`) `?` |
+| 3 | `setSyncEnabled` | `setAwdlSyncEnabled` `0xffffff800221b9e6` (llamada en `0xffffff800221b9eb`, rama con `payload+8 != 0`); caso especial en la decisión de `interfaceStateChange` (`0xffffff80021d9bc8`) |
 | 4 | `Debug` | `setAwdlCtl` `0xffffff80021d011f` |
 | 5 | `Interface` | `reportDataPathEvents` `0xffffff80021de7fb` |
 | 6 | `Reset` | `reportDataPathEvents` `0xffffff80021df883`; `exitAwdlSuspendedMode` `0xffffff80021e5f76` |
 | 7 | `Enable` | `doEnable` `0xffffff80021c53d1`; `disableAWDL` `0xffffff80021c7691`; `handleAwdlLLATimer` (llamada final a la celda +440 con 7) |
-| 8 | `Channel Switch Complete` | ninguno visto `?` |
+| 8 | `Channel Switch Complete` | ninguno con inmediato `?` |
 | 9 | `SetInfraChannel` | `IO80211PeerManager::setInfraChannel` `0xffffff8002254b03`; `IO80211VirtualInterface::setInfraChannel` `0xffffff8002330a2c`; `reportDataPathEvents` `0xffffff80021de147` y `0xffffff80021df49a` |
-| 10 | `Master Channel Changed` | ninguno visto `?` |
-| 11 | `Secondary Master Channel Changed` | `monitorCountryCode` `0xffffff800225b3b6`; `reportDataPathEvents` `0xffffff80021de77c` |
-| 12 | `Grace Period expired` | ninguno visto `?` |
-| 13 | `AirPlay Solo Request` | ninguno visto `?` |
+| 10 | `Master Channel Changed` | `setAwdlMasterChannel` `0xffffff800221d5eb` (llamada en `0xffffff800221d5f0`) |
+| 11 | `Secondary Master Channel Changed` | `monitorCountryCode` `0xffffff800225b3b6`; `reportDataPathEvents` `0xffffff80021de77c`; `setAwdlSecondaryMasterChannel` `0xffffff800221d489` |
+| 12 | `Grace Period expired` | ninguno con inmediato `?` |
+| 13 | `AirPlay Solo Request` | `setAwdlSocialTimeSlots` `0xffffff800221bf99` (llamada en `0xffffff800221bf9e`), solo si el byte `payload+4` cambia `ivars+0xA6A4` (store en `0xffffff800221bf8d`) |
 | 14 | `AWDL exiting suspension` | `exitAwdlSuspendedMode` `0xffffff80021e5ff2` |
 
 La máscara `0x4A20` de `updateHTandVHTCapsForRSDB` (`bt` en `0xffffff80021d9ac3`) selecciona las
@@ -320,7 +320,14 @@ de `ivars base+1880` (`0x758`). `removeFlushedPeers` tiene dos llamadores:
   soltarlo.
 - `IO80211PeerManager::removeAllPeers` (`0xffffff80022542e4`, llamada en `0xffffff800225441e`),
   alcanzado desde `IO80211AWDLPeerManager::removeAllPeers` (`0xffffff800222be5f`) y desde tres
-  vtables; el contexto de esos llamadores no está trazado `?`.
+  vtables. `IO80211AWDLPeerManager::removeAllPeers` ocupa la celda +0x280 de
+  `__ZTV22IO80211AWDLPeerManager` y se llama por esa celda desde `failToEnable`
+  (`0xffffff80021c5174`), `disableAWDL` (`0xffffff80021c7359`), `interfaceStateChange`
+  (`0xffffff80021da645`), `setAwdlSyncEnabled` (`0xffffff800221ba76`), `IO80211PeerManager::stop`
+  (`0xffffff80022492de`), `IO80211PeerManager::doDisable` (`0xffffff800224c1cb`) e
+  `IO80211PeerManager::reset` (`0xffffff800224cc08`): son rutas de apagado y reinicio, muchas
+  alcanzables desde un ioctl bajo el command gate. Si alguna tiene el data-path lock tomado en ese
+  momento no está comprobado `?`.
 
 `cleanUpForPeerRemovedFromNDP` (`0xffffff8002214cf2`) no llama a `flushPacketsWaitingForPPP`
 directamente. La implementación de +0xF38 debe ser segura en el workloop, con o sin el data-path
@@ -381,9 +388,9 @@ en el camino de error; no verificado en runtime).
 
 ## 5. Pendiente
 
-- Emisores de las fuentes 0, 1, 3, 8, 10, 12 y 13 de `StateChangedSource` (§1.4).
+- Emisores de las fuentes 0, 1, 8 y 12 de `StateChangedSource` (§1.4): ninguna llamada a la celda +0x1B8 de un peer manager las pasa como inmediato; si existen, el valor llega en registro.
 - Nombres de `ivars+0xA648`, `+0x3FA1`, `+0xA6A4` y `+0xA65C`, que deciden la estrategia en
   `interfaceStateChange` y `monitorAWDLState` (§1.5).
-- Contexto de los llamadores de `removeAllPeers` (§3.2).
+- Cerrojo de cada llamador de `removeAllPeers` (§3.2).
 - Las llamadas a las celdas +0x180 de los objetos en `ivars base+0x530/0x538` dentro de
   `interfaceMonitor` (§3.1) y el significado del bit 5 de `PM+16096` que fija `configure` (§2.1).
