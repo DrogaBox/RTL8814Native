@@ -249,9 +249,16 @@ bool RTL8814Native::startLocked(IOService *provider)
          * re-join. Not only on a takeover: on 4.6g the old didTerminate
          * released the radio first, took_over stayed false and the link was
          * left DISCONNECTED. No-op until a join succeeded in this kext
-         * lifetime, so a cold boot is unaffected. */
-        if (probe_rc == 0)
-                rtl8814native_rejoin_last();
+         * lifetime, so a cold boot is unaffected.
+         * With rtlair=2 the AirLayer keeps en2 across the re-enumeration and
+         * WCL re-joins through it; a join of our own here raced that one and
+         * left it timing out (-3905). */
+        {
+                uint32_t rtlair = 0;
+                PE_parse_boot_argn("rtlair", &rtlair, sizeof(rtlair));
+                if (probe_rc == 0 && rtlair < 2)
+                        rtl8814native_rejoin_last();
+        }
 
         IOLog("RTL8814Native: started - device claimed, radio initialized\n");
         return true;
