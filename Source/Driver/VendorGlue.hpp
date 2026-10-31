@@ -259,6 +259,8 @@ void rtl_sae_join_exit(void);
 void rtl8814native_radio_status(struct rtl_radio_status *st);
 void rtl8814native_radio_mac(uint8_t mac[6]);
 int  rtl8814native_radio_set_mac(const uint8_t mac[6]);
+/* AWDLTx.c: one raw management frame, header included, no FCS */
+int  rtl8814native_radio_tx_80211(const uint8_t *frame, uint32_t len);
 void rtl8814native_get_link_status(struct rtl8814_link_status *out);
 /* Live register access for diagnostics: op 0=MAC read, 1=MAC write, 2=RF read (addr = path<<8 | reg),
  * 3=set driver option (addr = RTL_OPT_*, out = previous value) */

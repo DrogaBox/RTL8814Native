@@ -55,6 +55,16 @@ typedef void (*rtl_radio_rx_fn)(void *ctx, void *mbuf);
 typedef void (*rtl_radio_awdl_rx_fn)(void *ctx, const uint8_t *frame, uint32_t len,
                                      int8_t rssi_dbm, uint8_t channel);
 
+/*
+ * One management frame, 802.11 header and body, no FCS, sent on the current
+ * operating channel at the management rate. The radio sets the sequence
+ * number; group-addressed frames go without retries. The bytes are copied
+ * before the call returns. kIOReturnNotReady while the radio is down,
+ * kIOReturnBusy while TX waits for a channel, kIOReturnNoResources with no
+ * free management buffer. Must not be called from inside a radio hook.
+ */
+#define RTL_RADIO_FN_TX_80211     "rtlRadioTx80211"    /* p1: const uint8_t *frame, p2: uint32_t *len */
+
 /* rtl_radio_status.state */
 #define RTL_RADIO_S_IDLE          0
 #define RTL_RADIO_S_SCAN          1
