@@ -394,8 +394,15 @@ claro (6E, pro-mode, DFS proxy, RSDB, HE).
 - Cerrados: `state+0xD066` (cap 78, en `AWDL_CAP78_CONCURRENCIA.md`), `state+0x103A0` y
   `state+0x102B1` (bits 2/3 de `p[24]`, §`+0xB48`) y `sub+0x6FC` (§`+0xB39`).
 - Si la capa alimenta los canales IOReporter `IfTxPk*`, `IfTxBy*`, `IfRxPkts` e `IfRxByts` del `InterfaceMonitor`
-  que `gatherInfraStats` lee con la cap 163 clara; si no, AWDL ve tráfico infra nulo y el
-  efecto en `monitorInfraTraffic` no se siguió `?`.
+  que `gatherInfraStats` lee con la cap 163 clara. Los únicos escritores del monitor son
+  `IO80211InterfaceMonitor::recordOutputPacket(__mbuf *)` (desde
+  `IO80211VirtualInterface::dequeueTxPackets`), `recordOutputPacket(apple80211_wme_ac,int,int)`
+  y `recordInputPacket(int,int)` (desde los homónimos de `IO80211SkywalkInterface`; el de salida es la ranura
+  virtual 358) y `recordInterfaceTxRxCounts` (desde
+  `IO80211SkywalkInterface::updateInterfaceDataStats`, ranura 453). El código de la capa no
+  llama a ninguno; si la familia lo hace en la ruta infra de la RTL no se siguió (llamadas
+  por vtable) `?`. Si nadie los alimenta, AWDL ve tráfico infra nulo en
+  `monitorInfraTraffic` `?`.
 - Polaridad rama a rama del grupo byte ≠ 0 de `+0xB3F` (30+ sitios listados en §4):
   patrón común verificado, ramas individuales sin seguir `?`.
 - Semántica exacta de `isAirPlaySinkEnabled` (`0xffffff8002207fb4`) leyendo `+0xB3F`:
