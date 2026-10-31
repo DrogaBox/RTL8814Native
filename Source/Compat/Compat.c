@@ -592,6 +592,11 @@ static void rtl_wq_stop(struct rtl_wq *wq)
                                                          struct work_struct,
                                                          entry);
                 list_del(&w->entry);
+                /* A kext-lifetime item (the SAE worker) must be queueable
+                 * again: left marked queued, rtl_schedule_work refused it
+                 * forever and every SAE join after a re-enumeration timed
+                 * out with no authentication sent. */
+                w->queued = 0;
         }
         IOLockWakeup(l, (void *)&wq->wq, false);
         IOLockUnlock(l);
