@@ -1,8 +1,8 @@
 /*
- * RTL8814Native — raw 802.11 management frame sender for the radio ABI
+ * RTL8814Native — raw 802.11 frame sender for the radio ABI
  *
- * Another kext (the AWDL layer) hands a complete management frame: 802.11
- * header and body, no FCS. It goes out on the current operating channel
+ * Another kext (the AWDL layer) hands a complete management frame, or an AWDL
+ * data frame: 802.11 header and body, no FCS. It goes out on the current operating channel
  * through the shared management TX queue, as SAEAuth.c does for its
  * authentication frames. The sequence number is the driver's; everything
  * else is sent as given. Category 127 action frames are not robust, so the
@@ -18,6 +18,8 @@ int rtl8814native_radio_awdl_port(const uint8_t *mac);
 int rtl8814native_radio_set_channel(uint8_t ch);
 extern _adapter *rtl8814native_get_primary_adapter(void);
 
+static const u8 rtl_awdl_bssid[ETH_ALEN] = { 0x00, 0x25, 0x00, 0xFF, 0x94, 0x73 };
+
 int rtl8814native_radio_tx_80211(const uint8_t *frame, uint32_t len)
 {
 	_adapter *padapter = rtl8814native_get_primary_adapter();
@@ -28,8 +30,12 @@ int rtl8814native_radio_tx_80211(const uint8_t *frame, uint32_t len)
 
 	if (!frame || len < WLAN_HDR_A3_LEN || len > MAX_XMIT_EXTBUF_SZ - TXDESC_OFFSET)
 		return -EINVAL;
-	/* management frames only: the header is taken as a 3-address one */
-	if (GetFrameType(frame) != WIFI_MGT_TYPE)
+	/* Management frames, or AWDL data frames: data or QoS data, To/From DS 0
+	 * (3-address header), A3 the AWDL BSSID. The MGNT descriptor does not look
+	 * at the frame type, and the PMF hook leaves non-management frames alone. */
+	if (GetFrameType(frame) != WIFI_MGT_TYPE &&
+	    (GetFrameType(frame) != WIFI_DATA_TYPE || (frame[1] & 0x03) ||
+	     _rtw_memcmp(frame + 16, rtl_awdl_bssid, ETH_ALEN) != _TRUE))
 		return -EINVAL;
 	if (!padapter || !padapter->bup || RTW_CANNOT_TX(padapter))
 		return -ENODEV;
@@ -71,8 +77,6 @@ int rtl8814native_radio_tx_80211(const uint8_t *frame, uint32_t len)
  * writes go over USB: process context only.
  */
 u8 rtl8814native_awdl_port1;
-
-static const u8 rtl_awdl_bssid[ETH_ALEN] = { 0x00, 0x25, 0x00, 0xFF, 0x94, 0x73 };
 
 int rtl8814native_radio_awdl_port(const uint8_t *mac)
 {

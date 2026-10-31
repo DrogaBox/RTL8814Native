@@ -56,9 +56,11 @@ typedef void (*rtl_radio_awdl_rx_fn)(void *ctx, const uint8_t *frame, uint32_t l
                                      int8_t rssi_dbm, uint8_t channel);
 
 /*
- * One management frame, 802.11 header and body, no FCS, sent on the current
- * operating channel at the management rate. The radio sets the sequence
- * number; group-addressed frames go without retries. The bytes are copied
+ * One management frame, or one AWDL data frame (data or QoS data, To/From DS
+ * 0, A3 = 00:25:00:FF:94:73), 802.11 header and body, no FCS, sent on the
+ * current operating channel at the management rate. The radio sets the
+ * sequence number; group-addressed frames go without retries. Builds before
+ * AWDL data TX answer kIOReturnBadArgument for a data frame. The bytes are copied
  * before the call returns. kIOReturnNotReady while the radio is down,
  * kIOReturnBusy while TX waits for a channel, kIOReturnNoResources with no
  * free management buffer. Must not be called from inside a radio hook.
