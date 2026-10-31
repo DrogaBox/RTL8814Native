@@ -460,8 +460,9 @@ private:
 	uint8_t _seq[16];           /* channel per slot from the 129 */
 	uint32_t _seqFlags[16];
 	bool _seqValid;
-	bool _awOpen;               /* between events 41 and 43 */
-	bool _offSocialLogged;
+	uint8_t _seqLogs;           /* sequence changes logged so far */
+	bool _awOpen;              /* between events 41 and 43 */
+	uint8_t _offSocialCh;       /* last non-social channel logged */
 	uint8_t _parkCh;            /* preferred social channel while not associated
 	                             * (boot-arg rtlawdl_ch, 149 by default), used until
 	                             * a 129 names another; 0 = no parking */

@@ -1002,19 +1002,27 @@ IOReturn RTLAwdInterface::setAWDL_SYNCHRONIZATION_CHANNEL_SEQUENCE(
 	if (!p || !_txLock)
 		return kIOReturnSuccess;
 	uint8_t n = p[5] < AWDL_SLOTS ? p[5] : AWDL_SLOTS;
+	uint8_t s[AWDL_SLOTS];
 	IOLockLock(_txLock);
-	bool first = !_seqValid;
+	bool changed = !_seqValid;
 	for (int i = 0; i < AWDL_SLOTS; i++) {
 		const uint8_t *e = p + 0x0c + 12 * i;
-		_seq[i] = i < n ? (uint8_t)*(const uint32_t *)(e + 4) : 0;
+		s[i] = i < n ? (uint8_t)*(const uint32_t *)(e + 4) : 0;
+		changed |= s[i] != _seq[i];
+		_seq[i] = s[i];
 		_seqFlags[i] = i < n ? *(const uint32_t *)(e + 8) : 0;
 	}
 	_seqValid = n != 0;
+	/* Every change, not only the first: associating moves the infra channel
+	 * into the master sequence (Docs/AWDL_CHANNEL_STRATEGY.md §6). */
+	bool log = changed && _seqLogs < 32;
+	if (log)
+		_seqLogs++;
 	IOLockUnlock(_txLock);
-	if (first)
+	if (log)
 		LOG("awdl: channel sequence %u slots: %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u", n,
-		    _seq[0], _seq[1], _seq[2], _seq[3], _seq[4], _seq[5], _seq[6], _seq[7], _seq[8],
-		    _seq[9], _seq[10], _seq[11], _seq[12], _seq[13], _seq[14], _seq[15]);
+		    s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7], s[8], s[9], s[10], s[11], s[12],
+		    s[13], s[14], s[15]);
 	return kIOReturnSuccess;
 }
 
@@ -1123,9 +1131,10 @@ void RTLAwdInterface::txTick()
 			ch = parkRadio(st.idle_channel, awdlNowUs());
 	}
 	if (ch && !awdlSocial(ch)) {
-		if (!_offSocialLogged) {
-			_offSocialLogged = true;
-			LOG("awdl: radio on channel %u, not a social channel: no AWDL TX or windows", ch);
+		if (ch != _offSocialCh) {
+			_offSocialCh = ch;
+			LOG("awdl: radio on channel %u (bw %u center %u), not a social channel: no AWDL TX "
+			    "or windows", ch, st.bss_bw, st.center);
 		}
 		ch = 0;
 	}
