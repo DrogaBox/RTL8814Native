@@ -19,6 +19,8 @@ int rtl8814native_radio_awdl_port(const uint8_t *mac);
 int rtl8814native_radio_set_channel(uint8_t ch);
 int rtl8814native_radio_awdl_offch(uint8_t ch);
 extern _adapter *rtl8814native_get_primary_adapter(void);
+extern int rtl8814native_tx_urbs_inflight(void);
+extern u64 rtl8814native_uptime_us(void);
 
 static const u8 rtl_awdl_bssid[ETH_ALEN] = { 0x00, 0x25, 0x00, 0xFF, 0x94, 0x73 };
 
@@ -148,6 +150,33 @@ int rtl8814native_radio_set_channel(uint8_t ch)
 }
 
 /*
+ * Lets the PM null leave on the BSS channel before the switch: its bulk OUT
+ * URB (and any data URB before it) completes, so the frame is in the chip,
+ * then the management queue drains (REG_TXPKT_EMPTY bit 8). Up to 2 ms, the
+ * fixed wait this replaces, which made the way out about 2 ms longer than
+ * the way back (Docs/AWDL_CAP29_DOBLE_BANDA_RIESGOS.md §4).
+ */
+#define RTL_AWDL_NULL_WAIT_US 2000
+
+static void rtl_awdl_wait_null_out(_adapter *padapter)
+{
+	u64 end = rtl8814native_uptime_us() + RTL_AWDL_NULL_WAIT_US;
+	u8 empty = _FALSE;
+
+	while (rtl8814native_tx_urbs_inflight() > 0) {
+		if (rtl8814native_uptime_us() >= end)
+			return;
+		rtw_usleep_os(50);
+	}
+	for (;;) {
+		rtw_hal_get_hwreg(padapter, HW_VAR_CHK_MGQ_CPU_EMPTY, &empty);
+		if (empty || RTW_CANNOT_RUN(padapter) || rtl8814native_uptime_us() >= end)
+			return;
+		rtw_usleep_os(50);
+	}
+}
+
+/*
  * While associated, takes the radio to ch for an AWDL slot, or back to the
  * BSS channel with ch 0 (Docs/AWDL_MCC_TIEMPO_COMPARTIDO.md §7.1): a null
  * frame with PM set tells the AP to hold our traffic, the AP's MAC ID sleeps
@@ -201,8 +230,7 @@ int rtl8814native_radio_awdl_offch(uint8_t ch)
 		rfctl->offch_state = OFFCHS_AWDL;
 		rtw_hal_macid_sleep_all_used(padapter);
 		issue_nulldata(padapter, NULL, 1, 0, 0);
-		/* let the null leave on the BSS channel before the switch */
-		rtw_msleep_os(2);
+		rtl_awdl_wait_null_out(padapter);
 	}
 	bw = pmlmeext->cur_bwmode;
 	offset = HAL_PRIME_CHNL_OFFSET_DONT_CARE;

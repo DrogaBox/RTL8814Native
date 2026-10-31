@@ -75,6 +75,19 @@ void usb_read_port_cancel(struct intf_hdl *pintfhdl)
 /* Bulk OUT URBs submitted and not yet completed (usb_write_port_cancel waits on it) */
 static volatile SInt32 g_tx_urbs_inflight;
 
+int rtl8814native_tx_urbs_inflight(void)
+{
+	return (int)g_tx_urbs_inflight;
+}
+
+u64 rtl8814native_uptime_us(void)
+{
+	uint64_t abs, ns;
+	clock_get_uptime(&abs);
+	absolutetime_to_nanoseconds(abs, &ns);
+	return ns / 1000;
+}
+
 void usb_write_port_cancel(struct intf_hdl *pintfhdl)
 {
 	if (!pintfhdl || !pintfhdl->padapter)
