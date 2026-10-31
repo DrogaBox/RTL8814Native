@@ -67,6 +67,9 @@ void rtl_vif_bpfTapInput(void *self, mbuf_t m, uint32_t dlt, void *hdr, size_t h
 	__asm("__ZN23IO80211VirtualInterface11bpfTapInputEP6__mbufjPvm");
 /* RX data packets, as the STA path builds them (Source/AirLayer/RTLAirLayer.cpp
  * rxFrames; Docs/AWDL_RX_DATA_TO_SKYWALK.md §4, §7). */
+void *rtl_sky_getPeerManager(void *iface) __asm("__ZN23IO80211SkywalkInterface14getPeerManagerEv");
+void rtl_pm_preQueueQuietMode(void *pm, const void *eth)
+	__asm("__ZN22IO80211AWDLPeerManager28preQueuePacketCheckQuietModeEP12ether_header");
 uint64_t rtl_pkt_base(void *pkt) __asm("__ZNK15IOSkywalkPacket21getDataVirtualAddressEv");
 uint16_t rtl_pkt_off(void *pkt) __asm("__ZNK15IOSkywalkPacket13getDataOffsetEv");
 uint32_t rtl_pkt_len(void *pkt) __asm("__ZNK15IOSkywalkPacket13getDataLengthEv");
@@ -113,8 +116,8 @@ struct rtl_awdl_pool_options {
 #define AWDL_REGINFO_MAC        0x108   /* 6 bytes, the MAC of the request   */
 
 #define AWDL_TX_RING            32      /* AWDL data frames waiting for a window */
-#define AWDL_TX_PER_TICK        16      /* data frames sent per AW tick, at most */
-#define AWDL_TX_AGE_US          500000  /* a queued data frame older than this is dropped */
+#define AWDL_TX_PER_TICK        4       /* data frames per AW tick: ~8 ms of air at 12 Mb/s */
+#define AWDL_TX_AGE_US          1200000 /* past one 16-slot period a queued data frame is dropped */
 #define AWDL_IFACE_ID           2       /* Broadcom: interface id 2 for AWDL */
 #define AWDL_ROLE               6       /* IO80211VirtualInterfaceRole AirLink */
 #define AWDL_LINK_DOWN          1       /* linkState() values the PeerManager tests */
@@ -152,6 +155,8 @@ bool RTLAwdInterface::initWithController(RTLAirController *ctrl, const uint8_t m
 	/* Same radio the controller drives (RTLAirController::start). */
 	IOService *nub = ctrl->getProvider();
 	_radioSvc = nub ? nub->getProvider() : nullptr;
+	if (_radioSvc)
+		_radioSvc->retain();
 	_symTx80211 = OSSymbol::withCString(RTL_RADIO_FN_TX_80211);
 	_txLock = IOLockAlloc();
 	_txTick = thread_call_allocate(&RTLAwdInterface::txTickEntry, this);
@@ -319,8 +324,16 @@ IOReturn RTLAwdInterface::txData(OSObject *owner, void *, void *const *pkts,
 		void *pkt = pkts[i];
 		if (!rtl_pkt_bufcount(pkt))
 			continue;
-		me->queueData((const uint8_t *)(uintptr_t)(rtl_pkt_base(pkt) + rtl_pkt_off(pkt)),
-		              rtl_pkt_len(pkt));
+		const uint8_t *eth = (const uint8_t *)(uintptr_t)(rtl_pkt_base(pkt) + rtl_pkt_off(pkt));
+		uint32_t len = rtl_pkt_len(pkt);
+		/* As Broadcom's role 6 dequeue through logSkywalkTxReqPacket: a
+		 * queued packet takes the manager out of quiet mode (and unicast
+		 * into data mode 3), Docs/AWDL_TX_HOOKS_POR_PAQUETE.md §2. Same
+		 * work-queue context as Broadcom's call. */
+		void *pm = me->_txOn && len >= 14 ? rtl_sky_getPeerManager(me) : nullptr;
+		if (pm)
+			rtl_pm_preQueueQuietMode(pm, eth);
+		me->queueData(eth, len);
 	}
 	/* enqueuePackets requires count < queue capacity (128). */
 	for (uint32_t done = 0; done < count; done += 64) {
@@ -375,6 +388,7 @@ void RTLAwdInterface::free()
 		_txRing = nullptr;
 	}
 	OSSafeReleaseNULL(_symTx80211);
+	OSSafeReleaseNULL(_radioSvc);
 	OSSafeReleaseNULL(*(OSObject **)&_txSubQ);
 	OSSafeReleaseNULL(*(OSObject **)&_txCompQ);
 	OSSafeReleaseNULL(*(OSObject **)&_rxCompQ);
@@ -897,13 +911,15 @@ void RTLAwdInterface::setRadioTx(bool on)
 	if (on) {
 		IOReturn r = _ctrl->radio(RTL_RADIO_FN_AWDL_PORT, _mac);
 		if (r != kIOReturnSuccess)
-			LOG("awdl: port 1 refused 0x%x", r);
+			LOG("awdl: port 1 refused 0x%x: no unicast data TX", r);
+		_port1On = r == kIOReturnSuccess;
 		thread_call_enter(_txTick);
 	} else {
 		/* The tick rearms itself only while _txOn: after this nothing is
 		 * pending and nothing runs. */
 		thread_call_cancel_wait(_txTick);
 		_ctrl->radio(RTL_RADIO_FN_AWDL_PORT, nullptr);
+		_port1On = false;
 	}
 	if (!on)
 		flushRadioTx();
@@ -1002,9 +1018,11 @@ void RTLAwdInterface::txTick()
 		*(uint32_t *)(ev41 + 0x1c) = ch;
 	}
 	uint64_t next = _clkBaseUs + (awIdx + 1) * AWDL_AW_TU * AWDL_TU_US;
-	/* Data goes only inside a served slot's window: a peer listens on this
-	 * channel only in the slots it shares with us. */
-	bool dataWindow = ch && served && _awOpen && _txRingCount;
+	/* Data goes only inside a served slot's window, a peer listens on this
+	 * channel only in the slots it shares with us, and not in its last AW,
+	 * so the MGNT queue does not spill past the slot and delay the next
+	 * sync frames. */
+	bool dataWindow = ch && served && _awOpen && _txRingCount && aw % AWDL_PM != AWDL_PM - 1;
 	IOLockUnlock(_txLock);
 
 	/* Events 43 then 41, outside the lock: postMessage takes the controller's
@@ -1132,7 +1150,7 @@ void RTLAwdInterface::queueData(const uint8_t *eth, uint32_t len)
 {
 	static const uint8_t kSnap[8] = { 0xAA, 0xAA, 0x03, 0x00, 0x17, 0xF2, 0x08, 0x00 };
 	if (len < 14 || len - 14 > sizeof(_txRing->frame) - AWDL_WLAN_HDR - 16 ||
-	    memcmp(eth + 6, _mac, 6)) {
+	    memcmp(eth + 6, _mac, 6) || eth[12] < 0x06) {
 		_txDataDropBad++;
 		return;
 	}
@@ -1140,6 +1158,14 @@ void RTLAwdInterface::queueData(const uint8_t *eth, uint32_t len)
 	IOLockLock(_txLock);
 	if (!_txOn || _txDataOff || !_txRing) {
 		IOLockUnlock(_txLock);
+		return;
+	}
+	/* Unicast needs port 1: it acknowledges the peer's frames, and the MAC
+	 * is assumed (not yet measured) to match the ACKs to ours against it
+	 * (Docs/AWDL_RTL8814_RX_ACK.md). */
+	if (!(eth[0] & 1) && !_port1On) {
+		IOLockUnlock(_txLock);
+		_txDataDropBad++;
 		return;
 	}
 	/* Sequence number of this destination; the least recently used entry
@@ -1154,7 +1180,8 @@ void RTLAwdInterface::queueData(const uint8_t *eth, uint32_t len)
 	if (!e) {
 		e = lru;
 		memcpy(e->da, eth, 6);
-		e->seq = 0;
+		/* not 0: a destination evicted and seen again does not restart */
+		e->seq = (uint16_t)(now >> 4);
 	}
 	uint16_t seq = e->seq & 0xFFF;
 	e->seq = (uint16_t)(seq + 1);

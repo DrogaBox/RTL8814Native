@@ -475,6 +475,7 @@ private:
 	uint32_t _txRingHead, _txRingCount;
 	AwdlTxSeq _txSeqTab[16];
 	bool _txDataOff;            /* the radio refused a data frame (older driver) */
+	bool _port1On;              /* rtlRadioAwdlPort took awdl0's MAC */
 	uint64_t _txDataQueued, _txDataSent, _txDataDropFull, _txDataDropOld, _txDataDropBad,
 	         _txDataFail;
 
