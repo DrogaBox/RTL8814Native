@@ -312,7 +312,10 @@ en el camino de error; no verificado en runtime).
 
 1. `LLAValid` exige una dirección fe80::/10 en el `ifnet` de `awdl0` y sondeo activo: sin IPv6 en
    la interfaz, `handleAwdlLLATimer` reintenta cada 500 ms y `interfaceStateChange` rearma el timer
-   en cada invocación con servicios válidos; `setPeerRoutable` no publicará presencia.
+   en cada invocación con servicios válidos. En el kernel la falta de LLA no bloquea al par:
+   `setPeerRoutable` escribe `priv+120 = 1` antes de mirar `LLAValid`/`AWDLOn`
+   (`0xffffff80021aaf2d`) y esos dos bits solo eligen entre la log 4050 «Cannot post peer presence»
+   y la log «postPeerPresence»; el bloqueo real es que AWDL no se activa (punto 2).
 2. La primera activación de `AWDLOn` bit 1 pasa por `interfaceStateChange → enableAWDL`
    (después la reponen `setAwdlSyncState` y `exitQuietMode`); las fuentes del driver
    (`reportDataPathEvents`, 5/6/9/11) son caminos válidos si hay servicios AWDL válidos y
