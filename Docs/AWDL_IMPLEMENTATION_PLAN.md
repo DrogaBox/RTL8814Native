@@ -252,10 +252,12 @@ y 43 (cierre, dispara la elección) por `reportDataPathEvents` (celda `+0x298`).
   ventanas y la tabla de la secuencia del 129 almacenada (paso 4): canal por franja de
   `Source/rtl8814au` — no; de la entrada `+12·i+4` del 129 `?` (fórmula de índice del manager:
   `min(15, (AwNumber % ((step+1)·n)) / (step+1))`, `AWDL_PEERMANAGER_DRIVER_ABI.md` §2.2).
-- Emisión: capturar el manager sobrescribiendo `createPeerManager` (slot `0xB08`, declarado en
-  `AWDLInterface.h:110`, hoy heredado) y guardando el resultado `?` (el enlace de la factoría
-  heredada es el punto abierto 15 del índice; alternativa sin override: `getP2PSkywalkPeerMgr`,
-  slot `0xCC0` de :142). Los eventos salen por `(*(pm->vptr + 0x298))(pm, 41, data, 36)` o por
+- Emisión: el manager lo crea la factoría heredada `createPeerManager` (slot `0xB08`) desde
+  `IO80211SkywalkInterface::start`, que lo publica en `*(ivars+0x120)+0x28` de la propia `awdl0`.
+  La capa lo lee después del `start` con `IO80211SkywalkInterface::getPeerManager` (exportado en
+  14, 15 y 26) sin sobrescribir nada; también puede sobrescribir `0xB08`, llamar a la base y guardar
+  el retorno. `getP2PSkywalkPeerMgr` (`0xCC0`) devuelve siempre 0 y no sirve
+  (`AWDL_PEERMANAGER_CREATION.md` §5 y §7). Los eventos salen por `(*(pm->vptr + 0x298))(pm, 41, data, 36)` o por
   `postMessage` (slot `0xB18`, :111) — ambas vías listadas en `AWDL_ETAPAS_2_A_4.md` §2.4.
 - Temporización: `thread_call` con deadline (patrón `_poll`/`_rxDrain`,
   `RTLAirLayer.cpp:1486-1487`). Franjas servidas = entradas del 129 cuyo canal coincide con el
@@ -544,7 +546,7 @@ de `AWDL_ESTADO_Y_BLOQUEO.md` §4, que este plan no sustituye.
 | 1 | Firma y nombre de las nuevas funciones de plataforma (`AWDL_PORT`, `AWDL_HOOK`, `AWDL_TX`) | Diseño de `RTLRadioABI.h` antes de P1/P2/P6 |
 | 2 | Vía de programación del puerto 1 y efecto del tipo ad-hoc sobre beacons/TSF | Acotado en `AWDL_RTL8814_RX_ACK.md` §5: escribir `MSR`/`REG_MACID1`/`REG_BSSID1` sin `hw_var_set_opmode` y dejar `REG_BCN_CTRL_1` en el `0x10` medido (beacon apagado, TSF sin actualizar); falta la captura en monitor de P1 |
 | 3 | ~~Campo exacto de RSSI/tasa/mactime que la radio entrega con el frame crudo~~ | Cerrado en el paso 2: `recv_signal_power`, `data_rate`, TSFL del descriptor sin leer aún; queda abierto el valor para tramas sin informe de PHY |
-| 4 | Captura del puntero del manager (`createPeerManager` heredado frente a `getP2PSkywalkPeerMgr`) | P5; punto 15 de `AWDL_INDICE.md` §8.2 |
+| 4 | ~~Captura del puntero del manager~~ | Cerrado por `AWDL_PEERMANAGER_CREATION.md`: `getPeerManager` tras el `start`, o override de `0xB08` que llama a la base |
 | 5 | Cuerpo exacto del TLV 5 y su mapeo con el 155 | P6; `AWDL_PSF_MIF_EMISSION.md` §10 |
 | 6 | Tasa de PSF/MIF (12 Mbps de referencia frente a 6 Mbit/s OFDM en 2,4 GHz) y de datos (legacy 24 frente a HT MCS7) | Medición en P6/P7 |
 | 7 | Instalación del `output` propio (slot `0x8E0` frente a `0x8E8`) | P7; `AWDL_STAGE1_OUTPUT_HANDLER_LINK.md` |
