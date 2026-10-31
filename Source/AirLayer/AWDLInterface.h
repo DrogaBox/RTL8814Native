@@ -455,6 +455,8 @@ private:
 	                             * (boot-arg rtlawdl_ch, 149 by default), used until
 	                             * a 129 names another; 0 = no parking */
 	uint64_t _parkReqUs;        /* last rtlRadioSetChannel request */
+	uint8_t _clkMaster[6];      /* master the AW clock follows (alignClock) */
+	uint64_t _clkMasterUs;      /* last frame from it, 0 = none */
 	uint64_t _txPsf, _txMif, _txFail, _clkAligned, _ev41, _ev43;
 
 	void setRadioTx(bool on);

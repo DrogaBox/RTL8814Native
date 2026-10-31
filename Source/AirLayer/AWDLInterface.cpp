@@ -1160,7 +1160,8 @@ size_t RTLAwdInterface::buildAf(uint8_t *out, size_t cap, uint8_t subtype, uint8
 	putLe16(p + 1, 21);
 	v = p + 3;
 	if (e2) {
-		v[3] = (uint8_t)*(const uint32_t *)(e2 + 3 + 16);       /* distance */
+		uint32_t dist = *(const uint32_t *)(e2 + 3 + 16);
+		v[3] = dist > 255 ? 255 : (uint8_t)dist;                 /* distance, saturated as owly */
 		memcpy(v + 5, e2 + 3, 6);                               /* top master */
 		memcpy(v + 11, e2 + 3 + 20, 4);                         /* top master metric */
 		memcpy(v + 15, e2 + 3 + 24, 4);                         /* own metric */
@@ -1183,9 +1184,14 @@ size_t RTLAwdInterface::buildAf(uint8_t *out, size_t cap, uint8_t subtype, uint8
 
 /*
  * Takes the slot boundary and AW count of a node that announces itself as
- * master in its TLV 4 (master address == source). m holds the RX prefix, the
- * 802.11 header and the action frame.
+ * master in its TLV 4 (master address == source). Only one master is
+ * followed: the sync master of the manager's election v2 in the template when
+ * it names another node, else the first one taken while it is heard within
+ * AWDL_CLK_HOLD_US, so two self-masters in range do not make the clock jump
+ * between their schedules. m holds the RX prefix, the 802.11 header and the
+ * action frame.
  */
+#define AWDL_CLK_HOLD_US      2000000
 void RTLAwdInterface::alignClock(mbuf_t m, const uint8_t *src)
 {
 	uint8_t b[16 + 3 + AWDL_SYNC_LEN + 64];
@@ -1205,6 +1211,15 @@ void RTLAwdInterface::alignClock(mbuf_t m, const uint8_t *src)
 		return;
 	uint64_t now = awdlNowUs();
 	IOLockLock(_txLock);
+	const uint8_t *e2 = findTlv(_tpl, _tplLen, AWDL_TLV_ELECTION_V2, 28);
+	const uint8_t *elected = e2 && memcmp(e2 + 3 + 6, _mac, 6) ? e2 + 3 + 6 : nullptr;
+	bool held = _clkMasterUs && now - _clkMasterUs < AWDL_CLK_HOLD_US;
+	if (elected ? memcmp(src, elected, 6) != 0 : held && memcmp(src, _clkMaster, 6) != 0) {
+		IOLockUnlock(_txLock);
+		return;
+	}
+	memcpy(_clkMaster, src, 6);
+	_clkMasterUs = now;
 	/* The slot now running started SLOT_TU - toSlot TU ago; aw is the AW
 	 * now, so that slot began (SLOT_TU - toSlot) / AW_TU AWs earlier. */
 	uint32_t into = AWDL_SLOT_TU - toSlot;
