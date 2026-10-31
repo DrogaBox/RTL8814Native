@@ -265,7 +265,7 @@ constantes de log). Broadcom lo llena con flags 50/32 y el informe del firmware
 
 | Lector | VA | Test | Efecto |
 |---|---|---|---|
-| `IO80211AWDLPeerManager::configure` | `0xffffff80021c6373` | `& 0x40` (cap 134) y boot-arg `enable_awdl_leaf` | Con ambos: `"Device prefers leaf-only operation"` y `state+0x102F0 = 1`. Requiere además el boot-arg; con la capa clara no hace nada. |
+| `IO80211AWDLPeerManager::configure` | `0xffffff80021c6373` | `& 0x40` (cap 134) y la variable de `enable_awdl_leaf` | Con ambos: `"Device prefers leaf-only operation"` y `state+0x102B0 = 1` (modo Leaf; sin ellos se escribe 0, `0xffffff80021c63be`). La variable vale 1 por defecto (`0xffffff80021c631c`) y el boot-arg sólo puede apagarla, así que basta el bit. Con la capa clara: `+0x102B0 = 0`. |
 
 ### `+0xB45` (p[21], capacidades 136–143) — RTL `0x00` — el byte «HE»
 
@@ -315,7 +315,7 @@ lo deja a 0 y es lo honesto: la 8814AU no es 802.11ax.
 
 | Lector | VA | Test | Efecto |
 |---|---|---|---|
-| `IO80211AWDLPeerManager::configure` | `0xffffff80021c63c4`, `0xffffff80021c63d6`, `0xffffff80021c63e8` | bits 1/2/3 (caps 161/162/163) | Bit 1 limpia `state+0x401A` (el flag del DFS proxy de cap 67); bit 2 pone `state+0x103A0 = 1` (`0xffffff80021c63e1`; sin el bit no se escribe y queda el 0 de `initParamsToDefaults`, `0xffffff80021c83ac`); bit 3 escribe `state+0x102B1` = 1 o 0 (`0xffffff80021c63fc` / `0xffffff80021c63f3`). Antes de los tres tests, `state+0x102B0 = 1` incondicional (`0xffffff80021c63be`). Lectores en la tabla siguiente. |
+| `IO80211AWDLPeerManager::configure` | `0xffffff80021c63c4`, `0xffffff80021c63d6`, `0xffffff80021c63e8` | bits 1/2/3 (caps 161/162/163) | Bit 1 limpia `state+0x401A` (el flag del DFS proxy de cap 67); bit 2 pone `state+0x103A0 = 1` (`0xffffff80021c63e1`; sin el bit no se escribe y queda el 0 de `initParamsToDefaults`, `0xffffff80021c83ac`); bit 3 escribe `state+0x102B1` = 1 o 0 (`0xffffff80021c63fc` / `0xffffff80021c63f3`). Antes de los tres tests, `configure` escribe el flag Leaf en `state+0x102B0` (§`+0xB44`, `0xffffff80021c63be`). Lectores en la tabla siguiente. |
 
 Lectores de las celdas que fija `p[24]` (barrido de operandos `[reg+0x103A0]` y
 `[reg+0x102B1]` en todo el kernel collection; no hay accesos a `+0x102F1`, que era una
@@ -329,7 +329,7 @@ lectura errónea de `+0x102B1`):
 | `state+0x103A0` | `monitorAWDLState` | `0xffffff80021eda2e` | A 1, con `+0x103A1` puesto, mide el tiempo desde la asociación para roaming (`"Time since infra assoc for roam"`). | A 0: rama saltada. |
 | `state+0x102B1` (cap 163) | `gatherInfraStats` (llamado desde `monitorInfraTraffic`) | `0xffffff80021efdfc`, `0xffffff80021effc7`, `0xffffff80021f0121` | Fuente de los contadores de tráfico infra: a 1, un objeto que devuelve el controlador por su ranura vtable `+3200` (Broadcom); a 0, los canales IOReporter del `IO80211InterfaceMonitor` del controlador (`IfTxPkBe`, `IfTxPkBk`, `IfTxPkVo`, `IfTxPkVi`, …). | A 0: lee el `InterfaceMonitor`. Si la capa no alimenta esos canales, AWDL ve el tráfico infra a 0 `?`. |
 
-`state+0x102B0` (lo pone `configure` siempre) lo leen `setElectionMetricsToDefault`,
+`state+0x102B0` (modo Leaf, §`+0xB44`) lo leen `setElectionMetricsToDefault`,
 `setAwdlElectionMetric`, `setElectionMetricForAirplaySink` y
 `setElectionMetricForNonAirplaySink`; no depende de `p[24]`.
 | `IO80211AWDLPeerManager::isProMode5Enabled` (`0xffffff8002236d76`) | `0xffffff8002236d9e` | `& 0x10` (cap 164) | Habilita el pro-mode 5. Broadcom lo pone junto a `p[15]` bit 7 (flag 93). Inofensivo claro. |
