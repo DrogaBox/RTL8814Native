@@ -910,8 +910,21 @@ IOReturn RTLAwdInterface::setAWDL_SYNC_FRAME_TEMPLATE(apple80211_awdl_sync_frame
 		_tplLen = len;
 		IOLockUnlock(_txLock);
 	}
-	if (first)
+	if (first) {
 		LOG("awdl: sync frame template %u bytes", len);
+		/* Once, in hex, to set against the TLVs of real PSFs. */
+		static const char hex[] = "0123456789abcdef";
+		char line[2 * 64 + 1];
+		for (uint32_t off = 0; off < len; off += 64) {
+			uint32_t n = len - off < 64 ? len - off : 64;
+			for (uint32_t i = 0; i < n; i++) {
+				line[2 * i] = hex[tpl[off + i] >> 4];
+				line[2 * i + 1] = hex[tpl[off + i] & 0xF];
+			}
+			line[2 * n] = '\0';
+			LOG("awdl: template +%u %s", off, line);
+		}
+	}
 	return kIOReturnSuccess;
 }
 
@@ -1397,7 +1410,10 @@ size_t RTLAwdInterface::buildAf(uint8_t *out, size_t cap, uint8_t subtype, uint8
 	uint64_t tu = (nowUs - _clkBaseUs) / AWDL_TU_US;
 	uint16_t aw = (uint16_t)(_clkBaseAw + tu / AWDL_AW_TU);
 	uint16_t toSlot = (uint16_t)(AWDL_SLOT_TU - tu % AWDL_SLOT_TU);
-	uint16_t awLeft = (uint16_t)(AWDL_AW_TU - tu % AWDL_AW_TU);
+	/* What is left of the slot's window, its first AW; 0 in the other three,
+	 * as owly (tlv.rs) and the iOS 26 PSFs send it. */
+	uint16_t inSlot = (uint16_t)(tu % AWDL_SLOT_TU);
+	uint16_t awLeft = inSlot < AWDL_AW_TU ? (uint16_t)(AWDL_AW_TU - inSlot) : 0;
 
 	/* Election v2 of the template: top master, distance and metrics. */
 	const uint8_t *e2 = findTlv(_tpl, tplLen, AWDL_TLV_ELECTION_V2, 28);
