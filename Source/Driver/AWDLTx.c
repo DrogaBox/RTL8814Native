@@ -14,6 +14,7 @@
 #include <hal_data.h>
 
 int rtl8814native_radio_tx_80211(const uint8_t *frame, uint32_t len);
+int rtl8814native_radio_awdl_port(const uint8_t *mac);
 extern _adapter *rtl8814native_get_primary_adapter(void);
 
 int rtl8814native_radio_tx_80211(const uint8_t *frame, uint32_t len)
@@ -55,5 +56,46 @@ int rtl8814native_radio_tx_80211(const uint8_t *frame, uint32_t len)
 	pattrib->last_txcmdsz = len;
 
 	dump_mgntframe(padapter, pmgntframe);
+	return 0;
+}
+
+/*
+ * Port 1 for awdl0 (Docs/AWDL_RTL8814_RX_ACK.md §4, Docs/AWDL_RTL8814_RAW_TX_PORT1.md
+ * §2): its MAC, the AWDL BSSID and the ad-hoc network type, so the MAC
+ * acknowledges unicast frames addressed to awdl0, as the IBSS cell does for
+ * owly. With CONFIG_CONCURRENT_MODE off nothing else writes these registers.
+ * REG_BCN_CTRL_1 stays as it is (0x10, beacon function off). While the port
+ * is on, rtw_hal_rcr_set_chk_bssid keeps RCR_CBSSID_DATA clear, as it does
+ * for AP and mesh, so AWDL data frames reach validate_recv_frame. Register
+ * writes go over USB: process context only.
+ */
+u8 rtl8814native_awdl_port1;
+
+static const u8 rtl_awdl_bssid[ETH_ALEN] = { 0x00, 0x25, 0x00, 0xFF, 0x94, 0x73 };
+
+int rtl8814native_radio_awdl_port(const uint8_t *mac)
+{
+	_adapter *padapter = rtl8814native_get_primary_adapter();
+	u8 val8;
+	int i;
+
+	if (!padapter || !padapter->bup || RTW_CANNOT_RUN(padapter))
+		return -ENODEV;
+
+	if (mac) {
+		for (i = 0; i < ETH_ALEN; i++) {
+			rtw_write8(padapter, REG_MACID1 + i, mac[i]);
+			rtw_write8(padapter, REG_BSSID1 + i, rtl_awdl_bssid[i]);
+		}
+		/* REG_CR bits 19:18, port 1 network type (rtw_hal_set_msr, HW_PORT1) */
+		val8 = rtw_read8(padapter, MSR) & 0x03;
+		rtw_write8(padapter, MSR, val8 | (_HW_STATE_ADHOC_ << 2));
+		rtl8814native_awdl_port1 = 1;
+	} else {
+		val8 = rtw_read8(padapter, MSR) & 0x03;
+		rtw_write8(padapter, MSR, val8 | (_HW_STATE_NOLINK_ << 2));
+		rtl8814native_awdl_port1 = 0;
+	}
+	rtw_hal_rcr_set_chk_bssid(padapter, MLME_ACTION_NONE);
 	return 0;
 }

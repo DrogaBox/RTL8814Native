@@ -65,6 +65,14 @@ typedef void (*rtl_radio_awdl_rx_fn)(void *ctx, const uint8_t *frame, uint32_t l
  */
 #define RTL_RADIO_FN_TX_80211     "rtlRadioTx80211"    /* p1: const uint8_t *frame, p2: uint32_t *len */
 
+/*
+ * Hardware port 1 in ad-hoc mode on the AWDL BSSID with the given MAC, so
+ * unicast frames to that address get a hardware ACK; data frames of other
+ * BSSIDs are then accepted while it is on. NULL turns the port off. Writes
+ * registers over USB: not from inside a radio hook.
+ */
+#define RTL_RADIO_FN_AWDL_PORT    "rtlRadioAwdlPort"   /* p1: const uint8_t mac[6] or NULL */
+
 /* rtl_radio_status.state */
 #define RTL_RADIO_S_IDLE          0
 #define RTL_RADIO_S_SCAN          1

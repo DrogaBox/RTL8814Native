@@ -17,6 +17,9 @@
 #include <drv_types.h>
 #include "hal_com_h2c.h"
 
+/* RTL8814Native: set while port 1 answers for awdl0 (Driver/AWDLTx.c) */
+extern u8 rtl8814native_awdl_port1;
+
 #include "hal_data.h"
 
 #ifdef RTW_HALMAC
@@ -3823,6 +3826,7 @@ void rtw_hal_rcr_set_chk_bssid(_adapter *adapter, u8 self_action)
 		|| MSTATE_SCAN_ENTER_NUM(&mstate)
 		#endif
 		|| hal_data->in_cta_test
+		|| rtl8814native_awdl_port1 /* RTL8814Native: AWDL data carries another BSSID */
 	)
 		rcr_new &= ~RCR_CBSSID_DATA;
 	else
