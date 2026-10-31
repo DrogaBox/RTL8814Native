@@ -17,6 +17,7 @@
 int rtl8814native_radio_tx_80211(const uint8_t *frame, uint32_t len);
 int rtl8814native_radio_awdl_port(const uint8_t *mac);
 int rtl8814native_radio_set_channel(uint8_t ch);
+int rtl8814native_radio_awdl_offch(uint8_t ch);
 extern _adapter *rtl8814native_get_primary_adapter(void);
 
 static const u8 rtl_awdl_bssid[ETH_ALEN] = { 0x00, 0x25, 0x00, 0xFF, 0x94, 0x73 };
@@ -144,4 +145,76 @@ int rtl8814native_radio_set_channel(uint8_t ch)
 	    != _SUCCESS)
 		return -ENOMEM;
 	return 0;
+}
+
+/*
+ * While associated, takes the radio to ch for an AWDL slot, or back to the
+ * BSS channel with ch 0 (Docs/AWDL_MCC_TIEMPO_COMPARTIDO.md §7.1): a null
+ * frame with PM set tells the AP to hold our traffic, the AP's MAC ID sleeps
+ * and offch_state blocks the data queues until the return, which sends PM
+ * clear. When ch shares the BSS's 40 or 80 MHz block only the primary
+ * sub-channel moves, at the BSS width and without the TX power reload (§4.1);
+ * otherwise it goes at 20 MHz. Runs synchronously on the caller's thread:
+ * the switch is USB register traffic, a few ms. cur_* stay on the BSS, so
+ * rtl_radio_status keeps reporting it. -EBUSY unless linked and idle.
+ */
+int rtl8814native_radio_awdl_offch(uint8_t ch)
+{
+	_adapter *padapter = rtl8814native_get_primary_adapter();
+	struct mlme_ext_priv *pmlmeext;
+	struct rf_ctl_t *rfctl;
+	HAL_DATA_TYPE *hal;
+	u8 home, bw, offset, same;
+	int rc = 0;
+
+	if (!padapter || !padapter->bup || RTW_CANNOT_RUN(padapter))
+		return -ENODEV;
+	if (ch && rtw_chset_search_ch(adapter_to_chset(padapter), ch) < 0)
+		return -EINVAL;
+	pmlmeext = &padapter->mlmeextpriv;
+	rfctl = adapter_to_rfctl(padapter);
+	hal = GET_HAL_DATA(padapter);
+	home = pmlmeext->cur_channel;
+
+	_enter_critical_mutex(&rfctl->offch_mutex, NULL);
+	if (!ch || ch == home) {
+		/* back to the BSS; a scan that ran meanwhile already brought it back */
+		if (rfctl->offch_state == OFFCHS_AWDL) {
+			set_channel_bwmode(padapter, home, pmlmeext->cur_ch_offset, pmlmeext->cur_bwmode);
+			rtw_hal_macid_wakeup_all_used(padapter);
+			issue_nulldata(padapter, NULL, 0, 0, 0);
+			rfctl->offch_state = OFFCHS_NONE;
+			rtw_mi_os_xmit_schedule(padapter);
+		}
+		goto out;
+	}
+	if (!check_fwstate(&padapter->mlmepriv, _FW_LINKED) ||
+	    check_fwstate(&padapter->mlmepriv, _FW_UNDER_LINKING | _FW_UNDER_SURVEY) ||
+	    (rfctl->offch_state != OFFCHS_NONE && rfctl->offch_state != OFFCHS_AWDL)) {
+		rc = -EBUSY;
+		goto out;
+	}
+	if (rfctl->offch_state == OFFCHS_NONE) {
+		rfctl->offch_state = OFFCHS_AWDL;
+		rtw_hal_macid_sleep_all_used(padapter);
+		issue_nulldata(padapter, NULL, 1, 0, 0);
+		/* let the null leave on the BSS channel before the switch */
+		rtw_msleep_os(2);
+	}
+	bw = pmlmeext->cur_bwmode;
+	offset = HAL_PRIME_CHNL_OFFSET_DONT_CARE;
+	same = (bw == CHANNEL_WIDTH_40 || bw == CHANNEL_WIDTH_80) &&
+	       rtw_get_offset_by_chbw(ch, bw, &offset) &&
+	       rtw_get_center_ch(ch, bw, offset) ==
+	           rtw_get_center_ch(home, bw, pmlmeext->cur_ch_offset);
+	if (same) {
+		hal->awdl_keep_txpwr = 1;
+		set_channel_bwmode(padapter, ch, offset, bw);
+		hal->awdl_keep_txpwr = 0;
+	} else {
+		set_channel_bwmode(padapter, ch, HAL_PRIME_CHNL_OFFSET_DONT_CARE, CHANNEL_WIDTH_20);
+	}
+out:
+	_exit_critical_mutex(&rfctl->offch_mutex, NULL);
+	return rc;
 }

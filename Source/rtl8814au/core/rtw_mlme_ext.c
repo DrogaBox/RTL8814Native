@@ -13028,6 +13028,12 @@ void linked_status_chk(_adapter *padapter, u8 from_timer)
 				}
 #endif
 				if (switch_channel_by_drv) {
+					/* AWDL holds the radio on its channel for a slot
+					 * (rtl8814native_radio_awdl_offch): it comes back
+					 * itself, and a probe here would wake the AP's queue
+					 * while the radio is away */
+					if (adapter_to_rfctl(padapter)->offch_state == OFFCHS_AWDL)
+						goto bypass_active_keep_alive;
 					if (!rtw_mi_get_ch_setting_union(padapter, &union_ch, &union_bw, &union_offset)
 						|| pmlmeext->cur_channel != union_ch)
 							goto bypass_active_keep_alive;
