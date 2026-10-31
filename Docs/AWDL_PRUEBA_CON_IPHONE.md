@@ -46,17 +46,24 @@ Las tramas de datos AWDL solo se cuentan; su entrega a la `RxCompletionQueue` de
 
 ## 3. Canal
 
-El chip escucha en el canal de la red a la que está asociado; no hay todavía forma de fijar otro canal
-desde la capa. AWDL usa los canales sociales 6 (2,4 GHz) y 44 o 149 (5 GHz)
-([AWDL_REFERENCIAS_EXTERNAS.md](AWDL_REFERENCIAS_EXTERNAS.md)). Para la prueba:
+AWDL usa los canales sociales 6 (2,4 GHz) y 44 o 149 (5 GHz)
+([AWDL_REFERENCIAS_EXTERNAS.md](AWDL_REFERENCIAS_EXTERNAS.md)). El chip escucha en un solo canal:
 
-- asociar el Mac a una red del router cuyo canal **primario** sea 149 (o 44, o 6 en 2,4 GHz),
-  cambiando el canal del router si hace falta. El 2026-10-30 `en2` estaba en el 153 a 80 MHz: el bloque
-  incluye el 149, pero el primario es el 153 y las tramas AWDL van a 20 MHz por el 149
-  ([AWDL_WINDOW_TIMER.md](AWDL_WINDOW_TIMER.md) §8). Fuera de 6, 44 y 149 la capa no transmite ni abre
-  ventanas y lo registra una vez (`radio on channel N, not a social channel`);
-- en qué canal pone un iPhone su AWDL cuando está asociado a otro canal de infraestructura es `?`; si no
-  llega nada en 149, repetir en 6.
+- **asociado**: el de la red. Sirve si su canal **primario** es 6, 44 o 149. El 2026-10-30 `en2` estaba
+  en el 153 a 80 MHz: el bloque incluye el 149, pero el primario es el 153 y las tramas AWDL van a
+  20 MHz por el 149 ([AWDL_WINDOW_TIMER.md](AWDL_WINDOW_TIMER.md) §8). Fuera de 6, 44 y 149 la capa no
+  transmite ni abre ventanas y lo registra una vez (`radio on channel N, not a social channel`);
+- **sin asociación** (`07a41e8`, `ab11c69`): con la TX activa, la capa fija la radio en el 149 a
+  20 MHz con `rtlRadioSetChannel` y sirve ese canal en cuanto la radio está en él (registro
+  `awdl: parking the radio on channel 149 (was N)`). El boot-arg `rtlawdl_ch=6` o `rtlawdl_ch=44`
+  cambia el canal; otro valor desactiva la fijación. Tras una desconexión la petición se repite como
+  mucho una vez por segundo, y un escaneo vuelve a ese canal al terminar. Para la prueba basta con
+  desconectar el Wi-Fi del Mac de la red del router y quitarle la conexión automática, sin tocar el
+  router.
+
+Si los peer manager y `wifip2pd` mantienen AWDL activo con la infraestructura sin asociar es `?`. En qué
+canal pone un iPhone su AWDL cuando está asociado a otro canal de infraestructura también es `?`; si no
+llega nada en 149, repetir con `rtlawdl_ch=6`.
 
 ## 4. Durante la visita
 
@@ -88,11 +95,12 @@ AWDL (por ejemplo, datos entre el iPhone y otro dispositivo Apple).
 
 ## 6. TX: que el iPhone vea este Mac
 
-Con `rtlawdl_tx=1`, mientras `awdl0` está habilitada y la radio asociada (y sin escanear), `awdl0` emite
-por broadcast un PSF cada 110 TU y un MIF por franja, en el canal de la red asociada. Cada trama lleva la
-plantilla de sincronía del kernel (ioctl 151) y los TLVs 4, 5 y 18 que genera la capa, anunciando ese
-canal en las 16 franjas. Sin plantilla (el manager aún no envió el 151) o sin asociación no sale nada.
-Las tramas usan la tasa de gestión del driver y la categoría 127, que no es robusta, así que con PMF
+Con `rtlawdl_tx=1`, mientras `awdl0` está habilitada y la radio no escanea, `awdl0` emite por broadcast
+un PSF cada 110 TU y un MIF por franja, en el canal de la red asociada o, sin asociación, en el canal
+fijado del §3. Cada trama lleva la plantilla de sincronía del kernel (ioctl 151) y los TLVs 4, 5 y 18 que
+genera la capa, anunciando ese canal en las 16 franjas. Sin plantilla (el manager aún no envió el 151),
+mientras se une a una red o hasta que la radio llega al canal fijado no sale nada. Las tramas usan la
+tasa de gestión del driver (OFDM 6 Mb/s cuando la radio está fijada) y la categoría 127, que no es robusta, así que con PMF
 activo no se les añade BIP (`CATEGORY_IS_NON_ROBUST`, `Source/rtl8814au/include/ieee80211.h:1531`).
 
 Comprobación sin iPhone, para descartar problemas de estabilidad antes de la visita:
