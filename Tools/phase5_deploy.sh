@@ -8,6 +8,8 @@
 #   sudo RTL8814_AWDL=1 ./Tools/phase5_deploy.sh "<EFI mount>" layer 2 adds rtlawdl=1 (AWDL stage 1);
 #   without it the arg is removed. Put the variable after sudo: sudo drops the caller's environment.
 #   RTL8814_AWDL_TX=1 next to RTL8814_AWDL=1 also adds rtlawdl_tx=1 (AWDL action frame TX).
+#   RTL8814_AWDL_MCC=1 (or 2) with them adds rtlawdl_mcc=N (AWDL while associated off the
+#   social channels, needs a driver with rtlRadioAwdlOffch).
 #   sudo ./Tools/phase5_deploy.sh "<EFI mount>" inert     remove rtlair from boot-args (layer stays, inert)
 #
 # Every run first copies EFI/OC/config.plist and the touched kexts to
@@ -70,11 +72,15 @@ kext_index() {     # bundle path -> index in Kernel:Add, or empty
 set_rtlair() {     # value [step], or empty to remove both
 	local args new
 	args="$($PB -c "Print :NVRAM:Add:$GUID:boot-args" "$CFG" 2>/dev/null || true)"
-	new="$(printf '%s\n' "$args" | tr ' ' '\n' | { grep -vE '^(rtlair(step)?|rtlawdl(_rx|_tx)?)=' || true; } | tr '\n' ' ' | sed 's/ *$//')"
+	new="$(printf '%s\n' "$args" | tr ' ' '\n' | { grep -vE '^(rtlair(step)?|rtlawdl(_rx|_tx|_mcc)?)=' || true; } | tr '\n' ' ' | sed 's/ *$//')"
 	[ -n "$1" ] && new="${new:+$new }rtlair=$1"
 	[ -n "$1" ] && [ -n "${2:-}" ] && new="$new rtlairstep=$2"
 	[ -n "$1" ] && [ "${RTL8814_AWDL:-0}" = 1 ] && new="$new rtlawdl=1"
 	[ -n "$1" ] && [ "${RTL8814_AWDL:-0}" = 1 ] && [ "${RTL8814_AWDL_TX:-0}" = 1 ] && new="$new rtlawdl_tx=1"
+	case "${RTL8814_AWDL_MCC:-0}" in 1|2)
+		[ -n "$1" ] && [ "${RTL8814_AWDL:-0}" = 1 ] && [ "${RTL8814_AWDL_TX:-0}" = 1 ] &&
+			new="$new rtlawdl_mcc=$RTL8814_AWDL_MCC" ;;
+	esac
 	$PB -c "Set :NVRAM:Add:$GUID:boot-args $new" "$CFG"
 	echo "boot-args: $new"
 }
