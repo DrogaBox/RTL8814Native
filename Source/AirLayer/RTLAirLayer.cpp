@@ -1762,6 +1762,11 @@ IOReturn RTLAirController::getCARD_CAPABILITIES(IO80211SkywalkInterface *, apple
 	 */
 	p[7] |= 0x01;
 	p[8] |= 0x01;
+	/* Dual band (capability 29, kernel byte +0xB37 bit 0x20): Broadcom sets it
+	 * with its feature flag 28. Without it the AWDL peer manager zeroes its
+	 * 5 GHz social channels and the sequence carries only channel 6
+	 * (Docs/AWDL_SECUENCIA_CON_INFRA.md, section 4.2). */
+	p[7] |= 0x20;
 	/* airportd refuses WPA3-only networks unless capability 75 is present
 	 * (userspace byte 9 bit 3, kernel p[13] bit 3). Experiment: this makes
 	 * macOS ask for SAE on transition networks too. */
