@@ -112,6 +112,26 @@ Broadcom usa la `RxCompletionQueue` de la interfaz (`ivars+1016`):
 - `freePendingPackets`: `freePendingPackets(pkts, n)` de la cola (slot +0x348).
 - Sin cola, registra `"FAIL : Invalid Rx Completion Queue available"`.
 
+Implementación de la cola en cada clase (celdas leídas de cada vtable):
+
+| Celda | `AppleBCMWLANPCIeSkywalkRxCompletionQueue` | `AppleBCMWLANSkywalkRxCompletionQueue` |
+|---|---|---|
+| +0x298 | `requestEnqueue` (`0xffffff8001546d18`) | `IOSkywalkRxCompletionQueue::requestEnqueue` (`0xffffff8002b2d6d8`), heredado |
+| +0x330 | `flushPackets` (`0xffffff80015466fe`) | `flushPackets` (`0xffffff80015d83a2`) |
+| +0x340 | `stagePacket` (`0xffffff8001546cc8`) | `stagePacket` (`0xffffff80015d805e`) |
+| +0x348 | `freePendingPackets` (`0xffffff8001546852`) | `freePendingPackets` (`0xffffff80015d8328`): solo log `"Not Implemented"` |
+
+El `freePendingPackets` de la cola PCIe recorre el array, salta las entradas nulas, limpia el bit
+`0x80` de un byte privado de Broadcom (`*(pkt+0x78)+0x90`) y devuelve cada paquete al pool con
+`IOSkywalkPacketBufferPool::deallocatePacket` (puntero `0xffffff80017fa328` →
+`0xffffff8002b2c0de`; pool en `*(*(cola+0x140)+0x18)`, llamada en `0xffffff800154689d`). Para
+`awdl0` del RTL8814 el equivalente es devolver cada paquete del array a su pool RX con
+`deallocatePacket`, símbolo que `Source/AirLayer/AWDLInterface.cpp` ya importa.
+
+`IO80211AWDLPeerManager` tiene sus propios `sendPendingPacketsToStack` (`0xffffff80022389e6`) y
+`freePendingPackets` (`0xffffff8002238c40`), que solo reenvían a las celdas +0xF30/+0xF38 de la
+interfaz (`*(ivars+1376)`); no tienen xrefs de código.
+
 Consecuencias para la interfaz `awdl0` del RTL8814:
 
 1. **Llamar a `inputPacket`** (+0xB50) con cada paquete RX antes de entregarlo, como Broadcom en
