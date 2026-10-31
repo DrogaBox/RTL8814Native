@@ -427,9 +427,10 @@ private:
 	static void rxDrainEntry(thread_call_param_t p0, thread_call_param_t);
 	static IOReturn bpfTapAction(OSObject *owner, void *m, void *hdr, void *, void *);
 
-	/* TX of AWDL action frames (boot-arg rtlawdl_tx=1): PSF every 110 TU and
-	 * a MIF in the middle of each slot, built from the kernel's sync frame
-	 * template (151) plus the TLVs 4, 5 and 18 rendered here. */
+	/* TX of AWDL action frames and the availability windows (boot-arg
+	 * rtlawdl_tx=1): PSF every 110 TU and a MIF in each served slot, built
+	 * from the kernel's sync frame template (151) plus the TLVs 4, 5 and 18
+	 * rendered here; events 41/43 at the edges of the served slots. */
 	IOService *_radioSvc;       /* the nub's provider, as the controller's */
 	const OSSymbol *_symTx80211;
 	IOLock *_txLock;            /* template and clock */
@@ -442,12 +443,20 @@ private:
 	uint16_t _clkBaseAw;
 	uint64_t _nextPsfUs;
 	uint32_t _lastMifSlot;
-	uint64_t _txPsf, _txMif, _txFail, _clkAligned;
+	uint32_t _lastTickAw;
+	uint8_t _seq[16];           /* channel per slot from the 129 */
+	uint32_t _seqFlags[16];
+	bool _seqValid;
+	bool _awOpen;               /* between events 41 and 43 */
+	bool _offSocialLogged;
+	uint64_t _txPsf, _txMif, _txFail, _clkAligned, _ev41, _ev43;
 
 	void setRadioTx(bool on);
 	void txTick();
-	bool sendAf(uint8_t subtype, uint64_t nowUs, uint8_t channel);
-	size_t buildAf(uint8_t *out, size_t cap, uint8_t subtype, uint64_t nowUs, uint8_t channel);
+	uint16_t servedMask(uint8_t ch) const;
+	bool sendAf(uint8_t subtype, uint64_t nowUs, uint8_t channel, uint16_t mask);
+	size_t buildAf(uint8_t *out, size_t cap, uint8_t subtype, uint64_t nowUs, uint8_t channel,
+	               uint16_t mask);
 	void alignClock(mbuf_t m, const uint8_t *src);
 	static void txTickEntry(thread_call_param_t p0, thread_call_param_t);
 };

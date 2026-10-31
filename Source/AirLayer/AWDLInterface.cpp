@@ -587,9 +587,10 @@ void RTLAwdInterface::injectFrame(mbuf_t m)
  * and leaves the rest to the driver: the timing in the sync params TLV (4)
  * and the channel sequence (18) are rendered here, as Broadcom's firmware does
  * (Docs/AWDL_CHANNEL_SEQUENCE_CONTROL.md §5.2), plus election v1 (5) from the
- * template's v2. The radio does not hop: every slot announces the channel it
- * is on (AWDL-12 of owly's docs/SPEC.md, the fixed-radio pattern), so it must
- * be a social channel (6, 44, 149) to meet a peer.
+ * template's v2. The radio does not hop: the slots the manager's sequence
+ * (129) puts on the radio's channel announce it and get a window (events 41
+ * and 43), the others announce 0 (AWDL-12 of owly's docs/SPEC.md, the
+ * fixed-radio pattern). Off the social channels (6, 44, 149) nothing is sent.
  *
  * The AW clock is our own until an action frame arrives from a node that is
  * its own master: then the slot boundary and the AW count of its TLV 4 are
@@ -613,6 +614,8 @@ void RTLAwdInterface::injectFrame(mbuf_t m)
 #define AWDL_SYNC_LEN         33      /* TLV 4 value up to the channel sequence */
 #define AWDL_CHANSEQ_LEN      (6 + 2 * AWDL_SLOTS)
 #define AWDL_AF_MAX           1024
+#define AWDL_EV_AW_START      41      /* APPLE80211_M_AWDL_AVAILABILITY_WINDOW_START */
+#define AWDL_EV_AW_END        43      /* ..._AVAILABILITY_WINDOW_EXTENSIONS_END */
 
 static const uint8_t kAwdlBssid[6] = { 0x00, 0x25, 0x00, 0xFF, 0x94, 0x73 };
 
@@ -630,8 +633,9 @@ static uint16_t getLe16(const uint8_t *p) { return (uint16_t)(p[0] | p[1] << 8);
 /* Operating class of a 20 MHz slot as owly announces it: 81 on 2.4 GHz, 128 on 5 GHz. */
 static uint8_t awdlOpClass(uint8_t ch) { return ch <= 14 ? 81 : 128; }
 
-/* Channel sequence: 16 slots, opclass encoding, step 3, fill 0xFFFF. */
-static void putChanSeq(uint8_t *p, uint8_t ch)
+/* Channel sequence: 16 slots, opclass encoding, step 3, fill 0xFFFF; ch in
+ * the served slots of mask, 0 in the others (AWDL-12). */
+static void putChanSeq(uint8_t *p, uint8_t ch, uint16_t mask)
 {
 	p[0] = AWDL_SLOTS - 1;
 	p[1] = 3;
@@ -639,8 +643,9 @@ static void putChanSeq(uint8_t *p, uint8_t ch)
 	p[3] = AWDL_PM - 1;
 	putLe16(p + 4, 0xFFFF);
 	for (int i = 0; i < AWDL_SLOTS; i++) {
-		p[6 + 2 * i] = ch;
-		p[7 + 2 * i] = awdlOpClass(ch);
+		bool on = (mask >> i) & 1;
+		p[6 + 2 * i] = on ? ch : 0;
+		p[7 + 2 * i] = on ? awdlOpClass(ch) : 0;
 	}
 }
 
@@ -682,6 +687,35 @@ IOReturn RTLAwdInterface::setAWDL_SYNC_FRAME_TEMPLATE(apple80211_awdl_sync_frame
 	return kIOReturnSuccess;
 }
 
+/*
+ * The manager's own channel sequence (129): 16 entries of 12 bytes from +0x0c,
+ * {version, channel, flags} (Docs/AWDL_PEERMANAGER_DRIVER_ABI.md §3.7). A slot
+ * is served when its channel is the radio's; the others are announced as 0
+ * and get no window (Docs/AWDL_WINDOW_TIMER.md §4).
+ */
+IOReturn RTLAwdInterface::setAWDL_SYNCHRONIZATION_CHANNEL_SEQUENCE(
+    apple80211_awdl_sync_channel_sequence *arg)
+{
+	const uint8_t *p = (const uint8_t *)arg;
+	if (!p || !_txLock)
+		return kIOReturnSuccess;
+	uint8_t n = p[5] < AWDL_SLOTS ? p[5] : AWDL_SLOTS;
+	IOLockLock(_txLock);
+	bool first = !_seqValid;
+	for (int i = 0; i < AWDL_SLOTS; i++) {
+		const uint8_t *e = p + 0x0c + 12 * i;
+		_seq[i] = i < n ? (uint8_t)*(const uint32_t *)(e + 4) : 0;
+		_seqFlags[i] = i < n ? *(const uint32_t *)(e + 8) : 0;
+	}
+	_seqValid = n != 0;
+	IOLockUnlock(_txLock);
+	if (first)
+		LOG("awdl: channel sequence %u slots: %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u", n,
+		    _seq[0], _seq[1], _seq[2], _seq[3], _seq[4], _seq[5], _seq[6], _seq[7], _seq[8],
+		    _seq[9], _seq[10], _seq[11], _seq[12], _seq[13], _seq[14], _seq[15]);
+	return kIOReturnSuccess;
+}
+
 void RTLAwdInterface::setRadioTx(bool on)
 {
 	if (on && (!_txAllowed || !_radioSvc))
@@ -696,7 +730,9 @@ void RTLAwdInterface::setRadioTx(bool on)
 		_clkBaseAw = 0;
 		_nextPsfUs = _clkBaseUs;
 		_lastMifSlot = UINT32_MAX;
+		_lastTickAw = UINT32_MAX;
 	}
+	_awOpen = false;
 	IOLockUnlock(_txLock);
 	if (on == was)
 		return;
@@ -707,8 +743,8 @@ void RTLAwdInterface::setRadioTx(bool on)
 		 * pending and nothing runs. */
 		thread_call_cancel_wait(_txTick);
 	}
-	LOG("awdl: tx %s, psf %llu mif %llu fail %llu aligned %llu", on ? "on" : "off", _txPsf,
-	    _txMif, _txFail, _clkAligned);
+	LOG("awdl: tx %s, psf %llu mif %llu fail %llu aligned %llu aw %llu", on ? "on" : "off",
+	    _txPsf, _txMif, _txFail, _clkAligned, _ev41);
 }
 
 void RTLAwdInterface::txTickEntry(thread_call_param_t p0, thread_call_param_t)
@@ -716,6 +752,18 @@ void RTLAwdInterface::txTickEntry(thread_call_param_t p0, thread_call_param_t)
 	((RTLAwdInterface *)p0)->txTick();
 }
 
+/* AWDL meets peers only on the social channels (AWDL-11 of owly's spec). */
+static bool awdlSocial(uint8_t ch)
+{
+	return ch == 6 || ch == 44 || ch == 149;
+}
+
+/*
+ * Runs at each AW boundary of the clock. At a slot start it closes the open
+ * window (event 43, which also lets the manager run its election) and, when
+ * the slot is served, opens the next one (event 41). A PSF goes out every
+ * 110 TU and a MIF in the third AW of each served slot.
+ */
 void RTLAwdInterface::txTick()
 {
 	struct rtl_radio_status st;
@@ -723,50 +771,121 @@ void RTLAwdInterface::txTick()
 	if (_ctrl && _ctrl->radioStatus(&st) == kIOReturnSuccess && st.state == RTL_RADIO_S_LINKED &&
 	    !st.scanning)
 		ch = st.channel;
+	if (ch && !awdlSocial(ch)) {
+		if (!_offSocialLogged) {
+			_offSocialLogged = true;
+			LOG("awdl: radio on channel %u, not a social channel: no AWDL TX or windows", ch);
+		}
+		ch = 0;
+	}
 
+	uint8_t ev41[36], ev43[40];
+	bool close = false, open = false, psf = false, mif = false;
 	uint64_t now = awdlNowUs();
-	bool psf = false, mif = false;
 	IOLockLock(_txLock);
 	if (!_txOn) {
 		IOLockUnlock(_txLock);
 		return;
 	}
-	uint64_t tu = (now - _clkBaseUs) / AWDL_TU_US;
-	uint32_t aw = (uint32_t)_clkBaseAw + (uint32_t)(tu / AWDL_AW_TU);
-	if (now >= _nextPsfUs) {
+	/* 500 µs of slack: a tick that fires just before its boundary counts as on it. */
+	uint64_t awIdx = (now - _clkBaseUs + 500) / (AWDL_AW_TU * AWDL_TU_US);
+	uint32_t aw = (uint16_t)(_clkBaseAw + awIdx);
+	uint64_t awStart = _clkBaseUs + awIdx * AWDL_AW_TU * AWDL_TU_US;
+	uint32_t slot = (aw / AWDL_PM) % AWDL_SLOTS;
+	uint16_t mask = servedMask(ch);
+	bool served = (mask >> slot) & 1;
+	if (aw != _lastTickAw) {
+		_lastTickAw = aw;
+		if (aw % AWDL_PM == 0 || !ch) {
+			close = _awOpen;
+			_awOpen = false;
+		}
+		if (aw % AWDL_PM == 0 && served) {
+			open = true;
+			_awOpen = true;
+		}
+		if (served && aw % AWDL_PM == AWDL_PM / 2 && aw / AWDL_PM != _lastMifSlot) {
+			mif = true;
+			_lastMifSlot = aw / AWDL_PM;
+		}
+	}
+	if (mask && now >= _nextPsfUs) {
 		psf = true;
 		while (_nextPsfUs <= now)
 			_nextPsfUs += AWDL_PSF_TU * AWDL_TU_US;
 	}
-	if (aw % AWDL_PM == AWDL_PM / 2 && aw / AWDL_PM != _lastMifSlot) {
-		mif = true;
-		_lastMifSlot = aw / AWDL_PM;
+	if (open) {
+		/* Event 41 (Docs/AWDL_WINDOW_TIMER.md §5.1): AW number, sync state,
+		 * master and top master of the template's election v2, slot start in
+		 * µs big-endian, channel flags and channel. */
+		const uint8_t *e2 = findTlv(_tpl, _tplLen, AWDL_TLV_ELECTION_V2, 28);
+		const uint8_t *top = e2 ? e2 + 3 : _mac;
+		const uint8_t *sync = e2 ? e2 + 3 + 6 : _mac;
+		bzero(ev41, sizeof(ev41));
+		*(uint16_t *)ev41 = (uint16_t)aw;
+		*(uint32_t *)(ev41 + 0x04) = memcmp(sync, _mac, 6) ? 2 : 1;
+		memcpy(ev41 + 0x08, sync, 6);
+		memcpy(ev41 + 0x0e, top, 6);
+		*(uint32_t *)(ev41 + 0x14) = OSSwapHostToBigInt32((uint32_t)awStart);
+		*(uint32_t *)(ev41 + 0x18) = _seqValid && _seqFlags[slot] ? _seqFlags[slot]
+		                                                           : (ch <= 14 ? 0x8 : 0x10);
+		*(uint32_t *)(ev41 + 0x1c) = ch;
 	}
+	uint64_t next = _clkBaseUs + (awIdx + 1) * AWDL_AW_TU * AWDL_TU_US;
 	IOLockUnlock(_txLock);
 
+	/* Events 43 then 41, outside the lock: postMessage takes the controller's
+	 * gate (Docs/AWDL_STAGE3_EVENT_EMITTERS.md §3.1). */
+	if (close) {
+		bzero(ev43, sizeof(ev43));
+		postMessage(AWDL_EV_AW_END, ev43, sizeof(ev43), false);
+		_ev43++;
+	}
+	if (open) {
+		postMessage(AWDL_EV_AW_START, ev41, sizeof(ev41), false);
+		if (_ev41++ < AWDL_RX_LOG_FIRST)
+			LOG("awdl: window aw %u slot %u ch %u", aw, slot, ch);
+	}
 	if (ch && _tplLen) {
-		if (psf && sendAf(AWDL_AF_PSF, now, ch))
+		if (psf && sendAf(AWDL_AF_PSF, now, ch, mask))
 			_txPsf++;
-		if (mif && sendAf(AWDL_AF_MIF, now, ch))
+		if (mif && sendAf(AWDL_AF_MIF, now, ch, mask))
 			_txMif++;
-		if ((_txPsf + _txMif) && ((_txPsf + _txMif) & 0x3FF) == 0)
-			LOG("awdl: tx psf %llu mif %llu fail %llu ch %u", _txPsf, _txMif, _txFail, ch);
+		if (psf && (_txPsf & 0x3FF) == 0)
+			LOG("awdl: tx psf %llu mif %llu fail %llu windows %llu ch %u", _txPsf, _txMif,
+			    _txFail, _ev41, ch);
 	}
 
-	/* Every AW: the MIF needs one look per AW, the PSF a period of ~7 AWs. */
 	IOLockLock(_txLock);
 	if (_txOn) {
+		uint64_t t = awdlNowUs();
+		uint64_t wait = next > t ? next - t : 1000;
 		uint64_t deadline;
-		clock_interval_to_deadline(AWDL_AW_TU * AWDL_TU_US, kMicrosecondScale, &deadline);
+		clock_interval_to_deadline((uint32_t)wait, kMicrosecondScale, &deadline);
 		thread_call_enter_delayed(_txTick, deadline);
 	}
 	IOLockUnlock(_txLock);
 }
 
-bool RTLAwdInterface::sendAf(uint8_t subtype, uint64_t nowUs, uint8_t channel)
+/* Slots the radio serves on channel ch: those the 129 puts on ch, or all of
+ * them before any 129 arrived. Called with _txLock held. */
+uint16_t RTLAwdInterface::servedMask(uint8_t ch) const
+{
+	if (!ch)
+		return 0;
+	if (!_seqValid)
+		return 0xFFFF;
+	uint16_t mask = 0;
+	for (int i = 0; i < AWDL_SLOTS; i++)
+		if (_seq[i] == ch)
+			mask |= (uint16_t)(1u << i);
+	return mask;
+}
+
+bool RTLAwdInterface::sendAf(uint8_t subtype, uint64_t nowUs, uint8_t channel, uint16_t mask)
 {
 	uint8_t buf[AWDL_AF_MAX];
-	size_t len = buildAf(buf, sizeof(buf), subtype, nowUs, channel);
+	size_t len = buildAf(buf, sizeof(buf), subtype, nowUs, channel, mask);
 	if (!len)
 		return false;
 	uint32_t l = (uint32_t)len;
@@ -780,7 +899,7 @@ bool RTLAwdInterface::sendAf(uint8_t subtype, uint64_t nowUs, uint8_t channel)
 }
 
 size_t RTLAwdInterface::buildAf(uint8_t *out, size_t cap, uint8_t subtype, uint64_t nowUs,
-                                uint8_t channel)
+                                uint8_t channel, uint16_t mask)
 {
 	IOLockLock(_txLock);
 	uint32_t tplLen = _tplLen;
@@ -838,7 +957,7 @@ size_t RTLAwdInterface::buildAf(uint8_t *out, size_t cap, uint8_t subtype, uint6
 	v[28] = 0;
 	putLe16(v + 29, aw);
 	putLe16(v + 31, 0);             /* AP alignment */
-	putChanSeq(v + AWDL_SYNC_LEN, channel);
+	putChanSeq(v + AWDL_SYNC_LEN, channel, mask);
 	p += 3 + AWDL_SYNC_LEN + AWDL_CHANSEQ_LEN + 2;
 
 	/* 5: election v1 from v2 (Docs/AWDL_TLV5_ELECTION.md) */
@@ -858,7 +977,7 @@ size_t RTLAwdInterface::buildAf(uint8_t *out, size_t cap, uint8_t subtype, uint6
 	/* 18: channel sequence, 3 bytes of padding */
 	p[0] = AWDL_TLV_CHANSEQ;
 	putLe16(p + 1, AWDL_CHANSEQ_LEN + 3);
-	putChanSeq(p + 3, channel);
+	putChanSeq(p + 3, channel, mask);
 	p += 3 + AWDL_CHANSEQ_LEN + 3;
 
 	memcpy(p, _tpl, tplLen);
@@ -919,7 +1038,6 @@ AWDL_ACK(setAWDL_SYNC_STATE, apple80211_awdl_sync_state)
 AWDL_ACK(setAWDL_SYNC_PARAMS, apple80211_awdl_sync_params)
 AWDL_ACK(setAWDL_SYNC_ENABLED, apple80211_awdl_sync_enabled)
 AWDL_ACK(setAWDL_TXCAL_PERIOD, apple80211_awdl_txcal_period)
-AWDL_ACK(setAWDL_SYNCHRONIZATION_CHANNEL_SEQUENCE, apple80211_awdl_sync_channel_sequence)
 AWDL_ACK(setAWDL_ELECTION_PARAMS, apple80211_awdl_election_params)
 AWDL_ACK(setAWDL_SECONDARY_MASTER_CHANNEL, apple80211_awdl_secondary_master_channel)
 AWDL_ACK(setAWDL_AF_TX_MODE, apple80211_awdl_af_tx_mode)
