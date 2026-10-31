@@ -325,6 +325,7 @@ public:
 	AWDL_ACK(setAWDL_SYNCHRONIZATION_CHANNEL_SEQUENCE,
 	         apple80211_awdl_sync_channel_sequence)
 	AWDL_ACK(setAWDL_ELECTION_PARAMS, apple80211_awdl_election_params)
+	/* Also keeps a copy of the template for the action frame TX. */
 	AWDL_ACK(setAWDL_SYNC_FRAME_TEMPLATE,
 	         apple80211_awdl_sync_frame_template)
 	AWDL_ACK(setAWDL_SECONDARY_MASTER_CHANNEL,
@@ -425,6 +426,30 @@ private:
 	                        int8_t rssi, uint8_t channel);
 	static void rxDrainEntry(thread_call_param_t p0, thread_call_param_t);
 	static IOReturn bpfTapAction(OSObject *owner, void *m, void *hdr, void *, void *);
+
+	/* TX of AWDL action frames (boot-arg rtlawdl_tx=1): PSF every 110 TU and
+	 * a MIF in the middle of each slot, built from the kernel's sync frame
+	 * template (151) plus the TLVs 4, 5 and 18 rendered here. */
+	IOService *_radioSvc;       /* the nub's provider, as the controller's */
+	const OSSymbol *_symTx80211;
+	IOLock *_txLock;            /* template and clock */
+	thread_call_t _txTick;
+	bool _txAllowed;
+	bool _txOn;
+	uint8_t _tpl[512];
+	uint32_t _tplLen;
+	uint64_t _clkBaseUs;        /* start of the slot whose first AW is _clkBaseAw */
+	uint16_t _clkBaseAw;
+	uint64_t _nextPsfUs;
+	uint32_t _lastMifSlot;
+	uint64_t _txPsf, _txMif, _txFail, _clkAligned;
+
+	void setRadioTx(bool on);
+	void txTick();
+	bool sendAf(uint8_t subtype, uint64_t nowUs, uint8_t channel);
+	size_t buildAf(uint8_t *out, size_t cap, uint8_t subtype, uint64_t nowUs, uint8_t channel);
+	void alignClock(mbuf_t m, const uint8_t *src);
+	static void txTickEntry(thread_call_param_t p0, thread_call_param_t);
 };
 
 /* Fails to compile if a pure slot is left unanswered, which would put

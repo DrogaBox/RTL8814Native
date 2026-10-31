@@ -18,6 +18,7 @@
 #include <IOKit/IOWorkLoop.h>
 #include <net/ethernet.h>
 #include <pexpert/pexpert.h>
+#include <kern/clock.h>
 
 /* airLog() of RTLAirLayer.cpp, exposed by the hook patch so these lines land
  * in the RTLAirLayerLog array of the RTL8814Native node. */
@@ -120,6 +121,19 @@ bool RTLAwdInterface::initWithController(RTLAirController *ctrl, const uint8_t m
 	_rxDrain = thread_call_allocate(&RTLAwdInterface::rxDrainEntry, this);
 	if (!_rxLock || !_rxDrain) {
 		LOG("awdl: rx alloc failed");
+		return false;
+	}
+	uint32_t tx = 0;
+	PE_parse_boot_argn("rtlawdl_tx", &tx, sizeof(tx));
+	_txAllowed = tx != 0;
+	/* Same radio the controller drives (RTLAirController::start). */
+	IOService *nub = ctrl->getProvider();
+	_radioSvc = nub ? nub->getProvider() : nullptr;
+	_symTx80211 = OSSymbol::withCString(RTL_RADIO_FN_TX_80211);
+	_txLock = IOLockAlloc();
+	_txTick = thread_call_allocate(&RTLAwdInterface::txTickEntry, this);
+	if (!_symTx80211 || !_txLock || !_txTick) {
+		LOG("awdl: tx alloc failed");
 		return false;
 	}
 	/* Sets IO80211VirtualInterfaceRole ("AirLink" for role 6) through
@@ -296,6 +310,7 @@ void RTLAwdInterface::teardownDatapath()
 
 void RTLAwdInterface::stop(IOService *provider)
 {
+	setRadioTx(false);
 	setRadioRx(false);
 	teardownDatapath();
 	IO80211VirtualInterface::stop(provider);
@@ -313,6 +328,16 @@ void RTLAwdInterface::free()
 		IOLockFree(_rxLock);
 		_rxLock = nullptr;
 	}
+	/* stop() cancelled the tick and waited for it. */
+	if (_txTick) {
+		thread_call_free(_txTick);
+		_txTick = nullptr;
+	}
+	if (_txLock) {
+		IOLockFree(_txLock);
+		_txLock = nullptr;
+	}
+	OSSafeReleaseNULL(_symTx80211);
 	OSSafeReleaseNULL(*(OSObject **)&_txSubQ);
 	OSSafeReleaseNULL(*(OSObject **)&_txCompQ);
 	OSSafeReleaseNULL(*(OSObject **)&_rxCompQ);
@@ -352,12 +377,14 @@ uintptr_t RTLAwdInterface::enable(unsigned int opts)
 	 * family call IO80211PeerManager::enable, which runs configure(). */
 	setLinkState((IO80211LinkState)AWDL_LINK_UP, 1);
 	setRadioRx(true);
+	setRadioTx(true);
 	return kIOReturnSuccess;
 }
 
 uintptr_t RTLAwdInterface::disable(unsigned int opts)
 {
 	LOG("awdl: disable 0x%x", opts);
+	setRadioTx(false);
 	setRadioRx(false);
 	setLinkState((IO80211LinkState)AWDL_LINK_DOWN, 1);
 	void *qs[3] = { _txSubQ, _rxCompQ, _txCompQ };
@@ -533,6 +560,9 @@ void RTLAwdInterface::injectFrame(mbuf_t m)
 		LOG("awdl: rx af %llu data %llu other %llu dropped %llu", _rxAf, _rxData, _rxOther,
 		    _rxDropped);
 
+	if (_txOn)
+		alignClock(m, f + 10);
+
 	/* Source MAC, channel and RSSI: the manager reads +0x00 and +0x2c; the
 	 * channel only travels to the BPF tap (ABI §1.3). */
 	uint8_t hdr[AWDL_AF_HDR_LEN];
@@ -548,6 +578,329 @@ void RTLAwdInterface::injectFrame(mbuf_t m)
 	if (wq)
 		wq->runAction(&RTLAwdInterface::bpfTapAction, this, m, hdr);
 	mbuf_freem(m);
+}
+
+/*
+ * TX of AWDL action frames. The manager hands the static part of its sync
+ * frame in the template of type 151 (election v2, service params, data path
+ * state, version, sync tree...; Docs/AWDL_PEERMANAGER_DRIVER_ABI.md §3.11)
+ * and leaves the rest to the driver: the timing in the sync params TLV (4)
+ * and the channel sequence (18) are rendered here, as Broadcom's firmware does
+ * (Docs/AWDL_CHANNEL_SEQUENCE_CONTROL.md §5.2), plus election v1 (5) from the
+ * template's v2. The radio does not hop: every slot announces the channel it
+ * is on (AWDL-12 of owly's docs/SPEC.md, the fixed-radio pattern), so it must
+ * be a social channel (6, 44, 149) to meet a peer.
+ *
+ * The AW clock is our own until an action frame arrives from a node that is
+ * its own master: then the slot boundary and the AW count of its TLV 4 are
+ * taken (AWDL-7). Timing values follow owly's node: AW 16 TU, 4 AWs per slot,
+ * 16 slots, PSF every 110 TU, MIF in the middle of each slot. The MIF carries
+ * no ARPA (16) TLV: the host name is not available here (?).
+ */
+#define AWDL_TU_US            1024
+#define AWDL_AW_TU            16
+#define AWDL_PM               4       /* AWs per slot (presence mode) */
+#define AWDL_SLOT_TU          (AWDL_AW_TU * AWDL_PM)
+#define AWDL_SLOTS            16
+#define AWDL_PSF_TU           110
+#define AWDL_AF_PSF           0
+#define AWDL_AF_MIF           3
+#define AWDL_AF_VERSION       0x10    /* 1.0, major in the high nibble */
+#define AWDL_TLV_SYNC         4
+#define AWDL_TLV_ELECTION     5
+#define AWDL_TLV_CHANSEQ      18
+#define AWDL_TLV_ELECTION_V2  24
+#define AWDL_SYNC_LEN         33      /* TLV 4 value up to the channel sequence */
+#define AWDL_CHANSEQ_LEN      (6 + 2 * AWDL_SLOTS)
+#define AWDL_AF_MAX           1024
+
+static const uint8_t kAwdlBssid[6] = { 0x00, 0x25, 0x00, 0xFF, 0x94, 0x73 };
+
+static uint64_t awdlNowUs()
+{
+	uint64_t ns;
+	absolutetime_to_nanoseconds(mach_absolute_time(), &ns);
+	return ns / 1000;
+}
+
+static void putLe16(uint8_t *p, uint16_t v) { p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); }
+static void putLe32(uint8_t *p, uint32_t v) { putLe16(p, (uint16_t)v); putLe16(p + 2, (uint16_t)(v >> 16)); }
+static uint16_t getLe16(const uint8_t *p) { return (uint16_t)(p[0] | p[1] << 8); }
+
+/* Operating class of a 20 MHz slot as owly announces it: 81 on 2.4 GHz, 128 on 5 GHz. */
+static uint8_t awdlOpClass(uint8_t ch) { return ch <= 14 ? 81 : 128; }
+
+/* Channel sequence: 16 slots, opclass encoding, step 3, fill 0xFFFF. */
+static void putChanSeq(uint8_t *p, uint8_t ch)
+{
+	p[0] = AWDL_SLOTS - 1;
+	p[1] = 3;
+	p[2] = 0;
+	p[3] = AWDL_PM - 1;
+	putLe16(p + 4, 0xFFFF);
+	for (int i = 0; i < AWDL_SLOTS; i++) {
+		p[6 + 2 * i] = ch;
+		p[7 + 2 * i] = awdlOpClass(ch);
+	}
+}
+
+/* First TLV of a type in a TLV run, or NULL. */
+static const uint8_t *findTlv(const uint8_t *p, size_t len, uint8_t type, uint16_t minLen)
+{
+	size_t off = 0;
+	while (off + 3 <= len) {
+		uint16_t l = getLe16(p + off + 1);
+		if (off + 3 + l > len)
+			break;
+		if (p[off] == type && l >= minLen)
+			return p + off;
+		off += 3 + l;
+	}
+	return nullptr;
+}
+
+IOReturn RTLAwdInterface::setAWDL_SYNC_FRAME_TEMPLATE(apple80211_awdl_sync_frame_template *arg)
+{
+	/* {u32 reserved, u32 length, u8 *template} (ABI §3.11) */
+	const uint8_t *p = (const uint8_t *)arg;
+	uint32_t len = p ? *(const uint32_t *)(p + 4) : 0;
+	const uint8_t *tpl = p ? *(const uint8_t *const *)(p + 8) : nullptr;
+	if (!tpl || len > sizeof(_tpl)) {
+		LOG("awdl: sync frame template refused, len %u", len);
+		return kIOReturnSuccess;
+	}
+	bool first = false;
+	if (_txLock) {
+		IOLockLock(_txLock);
+		first = _tplLen == 0;
+		memcpy(_tpl, tpl, len);
+		_tplLen = len;
+		IOLockUnlock(_txLock);
+	}
+	if (first)
+		LOG("awdl: sync frame template %u bytes", len);
+	return kIOReturnSuccess;
+}
+
+void RTLAwdInterface::setRadioTx(bool on)
+{
+	if (on && (!_txAllowed || !_radioSvc))
+		return;
+	if (!_txLock || !_txTick)
+		return;
+	IOLockLock(_txLock);
+	bool was = _txOn;
+	_txOn = on;
+	if (on && !was) {
+		_clkBaseUs = awdlNowUs();
+		_clkBaseAw = 0;
+		_nextPsfUs = _clkBaseUs;
+		_lastMifSlot = UINT32_MAX;
+	}
+	IOLockUnlock(_txLock);
+	if (on == was)
+		return;
+	if (on) {
+		thread_call_enter(_txTick);
+	} else {
+		/* The tick rearms itself only while _txOn: after this nothing is
+		 * pending and nothing runs. */
+		thread_call_cancel_wait(_txTick);
+	}
+	LOG("awdl: tx %s, psf %llu mif %llu fail %llu aligned %llu", on ? "on" : "off", _txPsf,
+	    _txMif, _txFail, _clkAligned);
+}
+
+void RTLAwdInterface::txTickEntry(thread_call_param_t p0, thread_call_param_t)
+{
+	((RTLAwdInterface *)p0)->txTick();
+}
+
+void RTLAwdInterface::txTick()
+{
+	struct rtl_radio_status st;
+	uint8_t ch = 0;
+	if (_ctrl && _ctrl->radioStatus(&st) == kIOReturnSuccess && st.state == RTL_RADIO_S_LINKED &&
+	    !st.scanning)
+		ch = st.channel;
+
+	uint64_t now = awdlNowUs();
+	bool psf = false, mif = false;
+	IOLockLock(_txLock);
+	if (!_txOn) {
+		IOLockUnlock(_txLock);
+		return;
+	}
+	uint64_t tu = (now - _clkBaseUs) / AWDL_TU_US;
+	uint32_t aw = (uint32_t)_clkBaseAw + (uint32_t)(tu / AWDL_AW_TU);
+	if (now >= _nextPsfUs) {
+		psf = true;
+		while (_nextPsfUs <= now)
+			_nextPsfUs += AWDL_PSF_TU * AWDL_TU_US;
+	}
+	if (aw % AWDL_PM == AWDL_PM / 2 && aw / AWDL_PM != _lastMifSlot) {
+		mif = true;
+		_lastMifSlot = aw / AWDL_PM;
+	}
+	IOLockUnlock(_txLock);
+
+	if (ch && _tplLen) {
+		if (psf && sendAf(AWDL_AF_PSF, now, ch))
+			_txPsf++;
+		if (mif && sendAf(AWDL_AF_MIF, now, ch))
+			_txMif++;
+		if ((_txPsf + _txMif) && ((_txPsf + _txMif) & 0x3FF) == 0)
+			LOG("awdl: tx psf %llu mif %llu fail %llu ch %u", _txPsf, _txMif, _txFail, ch);
+	}
+
+	/* Every AW: the MIF needs one look per AW, the PSF a period of ~7 AWs. */
+	IOLockLock(_txLock);
+	if (_txOn) {
+		uint64_t deadline;
+		clock_interval_to_deadline(AWDL_AW_TU * AWDL_TU_US, kMicrosecondScale, &deadline);
+		thread_call_enter_delayed(_txTick, deadline);
+	}
+	IOLockUnlock(_txLock);
+}
+
+bool RTLAwdInterface::sendAf(uint8_t subtype, uint64_t nowUs, uint8_t channel)
+{
+	uint8_t buf[AWDL_AF_MAX];
+	size_t len = buildAf(buf, sizeof(buf), subtype, nowUs, channel);
+	if (!len)
+		return false;
+	uint32_t l = (uint32_t)len;
+	IOReturn r = _radioSvc->callPlatformFunction(_symTx80211, false, buf, &l, nullptr, nullptr);
+	if (r != kIOReturnSuccess) {
+		if (_txFail++ < AWDL_RX_LOG_FIRST)
+			LOG("awdl: tx %s -> 0x%x", subtype == AWDL_AF_MIF ? "mif" : "psf", r);
+		return false;
+	}
+	return true;
+}
+
+size_t RTLAwdInterface::buildAf(uint8_t *out, size_t cap, uint8_t subtype, uint64_t nowUs,
+                                uint8_t channel)
+{
+	IOLockLock(_txLock);
+	uint32_t tplLen = _tplLen;
+	size_t need = AWDL_WLAN_HDR + 16 + (3 + AWDL_SYNC_LEN + AWDL_CHANSEQ_LEN + 2) + (3 + 21) +
+	              (3 + AWDL_CHANSEQ_LEN + 3) + tplLen;
+	if (!tplLen || need > cap) {
+		IOLockUnlock(_txLock);
+		return 0;
+	}
+	uint64_t tu = (nowUs - _clkBaseUs) / AWDL_TU_US;
+	uint16_t aw = (uint16_t)(_clkBaseAw + tu / AWDL_AW_TU);
+	uint16_t toSlot = (uint16_t)(AWDL_SLOT_TU - tu % AWDL_SLOT_TU);
+	uint16_t awLeft = (uint16_t)(AWDL_AW_TU - tu % AWDL_AW_TU);
+
+	/* Election v2 of the template: top master, distance and metrics. */
+	const uint8_t *e2 = findTlv(_tpl, tplLen, AWDL_TLV_ELECTION_V2, 28);
+	const uint8_t *master = e2 ? e2 + 3 : _mac;
+
+	uint8_t *p = out;
+	bzero(out, need);
+	/* 802.11: action, broadcast, from awdl0, BSSID of AWDL; the radio numbers it. */
+	p[0] = 0xD0;
+	memset(p + 4, 0xFF, 6);
+	memcpy(p + 10, _mac, 6);
+	memcpy(p + 16, kAwdlBssid, 6);
+	p += AWDL_WLAN_HDR;
+
+	/* AWDL fixed header (Docs/AWDL_FRAME_WIRE_FORMAT.md §2) */
+	p[0] = 0x7F;
+	p[1] = 0x00; p[2] = 0x17; p[3] = 0xF2;
+	p[4] = 0x08;
+	p[5] = AWDL_AF_VERSION;
+	p[6] = subtype;
+	putLe32(p + 8, (uint32_t)nowUs);
+	putLe32(p + 12, (uint32_t)nowUs);
+	p += 16;
+
+	/* 4: sync params (Docs/AWDL_TLV_BODIES.md §1.2, value offsets) */
+	p[0] = AWDL_TLV_SYNC;
+	putLe16(p + 1, AWDL_SYNC_LEN + AWDL_CHANSEQ_LEN + 2);
+	uint8_t *v = p + 3;
+	v[0] = channel;                 /* next AW channel */
+	putLe16(v + 1, toSlot);         /* TU to the next slot boundary */
+	v[3] = channel;                 /* master channel */
+	v[4] = 0;                       /* guard time */
+	putLe16(v + 5, AWDL_AW_TU);
+	putLe16(v + 7, AWDL_PSF_TU);
+	putLe16(v + 9, 0x1800);
+	putLe16(v + 11, AWDL_AW_TU);    /* extended AW length */
+	putLe16(v + 13, AWDL_AW_TU);    /* common AW length */
+	putLe16(v + 15, awLeft);
+	v[17] = v[18] = v[19] = v[20] = 3;
+	memcpy(v + 21, master, 6);
+	v[27] = AWDL_PM;
+	v[28] = 0;
+	putLe16(v + 29, aw);
+	putLe16(v + 31, 0);             /* AP alignment */
+	putChanSeq(v + AWDL_SYNC_LEN, channel);
+	p += 3 + AWDL_SYNC_LEN + AWDL_CHANSEQ_LEN + 2;
+
+	/* 5: election v1 from v2 (Docs/AWDL_TLV5_ELECTION.md) */
+	p[0] = AWDL_TLV_ELECTION;
+	putLe16(p + 1, 21);
+	v = p + 3;
+	if (e2) {
+		v[3] = (uint8_t)*(const uint32_t *)(e2 + 3 + 16);       /* distance */
+		memcpy(v + 5, e2 + 3, 6);                               /* top master */
+		memcpy(v + 11, e2 + 3 + 20, 4);                         /* top master metric */
+		memcpy(v + 15, e2 + 3 + 24, 4);                         /* own metric */
+	} else {
+		memcpy(v + 5, _mac, 6);
+	}
+	p += 3 + 21;
+
+	/* 18: channel sequence, 3 bytes of padding */
+	p[0] = AWDL_TLV_CHANSEQ;
+	putLe16(p + 1, AWDL_CHANSEQ_LEN + 3);
+	putChanSeq(p + 3, channel);
+	p += 3 + AWDL_CHANSEQ_LEN + 3;
+
+	memcpy(p, _tpl, tplLen);
+	p += tplLen;
+	IOLockUnlock(_txLock);
+	return (size_t)(p - out);
+}
+
+/*
+ * Takes the slot boundary and AW count of a node that announces itself as
+ * master in its TLV 4 (master address == source). m holds the RX prefix, the
+ * 802.11 header and the action frame.
+ */
+void RTLAwdInterface::alignClock(mbuf_t m, const uint8_t *src)
+{
+	uint8_t b[16 + 3 + AWDL_SYNC_LEN + 64];
+	size_t len = mbuf_pkthdr_len(m);
+	size_t off = AWDL_RX_META + AWDL_WLAN_HDR;
+	if (len < off + 16 + 3 + AWDL_SYNC_LEN || !memcmp(src, _mac, 6))
+		return;
+	size_t n = len - off < sizeof(b) ? len - off : sizeof(b);
+	if (mbuf_copydata(m, off, n, b) != 0)
+		return;
+	const uint8_t *t = findTlv(b + 16, n - 16, AWDL_TLV_SYNC, AWDL_SYNC_LEN);
+	if (!t || memcmp(t + 3 + 21, src, 6))
+		return;
+	uint16_t toSlot = getLe16(t + 3 + 1);
+	uint16_t aw = getLe16(t + 3 + 29);
+	if (!toSlot || toSlot > AWDL_SLOT_TU)
+		return;
+	uint64_t now = awdlNowUs();
+	IOLockLock(_txLock);
+	/* The slot now running started SLOT_TU - toSlot TU ago; aw is the AW
+	 * now, so that slot began (SLOT_TU - toSlot) / AW_TU AWs earlier. */
+	uint32_t into = AWDL_SLOT_TU - toSlot;
+	_clkBaseUs = now - (uint64_t)into * AWDL_TU_US;
+	_clkBaseAw = (uint16_t)(aw - into / AWDL_AW_TU);
+	_clkAligned++;
+	IOLockUnlock(_txLock);
+	if (_clkAligned <= 4)
+		LOG("awdl: clock follows %02x:%02x:%02x:%02x:%02x:%02x aw %u next slot %u TU", src[0],
+		    src[1], src[2], src[3], src[4], src[5], aw, toSlot);
 }
 
 /* Stage 3: see the AWDL_ACK block of AWDLInterface.h. */
@@ -568,7 +921,6 @@ AWDL_ACK(setAWDL_SYNC_ENABLED, apple80211_awdl_sync_enabled)
 AWDL_ACK(setAWDL_TXCAL_PERIOD, apple80211_awdl_txcal_period)
 AWDL_ACK(setAWDL_SYNCHRONIZATION_CHANNEL_SEQUENCE, apple80211_awdl_sync_channel_sequence)
 AWDL_ACK(setAWDL_ELECTION_PARAMS, apple80211_awdl_election_params)
-AWDL_ACK(setAWDL_SYNC_FRAME_TEMPLATE, apple80211_awdl_sync_frame_template)
 AWDL_ACK(setAWDL_SECONDARY_MASTER_CHANNEL, apple80211_awdl_secondary_master_channel)
 AWDL_ACK(setAWDL_AF_TX_MODE, apple80211_awdl_af_tx_mode)
 AWDL_ACK(setAWDL_AWDL_ADVERTISERS, awdl_peer_advert_add)
