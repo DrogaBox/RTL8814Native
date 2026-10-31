@@ -23,7 +23,44 @@
 /* airLog() of RTLAirLayer.cpp, exposed by the hook patch so these lines land
  * in the RTLAirLayerLog array of the RTL8814Native node. */
 extern void rtlAirLog(const char *fmt, ...) __printflike(1, 2);
-#define LOG(fmt, ...) rtlAirLog(fmt, ##__VA_ARGS__)
+#define LOG(fmt, ...) awdlLog(fmt, ##__VA_ARGS__)
+
+/* Each line also goes to a ring of its own, the RTLAwdlLog array of awdl0,
+ * which the radio polling in RTLAirLayerLog cannot push out. */
+#define AWDL_LOG_MAX 256
+static IOLock *gAwdlLogLock;
+static OSObject *gAwdlLogTarget;
+
+static void awdlLog(const char *fmt, ...) __printflike(1, 2);
+static void awdlLog(const char *fmt, ...)
+{
+	char buf[192];
+	va_list ap;
+	va_start(ap, fmt);
+	vsnprintf(buf, sizeof(buf), fmt, ap);
+	va_end(ap);
+	rtlAirLog("%s", buf);
+	if (!gAwdlLogLock)
+		return;
+	OSString *line = OSString::withCString(buf);
+	if (!line)
+		return;
+	IOLockLock(gAwdlLogLock);
+	IOService *t = (IOService *)gAwdlLogTarget;
+	if (t) {
+		OSArray *old = OSDynamicCast(OSArray, t->getProperty("RTLAwdlLog"));
+		OSArray *arr = old ? OSArray::withArray(old, AWDL_LOG_MAX + 1) : OSArray::withCapacity(64);
+		if (arr) {
+			while (arr->getCount() >= AWDL_LOG_MAX)
+				arr->removeObject(0);
+			arr->setObject(line);
+			t->setProperty("RTLAwdlLog", arr);
+			arr->release();
+		}
+	}
+	IOLockUnlock(gAwdlLogLock);
+	line->release();
+}
 
 /* ---- IO80211 / Skywalk entry points that are not virtual (25.6.0 names) ---- */
 extern "C" {
@@ -136,6 +173,14 @@ bool RTLAwdInterface::initWithController(RTLAirController *ctrl, const uint8_t m
 	if (!init()) {
 		LOG("awdl: init() failed");
 		return false;
+	}
+	/* One awdl0 at a time; the lock lives as long as the kext. */
+	if (!gAwdlLogLock)
+		gAwdlLogLock = IOLockAlloc();
+	if (gAwdlLogLock) {
+		IOLockLock(gAwdlLogLock);
+		gAwdlLogTarget = this;
+		IOLockUnlock(gAwdlLogLock);
 	}
 	uint32_t rx = 1;
 	PE_parse_boot_argn("rtlawdl_rx", &rx, sizeof(rx));
@@ -372,6 +417,12 @@ void RTLAwdInterface::stop(IOService *provider)
 
 void RTLAwdInterface::free()
 {
+	if (gAwdlLogLock) {
+		IOLockLock(gAwdlLogLock);
+		if (gAwdlLogTarget == this)
+			gAwdlLogTarget = nullptr;
+		IOLockUnlock(gAwdlLogLock);
+	}
 	/* A pending drain holds a reference, so none is queued or running here. */
 	if (_rxDrain) {
 		thread_call_free(_rxDrain);
