@@ -10,7 +10,7 @@ Evaluación del código de la capa AWDL (`Source/AirLayer/AWDLInterface.cpp` y `
 |---|---|---|---|
 | **25G241** | macOS 26.7.1 | Línea base | Código original validado. 131/131 símbolos OK, 157/157 ranuras de vtable OK, 61/61 desplazamientos OK. |
 | **25G332** | macOS 26.7.2 | **Funciona tal cual** | 131/131 símbolos OK (0 faltantes). 157/157 ranuras de vtable OK (0 desajustes). 48/61 desplazamientos OK y 0 movidos; las 13 filas de funciones sin símbolo del kernel, por búsqueda del patrón en todo el kernel (12 con el mismo número de coincidencias que en 25G241, 1 genérica `?`). Tokens 129/132/205, payloads de eventos 41/43, puerta de doble banda y offsets de presencia/PPP 100 % idénticos. |
-| **24H232** | macOS 15.8.2 | **Requiere binario y cabecera separados** | 129/131 símbolos OK (faltan `flushFlowQueues` y `signalMulticastPackets`). Desplazamiento acumulado de -0x20 en vtable (`sendPendingPacketsToStack` a `0xF10` vs `0xF30`; `inputPacket` a `0xB48` vs `0xB50`; `setMacAddress` pura a `0xCF8` vs `0xF40`). Bloque de capacidades a `ctrl+0x120 + 0xB20` (delta -0x10). Offsets de presencia desplazados. |
+| **24H232** | macOS 15.8.2 | **Requiere binario y cabecera separados** | 129/131 símbolos OK (faltan `flushFlowQueues` y `signalMulticastPackets`). Desplazamiento acumulado de -0x20 en vtable (`sendPendingPacketsToStack` a `0xF10` vs `0xF30`; `inputPacket` a `0xB48` vs `0xB50`; `setMacAddress` pura a `0xCF8` vs `0xF40`; bloque AWDL de la vtable -0x28, `getSSID` a `0xFA0` vs `0xFC8`). Bloque de capacidades a `ctrl+0x120 + 0xB20` (delta -0x10). Offsets de presencia desplazados. |
 | **23J631** | macOS 14.8.9 | **Requiere binario y cabecera separados** | 121/131 símbolos OK (10 ausentes). Desplazamiento masivo de vtable (-0x78 en `IO80211VirtualInterface`, -0xA0 en métodos AWDL: `getSSID` a `0xF28` vs `0xFC8`). Firma de `inputPacket` con 4 argumentos (sin booleano final). Tamaño de objeto de interfaz `0x120` (en vez de `0x130`) `?`. Sin buffer centralizado de capacidades en el controlador (AWDL lee en `sub+0xB18`). Offsets de presencia desplazados. |
 
 ---
@@ -51,22 +51,22 @@ Cotejo de ranuras declaradas en `Source/AirLayer/AWDLInterface.h` contra los vol
 | `0x600` | `terminate` | 0x600 OK | 0x600 OK | 0x600 OK | 0x600 OK | Idéntico en los 4 builds |
 | `0x8E8` | `prepareBSDInterface` | 0x8E8 OK | 0x8E8 OK | 0x8D8 | 0x8E8 OK | En 14 desplazado por menor número de métodos previos |
 | `0x910` | `processBSDCommand` | 0x910 OK | 0x910 OK | 0x900 | 0x910 OK | Idem |
-| `0x930` | `setInterfaceEnable` | 0x930 OK | 0x930 OK | 0x920 | 0x928 | En 25 se insertó `setRxFlowSteering` en `0x928` |
+| `0x930` | `setInterfaceEnable` | 0x930 OK | 0x930 OK | 0x918 | 0x928 | En 25 se insertó `setRxFlowSteering` en `0x928` |
 | `0x9B8` | `getFeatureFlags` | 0x9B8 OK | 0x9B8 OK | 0x9A0 | 0x9B0 | Delta -0x8 en 15 |
-| `0xB08` | `createPeerManager` | 0xB08 OK | 0xB08 OK | 0xAF0 | 0xB00 | Delta -0x8 en 15 |
-| `0xB18` | `postMessage` | 0xB18 OK | 0xB18 OK | 0xB00 | 0xB10 | Delta -0x8 en 15 |
+| `0xB08` | `createPeerManager` | 0xB08 OK | 0xB08 OK | 0xB08 OK | 0xB00 | Delta -0x8 en 15; en 14 igual que en 26 |
+| `0xB18` | `postMessage` | 0xB18 OK | 0xB18 OK | 0xB10 | 0xB10 | Delta -0x8 en 14 y 15 (en 26 se insertó `createPeer` en `0xB10`) |
 | `0xB48` / `0xB50` | `inputPacket` | **0xB50** OK | **0xB50** OK | **0xB48** | **0xB48** | En 14 y 15 está en `0xB48`. En 14 la firma tiene 4 args (sin bool) |
 | `0xB88` | `linkState` | 0xB88 OK | 0xB88 OK | 0xB88 OK | 0xB88 OK | Eliminación de `setLinkState` en 25 neutralizó el delta |
 | `0xE60` / `0xE68` | `init` | **0xE68** OK | **0xE68** OK | **0xDF0** | **0xE60** | Inicio de métodos propios de la interfaz virtual |
-| `0xCF8` / `0xF40` | `setMacAddress` | **0xF40** pura | **0xF40** pura | no pura | **0xCF8** pura | En 15 es virtual pura en `0xCF8`; en 26 se trasladó a `0xF40` |
+| `0xCF8` / `0xF40` | `setMacAddress` | **0xF40** pura | **0xF40** pura | ausente | **0xCF8** pura | En 15 es virtual pura en `0xCF8`; en 26 se trasladó a `0xF40` |
 | `0xF10` / `0xF30` | `sendPendingPacketsToStack` | **0xF30** OK | **0xF30** OK | **0xE80** | **0xF10** | En 15 delta -0x20; en 14 delta -0xB0 |
 | `0xF18` / `0xF38` | `freePendingPackets` | **0xF38** OK | **0xF38** OK | **0xE88** | **0xF18** | En 15 delta -0x20; en 14 delta -0xB0 |
-| `0xF28` / `0xFC8` | `getSSID` (inicio AWDL) | **0xFC8** OK | **0xFC8** OK | **0xF28** | **0xFC8** OK | Inicio de ranuras AWDL; en 14 arranca en `0xF28` (-0xA0) |
-| `0x10B0` | `setAWDL_SYNC_PARAMS` | 0x10B0 OK | 0x10B0 OK | 0x1010 | 0x10B0 OK | Ranura AWDL ioctl 116; en 14 delta -0xA0 |
-| `0x10E0` | `setAWDL_SYNCHRONIZATION_CHANNEL_SEQUENCE` | 0x10E0 OK | 0x10E0 OK | 0x1040 | 0x10E0 OK | Ranura AWDL ioctl 129; en 14 delta -0xA0 |
-| `0x10E8` | `setAWDL_MASTER_CHANNEL` | 0x10E8 OK | 0x10E8 OK | 0x1048 | 0x10E8 OK | Ranura AWDL ioctl 132; en 14 delta -0xA0 |
-| `0x1130` | `setAWDL_SECONDARY_MASTER_CHANNEL` | 0x1130 OK | 0x1130 OK | 0x1090 | 0x1130 OK | Ranura AWDL ioctl 205; en 14 delta -0xA0 |
-| `0x11B8` | `setAWDL_RTG_PEER_STATS_CONFIG` | 0x11B8 OK | 0x11B8 OK | ausente | 0x11B8 OK | Última celda AWDL en 15 y 26; no existe en 14 |
+| `0xF28` / `0xFC8` | `getSSID` (inicio AWDL) | **0xFC8** OK | **0xFC8** OK | **0xF28** | **0xFA0** | Inicio de ranuras AWDL; en 14 -0xA0, en 15 -0x28 |
+| `0x10B0` | `setAWDL_SYNC_PARAMS` | 0x10B0 OK | 0x10B0 OK | 0x1010 | 0x1088 | Ranura AWDL ioctl 116; en 14 delta -0xA0, en 15 -0x28 |
+| `0x10E0` | `setAWDL_SYNCHRONIZATION_CHANNEL_SEQUENCE` | 0x10E0 OK | 0x10E0 OK | 0x1040 | 0x10B8 | Ranura AWDL ioctl 129; en 14 delta -0xA0, en 15 -0x28 |
+| `0x10E8` | `setAWDL_MASTER_CHANNEL` | 0x10E8 OK | 0x10E8 OK | 0x1048 | 0x10C0 | Ranura AWDL ioctl 132; en 14 delta -0xA0, en 15 -0x28 |
+| `0x1130` | `setAWDL_SECONDARY_MASTER_CHANNEL` | 0x1130 OK | 0x1130 OK | 0x1090 | 0x1108 | Ranura AWDL ioctl 205; en 14 delta -0xA0, en 15 -0x28 |
+| `0x11B8` | `setAWDL_RTG_PEER_STATS_CONFIG` | 0x11B8 OK | 0x11B8 OK | 0x1110 | 0x1190 | Última celda AWDL; en 14 -0xA8, en 15 -0x28 |
 | **Resumen ProxInterface** | 157 ranuras de cabecera | **157 OK** | **157 OK** | 22 OK, 117 desvío | 23 OK, 132 desvío | 25G332 coincide al 100 %; 14 y 15 exigen remapeo |
 
 ---
@@ -295,6 +295,7 @@ Cotejo exhaustivo de las ranuras, ivars y umbrales definidos en `Tools/awdl_pres
      - `setAwdlCurrentChannelSequenceIndex`: `0xEB0` (en vez de `0xEB8`).
      - `sendPendingPacketsToStack`: `0xF10` (en vez de `0xF30`).
      - `freePendingPackets`: `0xF18` (en vez de `0xF38`).
+     - Bloque `IO80211AWDLProtocol` desplazado -0x28 (`getSSID` en `0xFA0`, 129 en `0x10B8`, 132 en `0x10C0`, 205 en `0x1108`).
    - Retirar las declaraciones de métodos virtuales ausentes en 15:
      - `flushFlowQueues(ether_addr*)` (ranura `0xED8` en 26).
      - `signalMulticastPackets(unsigned int, unsigned int)` (ranura `0xF28` en 26).
@@ -318,7 +319,7 @@ Cotejo exhaustivo de las ranuras, ivars y umbrales definidos en `Tools/awdl_pres
      - `freePendingPackets` en ranura `0xE88` (en lugar de `0xF38`).
      - Bloque `IO80211AWDLProtocol` desplazado -0xA0 bytes (arranca en ranura `0xF28` con `getSSID`, en lugar de `0xFC8`).
    - Retirar los métodos de vtable ausentes (`flushFlowQueues`, `getPeerDataStats`, `clearPeerDataStats`, `getPeerSlotDataStats`, `signalMulticastPackets`, `setAwdlCurrentChannelSequenceIndex`, `findPeer`, `setAWDL_CONFIG`).
-   - Retirar la declaración pura de `setMacAddress(ether_addr&)` de `IO80211AWDLProtocol` (no es pura en 14).
+   - Retirar la declaración pura de `setMacAddress(ether_addr&)` de `IO80211AWDLProtocol` (no existe en la vtable de 14).
 2. **Adaptación de firmas de llamadas**:
    - Método `inputPacket`: adaptar la llamada a la firma de 4 argumentos `(IO80211NetworkPacket*, packet_info_tag*, ether_header*, bool*)`, suprimiendo el quinto argumento `bool` introducido en macOS 15/26.
    - Enlace de infraestructura (`RTLAirLayer.cpp`): sustituir `registerInfraEthernetInterface` por `registerEthernetInterface`, prescindir de `allocWithParams` de `IO80211FaultReporter` y adaptar el envío de mensajes de control al controlador.
