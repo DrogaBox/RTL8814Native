@@ -73,3 +73,33 @@ Riesgo que queda: un consumidor en userspace fuera de `airportd` y `wifip2pd` qu
 el 29 por valor (§2.1) `?`. Si
 tras el arranque con `3699d28e` la asociación al 153/80 cambia, la vuelta es reinstalar
 `65266e39`.
+
+## 4. Resultado en hardware (2026-10-31, arranque con `3699d28e`)
+
+- Capa cargada: `com.DrogaBox.driver.RTL8814AirLayer` 0.32.0, UUID
+  `FFB1C931-4E66-3F26-9932-296479EAC642`, el mismo del binario `3699d28e`.
+- Infraestructura: asociación normal en el primer intento; el router anuncia ahora el primario
+  157 (mismo bloque de 80 MHz 149–161 que el 153 de los documentos anteriores). Con AWDL activo,
+  20 de 20 pings al gateway, media 0,62 ms, máximo 0,69 ms. No se observó cambio en asociación,
+  seguridad ni roaming, a diferencia de la capacidad 75.
+- En reposo sólo llega el 129 inicial `6 0 0 0 0 0 0 0 6 0 0 0 0 0 0 0`, igual que sin el bit.
+  Al abrir la ventana AirDrop de Finder el gestor reconstruye la secuencia: aparece por primera
+  vez el social 149 y las ranuras de infraestructura resuelven al 157.
+
+| # | Secuencia del 129, ranuras 0–15 |
+|---:|---|
+| 1 | `149 149 149 149 149 0 0 0 6 149 149 149 149 0 0 0` |
+| 2 | `149 149 149 149 149 149 157 157 6 149 149 149 149 149 157 157` |
+| 3 | `149 149 149 0 0 0 0 0 6 149 149 0 0 0 0 0` |
+| 4 | `157 0 149 0 0 0 0 0 6 0 149 0 0 0 0 0` |
+
+- Ninguna coincide con la fila de Discovery de `AWDL_SECUENCIA_CON_INFRA.md` §6
+  (`3 3 3 3 1 1 7 7 2 4 3 4 1 1 7 7`): en la 1 y la 2 las ranuras 4 y 12 (tipo 1, «no
+  servidas» en esa tabla) llevan 149, y la 4 pone el 157 en la ranura 0. Qué estado y qué fila
+  de la tabla produce cada una queda abierto `?`. La 2 tiene el 157 en las ranuras de tipo 7,
+  lo que según §5.2 de ese documento requiere al menos un servicio AirPlay registrado `?`.
+- Conmutación por ranura del driver: ida al 149 en 4357 y 4355 µs, vuelta a la BSS en 2389 y
+  2415 µs, dentro de una franja de 64 TU (65,5 ms). Primera trama de datos por `awdl0`:
+  multicast mDNS IPv6 a `33:33:00:00:00:fb`, 179 B.
+- Veredicto: el bit 29 era la puerta que faltaba para el social de 5 GHz; el riesgo de §3 no se
+  materializó en la infraestructura.
