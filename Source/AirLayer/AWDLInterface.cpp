@@ -1098,8 +1098,11 @@ uint8_t RTLAwdInterface::parkRadio(uint8_t idleCh, uint64_t nowUs)
 	_parkReqUs = nowUs;
 	uint32_t want = target;
 	IOReturn r = _ctrl->radio(RTL_RADIO_FN_SET_CHANNEL, &want);
-	if (r == kIOReturnUnsupported) {
-		LOG("awdl: radio cannot park on a channel, AWDL only on an associated social channel");
+	if (r == kIOReturnUnsupported || r == kIOReturnBadArgument) {
+		/* an older driver, or a channel outside the plan: asking again
+		 * every second would never succeed */
+		LOG("awdl: radio cannot park on channel %u (0x%x), AWDL only on an associated social "
+		    "channel", want, r);
 		_parkCh = 0;
 	} else if (r == kIOReturnSuccess) {
 		LOG("awdl: parking the radio on channel %u (was %u)", want, idleCh);
