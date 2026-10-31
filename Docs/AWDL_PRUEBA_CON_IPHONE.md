@@ -103,9 +103,10 @@ Con `rtlawdl_tx=1`, mientras `awdl0` está habilitada y la radio no escanea, `aw
 un PSF cada 110 TU y un MIF por franja, en el canal de la red asociada o, sin asociación, en el canal
 fijado del §3. Cada trama lleva la plantilla de sincronía del kernel (ioctl 151) y los TLVs 4, 5 y 18 que
 genera la capa, anunciando ese canal en las 16 franjas. Sin plantilla (el manager aún no envió el 151),
-mientras se une a una red o hasta que la radio llega al canal fijado no sale nada. Las tramas usan la
-tasa de gestión del driver (OFDM 6 Mb/s cuando la radio está fijada) y la categoría 127, que no es robusta, así que con PMF
-activo no se les añade BIP (`CATEGORY_IS_NON_ROBUST`, `Source/rtl8814au/include/ieee80211.h:1531`).
+mientras se une a una red o hasta que la radio llega al canal fijado no sale nada. Las tramas van a
+OFDM 6 Mb/s también con la radio asociada en 2,4 GHz (`0eb77c2`) y con la categoría 127, que no es
+robusta, así que con PMF activo no se les añade BIP (`CATEGORY_IS_NON_ROBUST`,
+`Source/rtl8814au/include/ieee80211.h:1531`).
 
 Comprobación sin iPhone, para descartar problemas de estabilidad antes de la visita:
 
@@ -134,9 +135,35 @@ Con la TX activa también corren (`7e454be`, `7c95ead`, `62a2c49`):
   (ACK) los unicast del iPhone a `awdl0`; mientras está activo el driver acepta datos de otros BSSID
   (`RCR_CBSSID_DATA` a 0, como con AP o mesh). Si se rechaza, aparece `awdl: port 1 refused`.
 
+## 7. Datos por `awdl0`
+
+- **RX** (`5b686a8`): cada trama de datos AWDL recibida (también las subtramas A-MSDU) con el SNAP de
+  Apple sube a `awdl0` como Ethernet II si va a la MAC de `awdl0` o a una dirección de grupo. En el
+  registro, una vez: `awdl: first data packet up from <MAC> ethertype 86dd`; los contadores
+  `data N (up U bad B not us X)` salen en la línea `awdl: rx detached`. No se aplica el filtro de pares
+  de `inputPacket`.
+- **TX** (`5630d49`, `f2969a4`, `42c04d3`, `0eb77c2`): con `rtlawdl_tx=1`, cada paquete que la pila
+  manda por `awdl0` se convierte en trama de datos AWDL (sin QoS, SNAP de Apple, secuencia por
+  destino) y espera en un anillo de 32 tramas hasta la ventana de una franja servida; salen hasta 4 por
+  AW, ninguna en el último AW de la franja, a OFDM 12 Mb/s, por la cola de gestión. El unicast exige el
+  puerto 1; las tramas que esperan más de 1,2 s se descartan. Cada paquete pasa por
+  `preQueuePacketCheckQuietMode` del manager. En el registro, una vez:
+  `awdl: first data frame to <MAC> ethertype 86dd len N`, y en la línea periódica
+  `awdl: tx psf ...` los contadores `data queued Q sent S dropped full F old O bad B fail X`.
+
+Comprobación sin iPhone: `ping6 -c 5 ff02::1%awdl0` debe subir `data queued` y, con la radio en un
+canal social servido, `sent`. `sent` solo cuenta las tramas entregadas al USB: sin una captura en modo
+monitor desde otro equipo no se sabe si salieron al aire ni si un par las confirmó.
+
 Limitaciones conocidas:
 - el MIF no lleva el TLV 16 (ARPA, nombre de host): si el iPhone lo exige para listar el par es `?`;
-- las tramas de datos AWDL recibidas solo se cuentan: no llegan a `awdl0`;
+- un iPhone descarta los datos de una SA que su manager no tiene como par
+  ([AWDL_RX_DATA_TO_SKYWALK.md](AWDL_RX_DATA_TO_SKYWALK.md) §6): los datos solo pasan si antes acepta
+  los PSF/MIF de este Mac;
+- que el MAC reconozca los ACK a las tramas enviadas con la MAC del puerto 1 no está medido: si no lo
+  hace, cada unicast agota sus 7 intentos;
+- sin control de flujo hacia la pila, sin colas por par ni calendario del par, y el multicast no sigue
+  el modelo de Apple (guardado y liberado en un punto fijo del AW);
 - no hay evento 42 (extensiones de ventana);
 - si el tipo ad-hoc del puerto 1 hace emitir algo por sí mismo es `?`
   ([AWDL_RTL8814_RX_ACK.md](AWDL_RTL8814_RX_ACK.md) §5);
