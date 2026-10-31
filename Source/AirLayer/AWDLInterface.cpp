@@ -841,7 +841,6 @@ void RTLAwdInterface::deliverData(mbuf_t m)
 #define AWDL_TLV_ELECTION_V2  24
 #define AWDL_SYNC_LEN         33      /* TLV 4 value up to the channel sequence */
 #define AWDL_CHANSEQ_LEN      (6 + 2 * AWDL_SLOTS)
-#define AWDL_AF_MAX           1024
 #define AWDL_EV_AW_START      41      /* APPLE80211_M_AWDL_AVAILABILITY_WINDOW_START */
 #define AWDL_EV_AW_END        43      /* ..._AVAILABILITY_WINDOW_EXTENSIONS_END */
 
@@ -929,6 +928,68 @@ IOReturn RTLAwdInterface::setAWDL_SYNC_FRAME_TEMPLATE(apple80211_awdl_sync_frame
 }
 
 /*
+ * The 56-byte request of the 149 and the 225 (Docs/AWDL_PSF_MIF_EMISSION.md
+ * §2.2): destination at +0x04, transmit offset at +0x0c, MI bitmap at +0x10,
+ * template length (u16) at +0x28 and the kernel's template at +0x30, rebuilt
+ * by the manager before each request. With _txLock held.
+ */
+bool RTLAwdInterface::copyMiTemplate(const uint8_t *req)
+{
+	uint16_t len = getLe16(req + 0x28);
+	const uint8_t *tpl = *(const uint8_t *const *)(req + 0x30);
+	if (!tpl || !len || len > sizeof(_miTpl))
+		return false;
+	memcpy(_miTpl, tpl, len);
+	_miTplLen = len;
+	return true;
+}
+
+IOReturn RTLAwdInterface::setAWDL_OOB_AUTO_REQUEST(apple80211_awdl_oob_request *arg)
+{
+	const uint8_t *p = (const uint8_t *)arg;
+	if (!p || !_txLock)
+		return kIOReturnSuccess;
+	IOLockLock(_txLock);
+	bool first = !_miTplLen;
+	bool ok = copyMiTemplate(p);
+	IOLockUnlock(_txLock);
+	if (first || !ok)
+		LOG("awdl: MI template %u bytes%s, bitmap 0x%x offset %u us", getLe16(p + 0x28),
+		    ok ? "" : " refused", *(const uint32_t *)(p + 0x10), *(const uint32_t *)(p + 0x0c));
+	return kIOReturnSuccess;
+}
+
+IOReturn RTLAwdInterface::setAWDL_OOB_REQUEST(apple80211_awdl_oob_request *arg)
+{
+	static const uint8_t bcast[6] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
+	const uint8_t *p = (const uint8_t *)arg;
+	if (!p || !_txLock)
+		return kIOReturnSuccess;
+	const uint8_t *dst = p + 0x04;
+	bool queued = true;
+	IOLockLock(_txLock);
+	copyMiTemplate(p);
+	if (!memcmp(dst, bcast, 6)) {
+		_mifNow = true;
+	} else {
+		uint8_t i = 0;
+		while (i < _umiCount && memcmp(_umiDst[i], dst, 6))
+			i++;
+		if (i == _umiCount && _umiCount < 4)
+			memcpy(_umiDst[_umiCount++], dst, 6);
+		else if (i == _umiCount)
+			queued = false;
+	}
+	IOLockUnlock(_txLock);
+	if (!queued)
+		_txUmiDrop++;
+	else if (memcmp(dst, bcast, 6) && _txUmi + _umiCount <= AWDL_RX_LOG_FIRST)
+		LOG("awdl: umi to %02x:%02x:%02x:%02x:%02x:%02x", dst[0], dst[1], dst[2], dst[3], dst[4],
+		    dst[5]);
+	return kIOReturnSuccess;
+}
+
+/*
  * The manager's own channel sequence (129): 16 entries of 12 bytes from +0x0c,
  * {version, channel, flags} (Docs/AWDL_PEERMANAGER_DRIVER_ABI.md §3.7). A slot
  * is served when its channel is the radio's; the others are announced as 0
@@ -1006,10 +1067,10 @@ void RTLAwdInterface::setRadioTx(bool on)
 	}
 	if (!on)
 		flushRadioTx();
-	LOG("awdl: tx %s, psf %llu mif %llu fail %llu aligned %llu aw %llu, data queued %llu sent %llu "
-	    "dropped full %llu old %llu bad %llu fail %llu", on ? "on" : "off", _txPsf, _txMif,
-	    _txFail, _clkAligned, _ev41, _txDataQueued, _txDataSent, _txDataDropFull, _txDataDropOld,
-	    _txDataDropBad, _txDataFail);
+	LOG("awdl: tx %s, psf %llu mif %llu umi %llu/%llu fail %llu aligned %llu aw %llu, data queued "
+	    "%llu sent %llu dropped full %llu old %llu bad %llu fail %llu", on ? "on" : "off", _txPsf,
+	    _txMif, _txUmi, _txUmiDrop, _txFail, _clkAligned, _ev41, _txDataQueued, _txDataSent,
+	    _txDataDropFull, _txDataDropOld, _txDataDropBad, _txDataFail);
 }
 
 void RTLAwdInterface::txTickEntry(thread_call_param_t p0, thread_call_param_t)
@@ -1129,6 +1190,17 @@ void RTLAwdInterface::txTick()
 	 * so the MGNT queue does not spill past the slot and delay the next
 	 * sync frames. */
 	bool dataWindow = ch && served && _awOpen && _txRingCount && aw % AWDL_PM != AWDL_PM - 1;
+	/* The 149s go out in a window of ours, where peers listen. */
+	uint8_t umi[4][6];
+	uint8_t nUmi = 0;
+	bool mifNow = false;
+	if (ch && served && _awOpen) {
+		nUmi = _umiCount;
+		memcpy(umi, _umiDst, sizeof(umi));
+		_umiCount = 0;
+		mifNow = _mifNow;
+		_mifNow = false;
+	}
 	IOLockUnlock(_txLock);
 
 	/* Events 43 then 41, outside the lock: postMessage takes the controller's
@@ -1146,8 +1218,11 @@ void RTLAwdInterface::txTick()
 	if (ch && _tplLen) {
 		if (psf && sendAf(AWDL_AF_PSF, ch, mask))
 			_txPsf++;
-		if (mif && sendAf(AWDL_AF_MIF, ch, mask))
+		if ((mif || mifNow) && sendAf(AWDL_AF_MIF, ch, mask))
 			_txMif++;
+		for (uint8_t i = 0; i < nUmi; i++)
+			if (sendAf(AWDL_AF_MIF, ch, mask, umi[i]))
+				_txUmi++;
 		if (psf && (_txPsf & 0x3FF) == 0)
 			LOG("awdl: tx psf %llu mif %llu fail %llu windows %llu ch %u, data queued %llu "
 			    "sent %llu dropped full %llu old %llu bad %llu fail %llu",
@@ -1232,17 +1307,16 @@ uint16_t RTLAwdInterface::servedMask(uint8_t ch) const
 	return mask;
 }
 
-bool RTLAwdInterface::sendAf(uint8_t subtype, uint8_t channel, uint16_t mask)
+bool RTLAwdInterface::sendAf(uint8_t subtype, uint8_t channel, uint16_t mask, const uint8_t *da)
 {
-	uint8_t buf[AWDL_AF_MAX];
-	size_t len = buildAf(buf, sizeof(buf), subtype, channel, mask);
+	size_t len = buildAf(_afBuf, sizeof(_afBuf), subtype, channel, mask, da);
 	if (!len)
 		return false;
 	uint32_t l = (uint32_t)len;
-	IOReturn r = _radioSvc->callPlatformFunction(_symTx80211, false, buf, &l, nullptr, nullptr);
+	IOReturn r = _radioSvc->callPlatformFunction(_symTx80211, false, _afBuf, &l, nullptr, nullptr);
 	if (r != kIOReturnSuccess) {
 		if (_txFail++ < AWDL_RX_LOG_FIRST)
-			LOG("awdl: tx %s -> 0x%x", subtype == AWDL_AF_MIF ? "mif" : "psf", r);
+			LOG("awdl: tx %s -> 0x%x", da ? "umi" : subtype == AWDL_AF_MIF ? "mif" : "psf", r);
 		return false;
 	}
 	return true;
@@ -1394,13 +1468,17 @@ void RTLAwdInterface::flushRadioTx()
 }
 
 size_t RTLAwdInterface::buildAf(uint8_t *out, size_t cap, uint8_t subtype, uint8_t channel,
-                                uint16_t mask)
+                                uint16_t mask, const uint8_t *da)
 {
 	IOLockLock(_txLock);
 	/* Read under the lock: alignClock may have moved _clkBaseUs past an
 	 * earlier sample, and nowUs - _clkBaseUs would wrap. */
 	uint64_t nowUs = awdlNowUs();
-	uint32_t tplLen = _tplLen;
+	/* A MIF or UMI carries the MI template once the manager sent one: it
+	 * holds the ARPA and service TLVs the sync template lacks. */
+	bool mi = subtype == AWDL_AF_MIF && _miTplLen;
+	const uint8_t *tpl = mi ? _miTpl : _tpl;
+	uint32_t tplLen = mi ? _miTplLen : _tplLen;
 	size_t need = AWDL_WLAN_HDR + 16 + (3 + AWDL_SYNC_LEN + AWDL_CHANSEQ_LEN + 2) + (3 + 21) +
 	              (3 + AWDL_CHANSEQ_LEN + 3) + tplLen;
 	if (!tplLen || need > cap) {
@@ -1421,9 +1499,13 @@ size_t RTLAwdInterface::buildAf(uint8_t *out, size_t cap, uint8_t subtype, uint8
 
 	uint8_t *p = out;
 	bzero(out, need);
-	/* 802.11: action, broadcast, from awdl0, BSSID of AWDL; the radio numbers it. */
+	/* 802.11: action, broadcast or to the UMI's peer, from awdl0, BSSID of
+	 * AWDL; the radio numbers it. */
 	p[0] = 0xD0;
-	memset(p + 4, 0xFF, 6);
+	if (da)
+		memcpy(p + 4, da, 6);
+	else
+		memset(p + 4, 0xFF, 6);
 	memcpy(p + 10, _mac, 6);
 	memcpy(p + 16, kAwdlBssid, 6);
 	p += AWDL_WLAN_HDR;
@@ -1482,7 +1564,7 @@ size_t RTLAwdInterface::buildAf(uint8_t *out, size_t cap, uint8_t subtype, uint8
 	putChanSeq(p + 3, channel, mask);
 	p += 3 + AWDL_CHANSEQ_LEN + 3;
 
-	memcpy(p, _tpl, tplLen);
+	memcpy(p, tpl, tplLen);
 	p += tplLen;
 	IOLockUnlock(_txLock);
 	return (size_t)(p - out);

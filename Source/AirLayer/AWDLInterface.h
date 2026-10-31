@@ -336,6 +336,11 @@ public:
 	AWDL_ACK(setAWDL_EXTENSION_STATE_MACHINE_PARAMETERS,
 	         apple80211_awdl_extension_state_machine_parameter)
 	AWDL_ACK(setPSF_DWELL, apple80211_awdl_psf_dwell_params)
+	/* The master indication template (Docs/AWDL_PSF_MIF_EMISSION.md §2.2,
+	 * §2.3): 149 sends one MIF (broadcast) or UMI (unicast) in the next
+	 * window, 225 keeps the template for every MIF. */
+	AWDL_ACK(setAWDL_OOB_REQUEST, apple80211_awdl_oob_request)
+	AWDL_ACK(setAWDL_OOB_AUTO_REQUEST, apple80211_awdl_oob_request)
 #undef AWDL_ACK
 
 #define AWDL_STUB(name, type) \
@@ -375,12 +380,10 @@ public:
 	AWDL_STUB(setCHANNEL, apple80211_channel_data)
 	AWDL_STUB(setAWDL_PRESENCE_MODE, apple80211_awdl_presence_mode)
 	AWDL_STUB(setPEER_CACHE_CONTROL, apple80211_peer_cache_control)
-	AWDL_STUB(setAWDL_OOB_REQUEST, apple80211_awdl_oob_request)
 	AWDL_STUB(setAWDL_PEER_TRAFFIC_REGISTRATION,
 	          apple80211_awdl_peer_traffic_registration)
 	AWDL_STUB(setAWDL_ENCRYPTION_KEYS, apple80211_key)
 	AWDL_STUB(setAWDL_ENCRYPTION_TYPE, apple80211_encrypt)
-	AWDL_STUB(setAWDL_OOB_AUTO_REQUEST, apple80211_awdl_oob_request)
 	AWDL_STUB(setAWDL_DFSP_CONFIG, apple80211_awdl_dfsp_config)
 	AWDL_STUB(setAWDL_DFSP_UCSA_CONFIG, apple80211_awdl_dfsp_ucsa_config)
 	AWDL_STUB(setCOMPANION_SKYWALK_IF_CREATE,
@@ -442,6 +445,13 @@ private:
 	bool _tickBusy;             /* a txTick is running; it rearms itself */
 	uint8_t _tpl[512];
 	uint32_t _tplLen;
+	uint8_t _miTpl[1200];       /* MI template of the last 149/225, the kernel's size */
+	uint32_t _miTplLen;
+	bool _mifNow;               /* a broadcast 149: one MIF in the next window */
+	uint8_t _umiDst[4][6];      /* unicast 149s waiting for the next window */
+	uint8_t _umiCount;
+	uint64_t _txUmi, _txUmiDrop;
+	uint8_t _afBuf[1488];       /* sendAf, tick only: the radio's frame limit */
 	uint64_t _clkBaseUs;        /* start of the slot whose first AW is _clkBaseAw */
 	uint16_t _clkBaseAw;
 	uint64_t _nextPsfUs;
@@ -490,8 +500,10 @@ private:
 	void armTick(uint64_t deadline);
 	uint8_t parkRadio(uint8_t idleCh, uint64_t nowUs);
 	uint16_t servedMask(uint8_t ch) const;
-	bool sendAf(uint8_t subtype, uint8_t channel, uint16_t mask);
-	size_t buildAf(uint8_t *out, size_t cap, uint8_t subtype, uint8_t channel, uint16_t mask);
+	bool sendAf(uint8_t subtype, uint8_t channel, uint16_t mask, const uint8_t *da = nullptr);
+	size_t buildAf(uint8_t *out, size_t cap, uint8_t subtype, uint8_t channel, uint16_t mask,
+	               const uint8_t *da);
+	bool copyMiTemplate(const uint8_t *req);
 	void alignClock(mbuf_t m, const uint8_t *src);
 	static void txTickEntry(thread_call_param_t p0, thread_call_param_t);
 };
