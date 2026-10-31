@@ -14,6 +14,7 @@
 #include <pexpert/pexpert.h>
 #include <sys/errno.h>
 #include <net/ethernet.h>
+#include "AWDLInterface.h"
 
 /*
  * IOLog does not reach `log show` on this system and dmesg rotates within
@@ -55,6 +56,43 @@ static void airLog(const char *fmt, ...)
 }
 
 #define LOG(fmt, ...) airLog(fmt, ##__VA_ARGS__)
+
+/* The log ring and the last associate live as properties of the radio; they
+ * move with the target so a re-enumeration keeps the history. */
+static void moveLogTarget(IOService *to)
+{
+	if (!gLogLock || !to)
+		return;
+	IOLockLock(gLogLock);
+	if (gLogTarget && gLogTarget != to) {
+		static const char *const props[] = { kLogProp, "RTLAirLastAssoc" };
+		for (const char *k : props) {
+			OSObject *v = gLogTarget->copyProperty(k);
+			if (v) {
+				to->setProperty(k, v);
+				v->release();
+			}
+		}
+	}
+	gLogTarget = to;
+	IOLockUnlock(gLogLock);
+}
+
+/* Logger of this unit, for AWDLInterface.cpp: same buffer, same ring. */
+void rtlAirLog(const char *fmt, ...) __printflike(1, 2);
+void rtlAirLog(const char *fmt, ...)
+{
+	char buf[192];
+	va_list ap;
+	va_start(ap, fmt);
+	vsnprintf(buf, sizeof(buf), fmt, ap);
+	va_end(ap);
+	airLog("%s", buf);
+}
+
+/* Refuses to start on a macOS whose IO80211 / Skywalk structure or build was
+ * not validated (airGateOpen). */
+#include "VersionGate.h"
 
 /* Last associate request, kept apart from the log ring so scans cannot push it
  * out. Only header fields are recorded, never key material. */
@@ -548,6 +586,27 @@ void RTLAirInterface::free()
 	OSSafeReleaseNULL(*(OSObject **)&_txPool);
 	OSSafeReleaseNULL(*(OSObject **)&_rxPool);
 	RTLAirInterfaceStubs::free();
+}
+
+/* ---- AWDL (stage 1) ---- */
+
+/*
+ * VIRTUAL_IF_CREATE (type 94, slot 556). Only the AWDL role gets past this
+ * point; every other role keeps the answer of the generated stub, so a
+ * system without rtlawdl behaves exactly as before.
+ */
+IOReturn RTLAirInterface::setVIRTUAL_IF_CREATE(apple80211_virt_if_create_data *req)
+{
+	STUB_ENTER();
+	if (!req)
+		return kIOReturnBadArgument;
+	if (req->role != 6) {
+		LOG("awdl: invalid role %u", req->role);
+		return req->role == 7 ? kIOReturnUnsupported : (IOReturn)0xE0000001;
+	}
+	if (!_ctrl->awdlAllowed())
+		return kIOReturnUnsupported;
+	return _ctrl->createAwdlInterface(req->mac, req->ifname);
 }
 
 /* ---- WCL requests ---- */
@@ -1162,12 +1221,13 @@ OSDefineMetaClassAndStructors(RTLAirController, RTLAirControllerStubs)
 
 IOReturn RTLAirController::radio(const char *fn, void *p1, void *p2)
 {
-	if (!_radio)
+	IOService *rad = _radio;        /* one read: radioGone may clear it meanwhile */
+	if (!rad)
 		return kIOReturnNotReady;
 	const OSSymbol *sym = OSSymbol::withCString(fn);
 	if (!sym)
 		return kIOReturnNoMemory;
-	IOReturn r = _radio->callPlatformFunction(sym, false, p1, p2, nullptr, nullptr);
+	IOReturn r = rad->callPlatformFunction(sym, false, p1, p2, nullptr, nullptr);
 	sym->release();
 	if (!strcmp(fn, RTL_RADIO_FN_STATUS))
 		OSIncrementAtomic(&gStatusCalls);
@@ -1200,12 +1260,108 @@ IOReturn RTLAirController::linkStatus(struct rtl_radio_status *st)
 
 void RTLAirController::transmit(mbuf_t m)
 {
-	if (!_radio || !_symTx) {
+	IOService *rad = _radio;
+	if (!rad || !_symTx) {
 		mbuf_freem(m);
 		return;
 	}
-	_radio->callPlatformFunction(_symTx, false, m, nullptr, nullptr, nullptr);
+	rad->callPlatformFunction(_symTx, false, m, nullptr, nullptr, nullptr);
 	countTx();
+}
+
+IOReturn RTLAirController::radioTx80211(const uint8_t *frame, uint32_t *len)
+{
+	IOService *rad = _radio;
+	if (!rad || !_symTx80211)
+		return kIOReturnNotReady;
+	return rad->callPlatformFunction(_symTx80211, false, (void *)frame, len, nullptr, nullptr);
+}
+
+#define kInfraQuietMs 3000
+void RTLAirController::infraTouch()
+{
+	_infraQuietMs = uptimeMs() + kInfraQuietMs;
+}
+bool RTLAirController::infraBusy() const
+{
+	return _phase == kJoining || _phase == kRoaming || _scanPending || uptimeMs() < _infraQuietMs;
+}
+void RTLAirController::setRadio(IOService *rad)
+{
+	if (rad)
+		rad->retain();
+	IOService *older = _radioOld;
+	_radioOld = _radio;
+	_radio = rad;
+	OSSafeReleaseNULL(older);
+}
+
+/*
+ * The old RTL8814Native is terminating (USB re-enumeration at wake), still
+ * alive: detach the hooks from it, drop a link this layer made (WCL then
+ * re-joins through the new radio, as after a deauth) and park the radio.
+ */
+static void linkDownEvent(uint8_t ev[16]);
+
+void RTLAirController::radioGone(IOService *rad)
+{
+	if (!rad || rad != _radio)
+		return;
+	IOLockLock(_lock);
+	int phase = _phase;
+	bool scan = _scanPending;
+	_phase = kIdle;
+	_scanPending = false;
+	bzero(&_joinReq, sizeof(_joinReq));
+	IOLockUnlock(_lock);
+	LOG("radio leaving (re-enumeration), phase %d scan %u", phase, scan);
+	if (_awdl)
+		_awdl->radioGone();
+	setDataPath(false);             /* in memory on the old radio, no USB I/O */
+	setRadio(nullptr);
+	/* No leave on hardware that is gone; WCL hears what a deauth would say. */
+	if (phase == kLinked || phase == kRoaming) {
+		uint8_t ev[16];
+		linkDownEvent(ev);
+		post(kMsgLink, ev, sizeof(ev));
+	}
+	if (scan) {
+		uint32_t status = 0;
+		post(kMsgWclScanDone, &status, sizeof(status));
+		post(kMsgScanDone, &status, sizeof(status));
+	}
+}
+
+/* The new RTL8814Native for the same dongle: same ABI and hardware MAC. */
+bool RTLAirController::radioBack(IOService *rad)
+{
+	uint32_t abi = 0;
+	uint8_t mac[6] = {};
+	if (!rad || _stopping)
+		return false;
+	const OSSymbol *sym = OSSymbol::withCString(RTL_RADIO_FN_ABI);
+	IOReturn r = sym ? rad->callPlatformFunction(sym, false, &abi, nullptr, nullptr, nullptr)
+	                 : kIOReturnNoMemory;
+	OSSafeReleaseNULL(sym);
+	if (r != kIOReturnSuccess || abi != RTL_RADIO_ABI) {
+		LOG("new radio ABI %u (0x%x), need %u", abi, r, RTL_RADIO_ABI);
+		return false;
+	}
+	setRadio(rad);
+	if (radio(RTL_RADIO_FN_MAC, mac) != kIOReturnSuccess) {
+		setRadio(nullptr);
+		return false;
+	}
+	/* The interfaces were power children of the old radio (PMstop dropped them). */
+	if (_iface)
+		rad->joinPMtree(_iface);
+	if (_awdl) {
+		rad->joinPMtree(_awdl);
+		_awdl->radioBack();
+	}
+	LOG("radio back, mac %02x:%02x:%02x:%02x:%02x:%02x", mac[0], mac[1], mac[2], mac[3],
+	    mac[4], mac[5]);
+	return true;
 }
 
 /*
@@ -1345,26 +1501,52 @@ static void flushEntry(thread_call_param_t, thread_call_param_t)
 	thread_call_enter_delayed(gFlushCall, deadline);
 }
 
+/* The nub that serves the dongle; it lives as long as the layer is up. */
+static RTLAirNub *gNub;
+
 bool RTLAirNub::start(IOService *provider)
 {
 	uint32_t armed = 0;
 	if (!gLogLock)
 		gLogLock = IOLockAlloc();
-	gLogTarget = provider;
+	if (gNub && gNub != this) {
+		/* A new RTL8814Native after a re-enumeration: the existing nub, its
+		 * controller and en2 move over to it, and this nub goes away. */
+		bool ok = gNub->adopt(provider);
+		LOG("radio re-enumerated, %s", ok ? "handed to the existing nub" : "hand-over failed");
+		return false;
+	}
+	moveLogTarget(provider);
 	if (!PE_parse_boot_argn("rtlair", &armed, sizeof(armed)) || armed == 0) {
 		LOG("not armed (boot-arg rtlair=1, or 2 with data path), staying out");
 		return false;
 	}
-	LOG("nub 0.31, rtlair=%u", armed);
+	if (!airGateOpen()) {
+		LOG("version gate closed, staying out (en2 is unaffected)");
+		return false;
+	}
+	LOG("nub 0.33, rtlair=%u", armed);
 	if (!gWorkQueue)
 		gWorkQueue = (IO80211WorkQueue *)rtl_io_workQueue();
 	if (!gWorkQueue) {
 		LOG("IO80211WorkQueue failed");
 		return false;
 	}
-	if (!IOService::start(provider))
+	_detachCall = thread_call_allocate(&RTLAirNub::detachEntry, this);
+	if (!_detachCall || !IOService::start(provider)) {
+		if (_detachCall) {
+			thread_call_free(_detachCall);
+			_detachCall = nullptr;
+		}
 		return false;
+	}
+	_radio = provider;
+	/* Second provider: the old radio's termination then leaves the nub alone. */
+	IOService *res = getResourceService();
+	if (!res || !attach(res))
+		LOG("no IOResources anchor: en2 will not survive a re-enumeration");
 	setName("RTLAirNub");
+	gNub = this;
 	if (!gFlushCall && (gFlushCall = thread_call_allocate(flushEntry, nullptr))) {
 		gFlushStartMs = uptimeMs();
 		thread_call_enter(gFlushCall);
@@ -1373,8 +1555,73 @@ bool RTLAirNub::start(IOService *provider)
 	return true;
 }
 
+bool RTLAirNub::adopt(IOService *rad)
+{
+	if (isInactive() || _radio || !_ctrl)
+		return false;
+	if (!attach(rad))
+		return false;
+	if (!_ctrl->radioBack(rad)) {
+		detach(rad);
+		return false;
+	}
+	_radio = rad;
+	moveLogTarget(rad);
+	return true;
+}
+
+/* Still alive here: the controller detaches its hooks from it. */
+bool RTLAirNub::willTerminate(IOService *provider, IOOptionBits options)
+{
+	if (provider && provider == _radio) {
+		moveLogTarget(this);            /* the trace must not land on a freed radio */
+		if (_ctrl)
+			_ctrl->radioGone(provider);
+		_radio = nullptr;
+		if (!_leaving) {
+			provider->retain();
+			_leaving = provider;
+		}
+	}
+	return IOService::willTerminate(provider, options);
+}
+
+void RTLAirNub::detachEntry(thread_call_param_t p0, thread_call_param_t)
+{
+	RTLAirNub *me = (RTLAirNub *)p0;
+	IOService *gone = me->_leaving;
+	me->_leaving = nullptr;
+	if (gone) {
+		if (me->isParent(gone, gIOServicePlane))
+			me->detach(gone);
+		gone->release();
+	}
+	me->release();
+}
+
+bool RTLAirNub::didTerminate(IOService *provider, IOOptionBits options, bool *defer)
+{
+	bool ok = IOService::didTerminate(provider, options, defer);
+	if (provider && provider == _leaving && _detachCall) {
+		retain();
+		if (thread_call_enter(_detachCall))
+			release();              /* already queued */
+	}
+	return ok;
+}
+
 void RTLAirNub::stop(IOService *provider)
 {
+	if (gNub == this)
+		gNub = nullptr;
+	_ctrl = nullptr;
+	if (_detachCall) {
+		if (thread_call_cancel_wait(_detachCall))
+			release();
+		thread_call_free(_detachCall);
+		_detachCall = nullptr;
+	}
+	OSSafeReleaseNULL(_leaving);
 	if (gFlushCall) {
 		thread_call_cancel_wait(gFlushCall);
 		thread_call_free(gFlushCall);
@@ -1394,8 +1641,13 @@ IOWorkLoop *RTLAirNub::getWorkLoop() const
 bool RTLAirController::start(IOService *provider)
 {
 	uint32_t armed = 0;
-	IOService *radioSvc = OSDynamicCast(RTLAirNub, provider) ? provider->getProvider() : nullptr;
+	RTLAirNub *nub = OSDynamicCast(RTLAirNub, provider);
+	IOService *radioSvc = nub ? nub->radio() : nullptr;
 	if (!radioSvc || !gLogLock || !PE_parse_boot_argn("rtlair", &armed, sizeof(armed)) || armed == 0)
+		return false;
+	/* The nub only exists when the gate opened; checked again so the
+	 * controller can never start on its own. */
+	if (!airGateOpen())
 		return false;
 	/* Bisection of the radio stall seen with 0.8 (boot-arg rtlairstep, 0 = all):
 	 * 1 nub only, 2 stop before IO80211Controller::start, 3 stop after it (no
@@ -1404,23 +1656,28 @@ bool RTLAirController::start(IOService *provider)
 	PE_parse_boot_argn("rtlairstep", &step, sizeof(step));
 	/* Everything allocated before IO80211Controller::start is released by free(). */
 	_armed = armed;
-	LOG("start 0.31, rtlair=%u rtlairstep=%u", armed, step);
+	/* AWDL stage 1: the 94 handler creates awdl0 only with rtlawdl set. */
+	uint32_t awdl = 0;
+	PE_parse_boot_argn("rtlawdl", &awdl, sizeof(awdl));
+	_awdlArmed = awdl != 0;
+	LOG("start 0.32, rtlair=%u rtlairstep=%u rtlawdl=%u", armed, step, awdl);
 	if (step == 1) {
 		LOG("rtlairstep 1: nub only");
 		return false;
 	}
 	_symTx = OSSymbol::withCString(RTL_RADIO_FN_TX);
+	_symTx80211 = OSSymbol::withCString(RTL_RADIO_FN_TX_80211);
 	uint32_t abi = 0;
-	_radio = radioSvc;
+	setRadio(radioSvc);
 	if (radio(RTL_RADIO_FN_ABI, &abi) != kIOReturnSuccess || abi != RTL_RADIO_ABI) {
 		LOG("radio ABI %u, need %u", abi, RTL_RADIO_ABI);
-		_radio = nullptr;
+		setRadio(nullptr);
 		return false;
 	}
 	static const uint8_t zero[6] = {};
 	if (radio(RTL_RADIO_FN_MAC, _mac) != kIOReturnSuccess || !memcmp(_mac, zero, 6)) {
 		LOG("radio has no MAC yet");
-		_radio = nullptr;
+		setRadio(nullptr);
 		return false;
 	}
 	/* With rtlair=1 en2 (RTLEthernetAdapter) keeps the hardware MAC, and
@@ -1432,37 +1689,39 @@ bool RTLAirController::start(IOService *provider)
 		_mac[0] |= 0x02;
 	_lock = IOLockAlloc();
 	_rxLock = IOLockAlloc();
+	_awdlLock = IOLockAlloc();
 	_poll = thread_call_allocate(&RTLAirController::pollEntry, this);
 	_rxDrain = thread_call_allocate(&RTLAirController::rxDrainEntry, this);
 	_scan = (struct rtl_radio_bss *)IOMalloc(sizeof(*_scan) * kScanMax);
 	_regInfo = (uint8_t *)IOMalloc(REGINFO_SIZE);
-	if (!_symTx || !_lock || !_rxLock || !_poll || !_rxDrain || !_scan || !_regInfo) {
+	if (!_symTx || !_lock || !_rxLock || !_awdlLock || !_poll || !_rxDrain ||
+	    !_scan || !_regInfo) {
 		LOG("allocation failed");
-		_radio = nullptr;
+		setRadio(nullptr);
 		return false;
 	}
 	_power = 1;
 	/* CCLogPipe::start adds a timer to the owner's getWorkLoop(): needs the queue. */
 	if (!createWorkQueue() || getWorkLoop() != provider->getWorkLoop()) {
 		LOG("work loop is not the nub's");
-		_radio = nullptr;
+		setRadio(nullptr);
 		return false;
 	}
 	LOG("work queue %s", ((OSObject *)gWorkQueue)->getMetaClass()->getClassName());
 	if (!createCoreCapture()) {
-		_radio = nullptr;
+		setRadio(nullptr);
 		return false;
 	}
 	LOG("radio ABI %u, mac %02x:%02x:%02x:%02x:%02x:%02x", abi, _mac[0], _mac[1], _mac[2], _mac[3], _mac[4], _mac[5]);
 	if (step == 2) {
 		LOG("rtlairstep 2: stop before IO80211Controller::start");
-		_radio = nullptr;
+		setRadio(nullptr);
 		return false;
 	}
 
 	if (!RTLAirControllerStubs::start(provider)) {
 		LOG("IO80211Controller::start failed");
-		_radio = nullptr;
+		setRadio(nullptr);
 		return false;
 	}
 
@@ -1498,6 +1757,7 @@ bool RTLAirController::start(IOService *provider)
 		*(uint32_t *)(reg + REGINFO_FLAGS) = 0;
 		memcpy(reg + REGINFO_MAC, _mac, 6);
 		if (_iface->startWithRegistration(this, reg)) {
+			nub->setController(this);
 			registerService();
 			LOG("started, %02x:%02x:%02x:%02x:%02x:%02x", _mac[0], _mac[1], _mac[2], _mac[3], _mac[4], _mac[5]);
 			return true;
@@ -1513,7 +1773,7 @@ bool RTLAirController::start(IOService *provider)
 		OSSafeReleaseNULL(_iface);
 	}
 	RTLAirControllerStubs::stop(provider);
-	_radio = nullptr;
+	setRadio(nullptr);
 	return false;
 }
 
@@ -1534,12 +1794,17 @@ void RTLAirController::quiesce()
 
 void RTLAirController::stop(IOService *provider)
 {
+	_stopping = true;
+	RTLAirNub *nub = OSDynamicCast(RTLAirNub, provider);
+	if (nub)
+		nub->setController(nullptr);
+	destroyAwdlInterface();
 	quiesce();
 	if (_iface) {
 		_iface->terminate();
 		OSSafeReleaseNULL(_iface);
 	}
-	_radio = nullptr;
+	setRadio(nullptr);
 	RTLAirControllerStubs::stop(provider);
 }
 
@@ -1569,7 +1834,15 @@ void RTLAirController::free()
 		IOLockFree(_rxLock);
 		_rxLock = nullptr;
 	}
+	destroyAwdlInterface();
+	if (_awdlLock) {
+		IOLockFree(_awdlLock);
+		_awdlLock = nullptr;
+	}
 	OSSafeReleaseNULL(_symTx);
+	OSSafeReleaseNULL(_symTx80211);
+	OSSafeReleaseNULL(_radio);
+	OSSafeReleaseNULL(_radioOld);
 	OSSafeReleaseNULL(_ioFault);
 	OSSafeReleaseNULL(_ccFault);
 	OSSafeReleaseNULL(_ccDataStream);
@@ -1711,6 +1984,67 @@ IOReturn RTLAirController::getHardwareAddress(IOEthernetAddress *addr)
 	return kIOReturnSuccess;
 }
 
+/*
+ * awdl0 (role 6). Created, started and published under _awdlLock: a second
+ * 94 for the same role answers EEXIST with the name of the interface that
+ * is already there.
+ */
+IOReturn RTLAirController::createAwdlInterface(const uint8_t mac[6], char out[16])
+{
+	if (!_awdlLock)
+		return kIOReturnNotReady;
+	IOLockLock(_awdlLock);
+	if (_stopping) {
+		IOLockUnlock(_awdlLock);
+		return kIOReturnNotReady;
+	}
+	if (_awdl) {
+		strlcpy(out, _awdl->bsdName(), 16);
+		IOLockUnlock(_awdlLock);
+		return (IOReturn)EEXIST;
+	}
+	RTLAwdInterface *awdl = OSTypeAlloc(RTLAwdInterface);
+	if (!awdl) {
+		IOLockUnlock(_awdlLock);
+		LOG("awdl: alloc failed");
+		return kIOReturnNoMemory;
+	}
+	if (!awdl->initWithController(this, mac) || !awdl->startWithRegistration(this)) {
+		LOG("awdl: init failed");
+		awdl->terminate();
+		awdl->release();
+		IOLockUnlock(_awdlLock);
+		return (IOReturn)0xE00002BC;
+	}
+	_awdl = awdl;
+	rtlAwdlPublish(this, awdl);
+	strlcpy(out, awdl->bsdName(), 16);
+	IOLockUnlock(_awdlLock);
+	LOG("awdl: created %s", out);
+	return kIOReturnSuccess;
+}
+
+/* Unpublishes and drops awdl0. Idempotent: stop() and a failed start both
+ * end here, and nothing is left pointing at the released object. */
+void RTLAirController::destroyAwdlInterface()
+{
+	if (!_awdlLock)
+		return;
+	IOLockLock(_awdlLock);
+	RTLAwdInterface *awdl = _awdl;
+	_awdl = nullptr;
+	if (awdl)
+		rtlAwdlPublish(this, nullptr);
+	IOLockUnlock(_awdlLock);
+	/* terminate() waits on the work loop that a pending 94 holds while it
+	 * waits for _awdlLock: never call it under the lock. */
+	if (awdl) {
+		awdl->terminate();
+		awdl->release();
+		LOG("awdl: teardown");
+	}
+}
+
 bool RTLAirController::isCommandProhibited(int)
 {
 	STUB_ENTER();
@@ -1722,7 +2056,7 @@ IOReturn RTLAirController::getDRIVER_VERSION(IO80211SkywalkInterface *, apple802
 	STUB_ENTER();
 	if (!vd)
 		return kIOReturnBadArgument;
-	putStr((uint8_t *)vd, "RTL8814AirLayer 0.31 (radio ABI 2)");
+	putStr((uint8_t *)vd, "RTL8814AirLayer 0.32 (radio ABI 2)");
 	return kIOReturnSuccess;
 }
 
@@ -1855,6 +2189,7 @@ IOReturn RTLAirController::startScan()
 	}
 	IOReturn r = radio(RTL_RADIO_FN_SCAN_START);
 	if (r == kIOReturnSuccess) {
+		infraTouch();
 		_scanPending = true;
 		_scanLinked = st.state == RTL_RADIO_S_LINKED;
 		_scanTicks = 0;
@@ -1878,6 +2213,7 @@ IOReturn RTLAirController::startJoin(const struct rtl_radio_join *j)
 	struct rtl_radio_join request;
 	memcpy(&request, j, sizeof(request));
 	IOReturn r = radio(RTL_RADIO_FN_JOIN, &request);
+	infraTouch();
 	if (r == kIOReturnSuccess) {
 		_phase = kJoining;
 		_joinTicks = 0;
@@ -1943,6 +2279,7 @@ void RTLAirController::leave(bool notify)
 	_phase = kIdle;
 	bzero(&_joinReq, sizeof(_joinReq));
 	IOLockUnlock(_lock);
+	infraTouch();
 	if (!owned)
 		return;
 	setDataPath(false);
@@ -2202,6 +2539,7 @@ void RTLAirController::finishScan()
 	IOLockLock(_lock);
 	_scanPending = false;
 	IOLockUnlock(_lock);
+	infraTouch();                   /* WCL associates right after the results */
 }
 
 /*
@@ -2388,6 +2726,7 @@ void RTLAirController::reportJoin(bool ok, const struct rtl_radio_status *st)
 	if (!ok)
 		bzero(&_joinReq, sizeof(_joinReq));
 	IOLockUnlock(_lock);
+	infraTouch();
 	if (current)
 		LOG("join %s after %u ticks, %u retries", ok ? "done" : "failed", _joinTicks, _joinRetries);
 	if (!current)

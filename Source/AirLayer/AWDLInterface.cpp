@@ -200,16 +200,10 @@ bool RTLAwdInterface::initWithController(RTLAirController *ctrl, const uint8_t m
 	_mccMode = 0;
 	PE_parse_boot_argn("rtlawdl_mcc", &_mccMode, sizeof(_mccMode));
 	_mccLock = IOLockAlloc();
-	/* Same radio the controller drives (RTLAirController::start). */
-	IOService *nub = ctrl->getProvider();
-	_radioSvc = nub ? nub->getProvider() : nullptr;
-	if (_radioSvc)
-		_radioSvc->retain();
-	_symTx80211 = OSSymbol::withCString(RTL_RADIO_FN_TX_80211);
 	_txLock = IOLockAlloc();
 	_txTick = thread_call_allocate(&RTLAwdInterface::txTickEntry, this);
 	_txRing = (AwdlTxFrame *)IOMallocZero(sizeof(AwdlTxFrame) * AWDL_TX_RING);
-	if (!_symTx80211 || !_txLock || !_txTick || !_txRing || !_mccLock) {
+	if (!_txLock || !_txTick || !_txRing || !_mccLock) {
 		LOG("awdl: tx alloc failed");
 		return false;
 	}
@@ -453,8 +447,6 @@ void RTLAwdInterface::free()
 		IOFree(_txRing, sizeof(AwdlTxFrame) * AWDL_TX_RING);
 		_txRing = nullptr;
 	}
-	OSSafeReleaseNULL(_symTx80211);
-	OSSafeReleaseNULL(_radioSvc);
 	OSSafeReleaseNULL(*(OSObject **)&_txSubQ);
 	OSSafeReleaseNULL(*(OSObject **)&_txCompQ);
 	OSSafeReleaseNULL(*(OSObject **)&_rxCompQ);
@@ -555,6 +547,36 @@ void RTLAwdInterface::setRadioRx(bool on)
 	LOG("awdl: rx %s, af %llu data %llu (up %llu bad %llu not us %llu) other %llu dropped %llu",
 	    on ? "attached" : "detached", _rxAf, _rxData, _rxDataUp, _rxDataBad, _rxDataNotUs,
 	    _rxOther, _rxDropped);
+}
+
+/* The old radio is terminating: unhook it but remember what was on. */
+void RTLAwdInterface::radioGone()
+{
+	if (_rxHooked)
+		_ctrl->radio(RTL_RADIO_FN_AWDL_HOOK, nullptr, nullptr);
+	if (_mccLock) {
+		IOLockLock(_mccLock);
+		_mccCur = 0;            /* a new radio starts on its own channel */
+		_mccOff = false;
+		IOLockUnlock(_mccLock);
+	}
+	LOG("awdl: radio leaving, rx %u port1 %u", _rxHooked, _port1On);
+}
+
+void RTLAwdInterface::radioBack()
+{
+	if (_rxHooked) {
+		IOReturn r = _ctrl->radio(RTL_RADIO_FN_AWDL_HOOK, (void *)&RTLAwdInterface::radioRxHook, this);
+		if (r != kIOReturnSuccess)
+			LOG("awdl: rx hook refused by the new radio 0x%x", r);
+	}
+	if (_port1On) {
+		IOReturn r = _ctrl->radio(RTL_RADIO_FN_AWDL_PORT, _mac);
+		_port1On = r == kIOReturnSuccess;
+		if (!_port1On)
+			LOG("awdl: port 1 refused by the new radio 0x%x", r);
+	}
+	LOG("awdl: radio back, rx %u port1 %u", _rxHooked, _port1On);
 }
 
 void RTLAwdInterface::flushRadioRx()
@@ -1036,7 +1058,7 @@ IOReturn RTLAwdInterface::setAWDL_SYNCHRONIZATION_CHANNEL_SEQUENCE(
 
 void RTLAwdInterface::setRadioTx(bool on)
 {
-	if (on && (!_txAllowed || !_radioSvc))
+	if (on && (!_txAllowed || !_ctrl || !_ctrl->hasRadio()))
 		return;
 	if (!_txLock || !_txTick)
 		return;
@@ -1151,7 +1173,7 @@ void RTLAwdInterface::txTick()
 				mcc = true;
 				ch = mccChannel(ch, awdlNowUs());
 			}
-		} else if (st.state == RTL_RADIO_S_IDLE) {
+		} else if (st.state == RTL_RADIO_S_IDLE && !_ctrl->infraBusy()) {
 			ch = parkRadio(st.idle_channel, awdlNowUs());
 		}
 	}
@@ -1441,7 +1463,7 @@ bool RTLAwdInterface::sendAf(uint8_t subtype, uint8_t channel, uint16_t mask, co
 	if (!len)
 		return false;
 	uint32_t l = (uint32_t)len;
-	IOReturn r = _radioSvc->callPlatformFunction(_symTx80211, false, _afBuf, &l, nullptr, nullptr);
+	IOReturn r = _ctrl->radioTx80211(_afBuf, &l);
 	if (r != kIOReturnSuccess) {
 		if (_txFail++ < AWDL_RX_LOG_FIRST)
 			LOG("awdl: tx %s -> 0x%x", da ? "umi" : subtype == AWDL_AF_MIF ? "mif" : "psf", r);
@@ -1551,8 +1573,7 @@ void RTLAwdInterface::sendData()
 			continue;
 		}
 		uint32_t l = f.len;
-		IOReturn r = _radioSvc->callPlatformFunction(_symTx80211, false, f.frame, &l, nullptr,
-		                                             nullptr);
+		IOReturn r = _ctrl->radioTx80211(f.frame, &l);
 		if (r == kIOReturnSuccess) {
 			if (_txDataSent++ == 0)
 				LOG("awdl: first data frame to %02x:%02x:%02x:%02x:%02x:%02x ethertype %02x%02x len %u",

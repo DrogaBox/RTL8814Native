@@ -27,6 +27,7 @@
 #include "RTLRadioABI.h"
 
 class RTLAirController;
+class RTLAwdInterface;
 
 /* Matches RTL8814Native and publishes the IO80211WorkQueue as its work loop;
  * RTLAirController matches on it. IONetworkController::start calls
@@ -38,6 +39,26 @@ public:
 	bool start(IOService *provider) override;
 	void stop(IOService *provider) override;
 	IOWorkLoop *getWorkLoop() const override;
+	/* The board powers the USB port off in sleep, so the dongle comes back
+	 * as a new RTL8814Native on every wake. The nub is also attached to
+	 * IOResources, so it outlives the old radio (requestTerminate only
+	 * terminates a client whose only provider goes), and the new radio's
+	 * nub hands it over instead of building a second en2: corewifi binds
+	 * an interface name once and never rebinds a re-created one. */
+	bool willTerminate(IOService *provider, IOOptionBits options) override;
+	bool didTerminate(IOService *provider, IOOptionBits options, bool *defer) override;
+	IOService *radio() const { return _radio; }
+	void setController(RTLAirController *c) { _ctrl = c; }
+private:
+	IOService *_radio;              /* the RTL8814Native this nub serves */
+	RTLAirController *_ctrl;
+	/* The terminated radio waits for its last client: detached on a thread
+	 * call once didTerminate returns (a detach inside it would change the
+	 * client set IOKit is iterating), which lets IOKit finalize it. */
+	IOService *_leaving;
+	thread_call_t _detachCall;
+	static void detachEntry(thread_call_param_t p0, thread_call_param_t p1);
+	bool adopt(IOService *radio);
 };
 
 /* Every IO80211InfraProtocol pure virtual, answering kIOReturnUnsupported. */
@@ -95,6 +116,8 @@ public:
 	IOReturn getWCL_LOW_LATENCY_INFO(apple80211_low_latency_info *info) override;
 	IOReturn getWCL_EXTENDED_BSS_INFO(apple80211_extended_bss_info *info) override;
 	IOReturn setWCL_UPDATE_FAST_LANE(apple80211_fastlane *fl) override;
+	/* VIRTUAL_IF_CREATE (type 94, slot 556): role 6 creates awdl0. */
+	IOReturn setVIRTUAL_IF_CREATE(apple80211_virt_if_create_data *req) override;
 	uintptr_t setMacAddress(mloAddrArray &addrs) override;
 
 	/* getters */
@@ -175,15 +198,40 @@ public:
 	bool dataPathEnabled() const { return _dataHooked; }
 	RTLAirInterface *staInterface() const { return _iface; }
 	bool joinAllowed() const { return _armed >= 2; }
+	/* AWDL stage 1: inert unless the boot-arg rtlawdl is set. */
+	bool awdlAllowed() const { return _awdlArmed; }
+	RTLAwdInterface *awdlInterface() const { return _awdl; }
+	IOReturn createAwdlInterface(const uint8_t mac[6], char out[16]);
+	void destroyAwdlInterface();
 	/* Radio status, but only while this layer owns the link: the radio may be
 	 * linked through en2 alone, which WCL must not see as an association. */
 	IOReturn linkStatus(struct rtl_radio_status *st);
 
+	/* 802.11 frame TX on the current radio (AWDL). */
+	IOReturn radioTx80211(const uint8_t *frame, uint32_t *len);
+	bool hasRadio() const { return _radio != nullptr; }
+	/* A scan or join of the infra link is running or just ended: AWDL must
+	 * not move the radio (parking it on 6 broke every join after a wake). */
+	bool infraBusy() const;
+	/* Radio hand-over across a USB re-enumeration (RTLAirNub). */
+	void radioGone(IOService *radio);
+	bool radioBack(IOService *radio);
+
 	void free() override;
 
 private:
-	IOService *_radio;
+	IOService *_radio;              /* retained; NULL while the dongle is away */
+	IOService *_radioOld;           /* the previous one, kept until the next swap so a
+	                                 * caller that read _radio before it still calls a
+	                                 * live object (which answers NotReady) */
+	const OSSymbol *_symTx80211;
+	volatile uint64_t _infraQuietMs;    /* uptime ms until which infraBusy() holds */
+	void infraTouch();
+	void setRadio(IOService *radio);
 	RTLAirInterface *_iface;
+	RTLAwdInterface *_awdl;        /* role 6, created by VIRTUAL_IF_CREATE */
+	IOLock *_awdlLock;
+	bool _awdlArmed;               /* boot-arg rtlawdl */
 	uint8_t _mac[6];
 	uint32_t _power;
 	uint32_t _armed;                /* boot-arg rtlair: 1 control plane, 2 + data path */

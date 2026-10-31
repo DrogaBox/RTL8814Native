@@ -49,6 +49,10 @@ If something goes wrong, remove both kexts and `rtlair=2` from the EFI.
 
 `Tools/phase5_deploy.sh` does these steps for me, including a backup of the EFI, but it is written for my setup.
 
+## After a macOS update
+
+`RTL8814AirLayer.kext` uses private IO80211 / Skywalk layouts of one macOS build, so since 0.32 it checks the running system at boot and stays inert on a build it was not validated on (the plain `RTL8814Native` interface keeps working). Run `Tools/airlayer_gate.py status` to see why it started or not. If the build is new but the structure matches, boot once with `rtlairtrust=<build>` (`Tools/airlayer_gate.py trust-arg` prints it), test the Wi-Fi menu, then `Tools/airlayer_gate.py learn --yes` and rebuild to make it permanent. Details in [Docs/PHASE5_IO80211.md](Docs/PHASE5_IO80211.md#version-gate-032).
+
 ## Building
 
 You need macOS with the Xcode Command Line Tools.

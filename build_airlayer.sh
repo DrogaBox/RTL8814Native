@@ -3,7 +3,9 @@
 # Builds Build/RTL8814AirLayer.kext, the Phase 5 native IO80211 layer
 # (Source/AirLayer). Separate from ./build.sh: RTL8814Native.kext does not
 # change. The layer is built against Source/IO80211/IO80211_25_6_0.h, so it
-# only fits macOS 26.x / Darwin 25.6.0.
+# only fits macOS 26.x / Darwin 25.6.0. At boot a version gate (GateLogic.h)
+# checks the running system against that header and against the validated
+# builds in Tools/airlayer_builds.txt, and stays inert when they do not match.
 #
 # Usage:  ./build_airlayer.sh
 #
@@ -31,7 +33,11 @@ rm -rf "$OBJ" "$KEXT"
 mkdir -p "$OBJ" "$KEXT/Contents/MacOS"
 
 echo "== RTL8814AirLayer build (arch $ARCH) =="
+# Known-build table for the version gate (class sizes from the header, validated
+# builds from Tools/airlayer_builds.txt).
+python3 -I Tools/airlayer_gate.py gen
 clang++ $CXXFLAGS -c Source/AirLayer/RTLAirLayer.cpp -o "$OBJ/RTLAirLayer.o"
+clang++ $CXXFLAGS -c Source/AirLayer/AWDLInterface.cpp -o "$OBJ/AWDLInterface.o"
 
 cat << KMOD_EOF > "$OBJ/info.c"
 #include <mach/mach_types.h>
@@ -41,7 +47,7 @@ extern kern_return_t _start(kmod_info_t *ki, void *data);
 extern kern_return_t _stop(kmod_info_t *ki, void *data);
 
 __attribute__((visibility("default")))
-KMOD_EXPLICIT_DECL($BUNDLE_ID, "0.31.0", _start, _stop)
+KMOD_EXPLICIT_DECL($BUNDLE_ID, "0.32.0", _start, _stop)
 
 __private_extern__ kmod_start_func_t *_realmain = 0;
 __private_extern__ kmod_stop_func_t *_antimain = 0;
@@ -58,7 +64,7 @@ fi
 ld -kext -arch "$ARCH" \
    -platform_version macos "$SDK_VER" "$SDK_VER" \
    -o "$KEXT/Contents/MacOS/RTL8814AirLayer" \
-   "$OBJ/info.o" "$OBJ/RTLAirLayer.o" \
+   "$OBJ/info.o" "$OBJ/RTLAirLayer.o" "$OBJ/AWDLInterface.o" \
    -L"$SDK/usr/lib" -lkmod $KEXT_LIB
 
 cp Source/AirLayer/Info.plist "$KEXT/Contents/Info.plist"

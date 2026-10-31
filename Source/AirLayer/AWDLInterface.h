@@ -302,6 +302,9 @@ public:
 	void stop(IOService *provider) override;
 	void free() override;
 	const char *bsdName() const { return _bsdName; }
+	/* A new radio after a USB re-enumeration: hooks and port 1 again. */
+	void radioBack();
+	void radioGone();
 
 	uintptr_t setMacAddress(ether_addr &) override { return kIOReturnSuccess; }
 	uintptr_t enable(unsigned int opts) override;
@@ -436,8 +439,6 @@ private:
 	 * rtlawdl_tx=1): PSF every 110 TU and a MIF in each served slot, built
 	 * from the kernel's sync frame template (151) plus the TLVs 4, 5 and 18
 	 * rendered here; events 41/43 at the edges of the served slots. */
-	IOService *_radioSvc;       /* the nub's provider, as the controller's */
-	const OSSymbol *_symTx80211;
 	IOLock *_txLock;            /* template and clock */
 	thread_call_t _txTick;
 	bool _txAllowed;
