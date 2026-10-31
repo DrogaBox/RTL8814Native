@@ -44,6 +44,9 @@ struct cmd_obj {
 enum {
 	RTW_CMDF_DIRECTLY = BIT0,
 	RTW_CMDF_WAIT_ACK = BIT1,
+	/* RTL8814Native: rtw_set_chbw_cmd only, skip if the radio got linked,
+	 * started joining or scanning before the command ran */
+	RTW_CMDF_CHBW_IDLE_ONLY = BIT7,
 };
 
 struct cmd_priv {
@@ -899,6 +902,7 @@ struct set_ch_parm {
 	u8 ch;
 	u8 bw;
 	u8 ch_offset;
+	u8 idle_only;	/* RTL8814Native: RTW_CMDF_CHBW_IDLE_ONLY */
 };
 
 #ifdef MP_FIRMWARE_OFFLOAD

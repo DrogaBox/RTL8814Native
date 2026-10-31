@@ -2173,6 +2173,7 @@ u8 rtw_set_chbw_cmd(_adapter *padapter, u8 ch, u8 bw, u8 ch_offset, u8 flags)
 	set_ch_parm->ch = ch;
 	set_ch_parm->bw = bw;
 	set_ch_parm->ch_offset = ch_offset;
+	set_ch_parm->idle_only = (flags & RTW_CMDF_CHBW_IDLE_ONLY) ? 1 : 0;
 
 	if (flags & RTW_CMDF_DIRECTLY) {
 		/* no need to enqueue, do the cmd hdl directly and free cmd parameter */

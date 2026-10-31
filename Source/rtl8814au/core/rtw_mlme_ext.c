@@ -16546,6 +16546,12 @@ u8 rtw_set_chbw_hdl(_adapter *padapter, u8 *pbuf)
 
 	set_ch_parm = (struct set_ch_parm *)pbuf;
 
+	/* RTL8814Native: a park request queued while idle must not move a radio
+	 * that started joining or scanning before the command thread ran it. */
+	if (set_ch_parm->idle_only &&
+	    check_fwstate(&padapter->mlmepriv, _FW_LINKED | _FW_UNDER_LINKING | _FW_UNDER_SURVEY))
+		return H2C_SUCCESS;
+
 	RTW_INFO(FUNC_NDEV_FMT" ch:%u, bw:%u, ch_offset:%u\n",
 		 FUNC_NDEV_ARG(padapter->pnetdev),
 		 set_ch_parm->ch, set_ch_parm->bw, set_ch_parm->ch_offset);

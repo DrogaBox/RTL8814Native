@@ -139,7 +139,8 @@ int rtl8814native_radio_set_channel(uint8_t ch)
 		return -EBUSY;
 	/* AWDL frames go at OFDM 6 Mb/s on either band, never CCK on 5 GHz */
 	update_mgnt_tx_rate(padapter, IEEE80211_OFDM_RATE_6MB);
-	if (rtw_set_chbw_cmd(padapter, ch, CHANNEL_WIDTH_20, HAL_PRIME_CHNL_OFFSET_DONT_CARE, 0)
+	if (rtw_set_chbw_cmd(padapter, ch, CHANNEL_WIDTH_20, HAL_PRIME_CHNL_OFFSET_DONT_CARE,
+	                     RTW_CMDF_CHBW_IDLE_ONLY)
 	    != _SUCCESS)
 		return -ENOMEM;
 	return 0;
