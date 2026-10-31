@@ -50,8 +50,11 @@ El chip escucha en el canal de la red a la que está asociado; no hay todavía f
 desde la capa. AWDL usa los canales sociales 6 (2,4 GHz) y 44 o 149 (5 GHz)
 ([AWDL_REFERENCIAS_EXTERNAS.md](AWDL_REFERENCIAS_EXTERNAS.md)). Para la prueba:
 
-- asociar el Mac a una red del router en el canal 149 (o 44, o 6 en 2,4 GHz), cambiando el canal del
-  router si hace falta;
+- asociar el Mac a una red del router cuyo canal **primario** sea 149 (o 44, o 6 en 2,4 GHz),
+  cambiando el canal del router si hace falta. El 2026-10-30 `en2` estaba en el 153 a 80 MHz: el bloque
+  incluye el 149, pero el primario es el 153 y las tramas AWDL van a 20 MHz por el 149
+  ([AWDL_WINDOW_TIMER.md](AWDL_WINDOW_TIMER.md) §8). Fuera de 6, 44 y 149 la capa no transmite ni abre
+  ventanas y lo registra una vez (`radio on channel N, not a social channel`);
 - en qué canal pone un iPhone su AWDL cuando está asociado a otro canal de infraestructura es `?`; si no
   llega nada en 149, repetir en 6.
 
@@ -109,9 +112,20 @@ Con el iPhone presente:
 | `awdl: clock follows <MAC> aw ... next slot ... TU` | El reloj propio se alineó con el iPhone como maestro |
 | PSF/MIF con la MAC de `awdl0` en una captura en modo monitor desde otro equipo | La TX llega al aire (`?`: sin captura, solo se ve por el efecto en el iPhone) |
 
-Limitaciones conocidas de esta TX:
+Con la TX activa también corren (`7e454be`, `7c95ead`, `62a2c49`):
+- **ventanas**: en cada franja que la secuencia del manager (129) pone en el canal de la radio, la capa
+  publica el evento 43 (cierra la anterior y deja correr la elección) y el 41 (abre la nueva), según
+  [AWDL_WINDOW_TIMER.md](AWDL_WINDOW_TIMER.md). En el registro: `awdl: channel sequence 16 slots: ...`
+  una vez y `awdl: window aw N slot S ch C` en las primeras ventanas. Las franjas no servidas se anuncian
+  con canal 0;
+- **puerto 1**: toma la MAC de `awdl0` y el BSSID AWDL en modo ad-hoc, para que el hardware confirme
+  (ACK) los unicast del iPhone a `awdl0`; mientras está activo el driver acepta datos de otros BSSID
+  (`RCR_CBSSID_DATA` a 0, como con AP o mesh). Si se rechaza, aparece `awdl: port 1 refused`.
+
+Limitaciones conocidas:
 - el MIF no lleva el TLV 16 (ARPA, nombre de host): si el iPhone lo exige para listar el par es `?`;
-- no hay eventos 41/42/43, así que el manager no entra en ventana: no envía UMI (149) ni datos;
-- el puerto 1 no está programado: los unicast del iPhone a `awdl0` no reciben ACK por hardware
-  ([AWDL_RTL8814_RX_ACK.md](AWDL_RTL8814_RX_ACK.md) §2.4);
+- las tramas de datos AWDL recibidas solo se cuentan: no llegan a `awdl0`;
+- no hay evento 42 (extensiones de ventana);
+- si el tipo ad-hoc del puerto 1 hace emitir algo por sí mismo es `?`
+  ([AWDL_RTL8814_RX_ACK.md](AWDL_RTL8814_RX_ACK.md) §5);
 - AirDrop además necesita Bluetooth, que este equipo no tiene operativo.
