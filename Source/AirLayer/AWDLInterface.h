@@ -418,10 +418,12 @@ private:
 	bool _rxHooked;
 	bool _rxAllowed;            /* boot-arg rtlawdl_rx, 1 unless set to 0 */
 	uint64_t _rxAf, _rxData, _rxOther, _rxDropped;
+	uint64_t _rxDataUp, _rxDataBad, _rxDataNotUs, _rxDataFail;
 
 	void setRadioRx(bool on);
 	void flushRadioRx();
 	void injectFrame(mbuf_t m);
+	void deliverData(mbuf_t m);
 	static void radioRxHook(void *ctx, const uint8_t *frame, uint32_t len,
 	                        int8_t rssi, uint8_t channel);
 	static void rxDrainEntry(thread_call_param_t p0, thread_call_param_t);

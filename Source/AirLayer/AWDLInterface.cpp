@@ -65,6 +65,21 @@ IOReturn rtl_eth_register(void *self, void *regInfo, void **queues, uint32_t n,
  * stays with the caller (Docs/AWDL_PEERMANAGER_DRIVER_ABI.md §1.5). */
 void rtl_vif_bpfTapInput(void *self, mbuf_t m, uint32_t dlt, void *hdr, size_t hdrLen)
 	__asm("__ZN23IO80211VirtualInterface11bpfTapInputEP6__mbufjPvm");
+/* RX data packets, as the STA path builds them (Source/AirLayer/RTLAirLayer.cpp
+ * rxFrames; Docs/AWDL_RX_DATA_TO_SKYWALK.md §4, §7). */
+uint64_t rtl_pkt_base(void *pkt) __asm("__ZNK15IOSkywalkPacket21getDataVirtualAddressEv");
+uint32_t rtl_pkt_bufsize(void *pkt) __asm("__ZNK15IOSkywalkPacket13getBufferSizeEv");
+uint32_t rtl_pkt_bufcount(void *pkt) __asm("__ZNK15IOSkywalkPacket20getPacketBufferCountEv");
+IOReturn rtl_pkt_prepare(void *pkt, void *queue, uint64_t dir, uint32_t opts)
+	__asm("__ZN15IOSkywalkPacket7prepareEP20IOSkywalkPacketQueueyj");
+IOReturn rtl_pkt_setOffLen(void *pkt, uint16_t off, uint32_t len)
+	__asm("__ZN15IOSkywalkPacket22setDataOffsetAndLengthEtj");
+void rtl_netpkt_setLinkHdrLen(void *pkt, uint8_t len)
+	__asm("__ZN22IOSkywalkNetworkPacket19setLinkHeaderLengthEh");
+IOReturn rtl_pool_alloc(void *pool, void **pkt, uint32_t opts)
+	__asm("__ZN25IOSkywalkPacketBufferPool14allocatePacketEPP15IOSkywalkPacketj");
+IOReturn rtl_rxcomp_enqueue(void *q, void *const *pkts, uint32_t n, uint32_t opts)
+	__asm("__ZN26IOSkywalkRxCompletionQueue14enqueuePacketsEPKP15IOSkywalkPacketjj");
 }
 
 /* IOSkywalkPacketBufferPool::PoolOptions, same shape as the STA path
@@ -402,8 +417,8 @@ uintptr_t RTLAwdInterface::disable(unsigned int opts)
  * (RSSI, channel) and queues it. rxDrainEntry hands each AWDL action frame to
  * IO80211VirtualInterface::bpfTapInput on the work queue, the gate Broadcom's
  * event handlers run in; bpfTapInput passes it to the peer manager's
- * actionFrameInput (Docs/AWDL_PEERMANAGER_DRIVER_ABI.md §1.5). Data frames are
- * only counted: their path to the RX completion queue is not written yet.
+ * actionFrameInput (Docs/AWDL_PEERMANAGER_DRIVER_ABI.md §1.5). Data frames
+ * become Ethernet II packets on awdl0's RX completion queue (deliverData).
  * Boot-arg rtlawdl_rx=0 leaves the hook detached.
  */
 #define AWDL_RX_META          4       /* rssi (s8), channel, 2 spare bytes */
@@ -438,8 +453,9 @@ void RTLAwdInterface::setRadioRx(bool on)
 	}
 	if (!on)
 		flushRadioRx();
-	LOG("awdl: rx %s, af %llu data %llu other %llu dropped %llu", on ? "attached" : "detached",
-	    _rxAf, _rxData, _rxOther, _rxDropped);
+	LOG("awdl: rx %s, af %llu data %llu (up %llu bad %llu not us %llu) other %llu dropped %llu",
+	    on ? "attached" : "detached", _rxAf, _rxData, _rxDataUp, _rxDataBad, _rxDataNotUs,
+	    _rxOther, _rxDropped);
 }
 
 void RTLAwdInterface::flushRadioRx()
@@ -551,10 +567,12 @@ void RTLAwdInterface::injectFrame(mbuf_t m)
 		    af ? "af" : type == 2 ? "data" : "other", f[10], f[11], f[12], f[13], f[14],
 		    f[15], rssi, channel, (unsigned)(len - AWDL_RX_META));
 	if (!af) {
-		if (type == 2)
+		if (type == 2) {
 			_rxData++;
-		else
-			_rxOther++;
+			deliverData(m);
+			return;
+		}
+		_rxOther++;
 		mbuf_freem(m);
 		return;
 	}
@@ -581,6 +599,121 @@ void RTLAwdInterface::injectFrame(mbuf_t m)
 	if (wq)
 		wq->runAction(&RTLAwdInterface::bpfTapAction, this, m, hdr);
 	mbuf_freem(m);
+}
+
+/*
+ * One AWDL data frame (Docs/AWDL_RX_DATA_TO_SKYWALK.md §2, §8): 3-address
+ * data or QoS data on the AWDL BSSID, unprotected and unfragmented; each MSDU
+ * (one, or the A-MSDU subframes) is Apple SNAP AA AA 03 00 17 F2 08 00, the
+ * AWDL head 03 04, a sequence number, 00 00 and the real ethertype. Each one
+ * goes up as [DA][SA][ethertype][payload] for us or a group address. The
+ * peer filter of IO80211VirtualInterface::inputPacket (§6) is not applied.
+ * Runs on the RX drain thread call; consumes m.
+ */
+#define AWDL_DATA_HDR         16      /* SNAP 8 + 03 04 + seq + 00 00 + ethertype */
+#define AWDL_MSDU_MAX         16      /* A-MSDU subframes per frame (AWDL-14) */
+
+void RTLAwdInterface::deliverData(mbuf_t m)
+{
+	static const uint8_t kSnap[8] = { 0xAA, 0xAA, 0x03, 0x00, 0x17, 0xF2, 0x08, 0x00 };
+	uint8_t f[AWDL_RX_FRAME_MAX];
+	size_t len = mbuf_pkthdr_len(m);
+	if (len <= AWDL_RX_META || len - AWDL_RX_META > sizeof(f) ||
+	    mbuf_copydata(m, AWDL_RX_META, len - AWDL_RX_META, f) != 0) {
+		mbuf_freem(m);
+		_rxDataBad++;
+		return;
+	}
+	mbuf_freem(m);
+	len -= AWDL_RX_META;
+
+	/* Frame control: data (0x08) or QoS data (0x88), no To/From DS, not
+	 * protected, no more fragments; fragment number 0. */
+	bool qos = f[0] == 0x88;
+	size_t hdr = AWDL_WLAN_HDR + (qos ? 2 : 0);
+	if ((f[0] != 0x08 && !qos) || (f[1] & 0x47) || (f[22] & 0x0F) || len < hdr) {
+		_rxDataBad++;
+		return;
+	}
+	bool amsdu = qos && (f[AWDL_WLAN_HDR] & 0x80);
+
+	struct { const uint8_t *da, *sa, *msdu; size_t len; } sub[AWDL_MSDU_MAX];
+	uint32_t ns = 0;
+	if (!amsdu) {
+		sub[0] = { f + 4, f + 10, f + hdr, len - hdr };
+		ns = 1;
+	} else {
+		size_t off = hdr;
+		while (off + 14 <= len && ns < AWDL_MSDU_MAX) {
+			size_t sl = ((size_t)f[off + 12] << 8) | f[off + 13];
+			if (off + 14 + sl > len)
+				break;
+			sub[ns++] = { f + off, f + off + 6, f + off + 14, sl };
+			/* padding to a multiple of 4 of the subframe (owly frame.rs:246) */
+			off += 14 + sl + (4 - (14 + sl) % 4) % 4;
+		}
+	}
+
+	void *pkts[AWDL_MSDU_MAX];
+	uint32_t n = 0;
+	for (uint32_t i = 0; i < ns; i++) {
+		const uint8_t *s = sub[i].msdu;
+		size_t sl = sub[i].len;
+		if (sl < AWDL_DATA_HDR || memcmp(s, kSnap, sizeof(kSnap)) || s[8] != 0x03 ||
+		    s[9] != 0x04) {
+			_rxDataBad++;
+			continue;
+		}
+		if (!(sub[i].da[0] & 1) && memcmp(sub[i].da, _mac, 6)) {
+			_rxDataNotUs++;
+			continue;
+		}
+		size_t plen = sl - AWDL_DATA_HDR;
+		size_t elen = 14 + plen;
+		void *pkt = nullptr;
+		if (!_rxPool || rtl_pool_alloc(_rxPool, &pkt, 1) != kIOReturnSuccess || !pkt) {
+			_rxDropped++;
+			continue;
+		}
+		/* prepare before touching the buffer, no source queue (the STA
+		 * path's 0.15 and 0.16 panics, RTLAirLayer.cpp rxFrames). */
+		if (rtl_pkt_prepare(pkt, nullptr, 0, 0) != kIOReturnSuccess || !rtl_pkt_bufcount(pkt) ||
+		    elen > rtl_pkt_bufsize(pkt)) {
+			rtl_pool_free(_rxPool, pkt);
+			_rxDropped++;
+			continue;
+		}
+		uint8_t *e = (uint8_t *)(uintptr_t)rtl_pkt_base(pkt);
+		memcpy(e, sub[i].da, 6);
+		memcpy(e + 6, sub[i].sa, 6);
+		e[12] = s[14];
+		e[13] = s[15];
+		memcpy(e + 14, s + AWDL_DATA_HDR, plen);
+		if (rtl_pkt_setOffLen(pkt, 0, (uint32_t)elen) != kIOReturnSuccess) {
+			rtl_pool_free(_rxPool, pkt);
+			_rxDropped++;
+			continue;
+		}
+		rtl_netpkt_setLinkHdrLen(pkt, 14);
+		pkts[n++] = pkt;
+	}
+	if (!n)
+		return;
+	/* n <= 16, below the queue's capacity of 128 (enqueuePackets wants n < it). */
+	IOReturn r = rtl_rxcomp_enqueue(_rxCompQ, pkts, n, 0);
+	if (r != kIOReturnSuccess) {
+		for (uint32_t i = 0; i < n; i++)
+			rtl_pool_free(_rxPool, pkts[i]);
+		_rxDropped += n;
+		if (_rxDataFail++ < AWDL_RX_LOG_FIRST)
+			LOG("awdl: rx data enqueue -> 0x%x", r);
+		return;
+	}
+	if (_rxDataUp == 0)
+		LOG("awdl: first data packet up from %02x:%02x:%02x:%02x:%02x:%02x ethertype %02x%02x",
+		    sub[0].sa[0], sub[0].sa[1], sub[0].sa[2], sub[0].sa[3], sub[0].sa[4], sub[0].sa[5],
+		    sub[0].msdu[14], sub[0].msdu[15]);
+	_rxDataUp += n;
 }
 
 /*
