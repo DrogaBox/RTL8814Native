@@ -400,3 +400,13 @@ prueba en hardware ya no hace falta y la vía manual de §7.1-7.2 es la única.
    slot.
 6. **Colas TX.** Frames retenidos por el bloqueo software de `offch_state` y su latencia total
    (backlog al volver), y verificar que `HW_VAR_CHECK_TXBUF` no se invoca por slot (riesgo 2).
+
+Red en el primario 157 a 80 MHz (bloque 149–161, mismo bloque que el social 149, así que sólo se mueve
+el primario y sin recarga de potencia), AirLayer `3699d28e` con capacidad 29, sin pares.
+| Driver | Ida al 149 | Vuelta a la BSS | Media / máximo (1024 PSF) | Fallos | Ping al gateway |
+|---|---|---|---|---|---|
+| `d5d828f7` (espera fija de 2 ms tras el null) | 4357 y 4355 µs | 2389 y 2415 µs | 3381 / 5407 µs (1464 conmutaciones) | 0 | 20/20, 0,62 ms |
+| `69dfea33` (`96e80cb`, espera acotada a URB y MGQ) | 2522 y 2646 µs | 2367 y 2361 µs | 2459 / 4668 µs (1445 conmutaciones) | 0 | 20/20, 0,63 ms |
+Con `d5d828f7`, tras 2 h 14 min: 26.257 conmutaciones sin fallo, máximo 8928 µs, media 3394 µs, 30/30
+pings. La estimación de 10–15 ms del §4 queda muy por encima de lo medido en el caso de mismo bloque;
+el caso con cambio de bloque (recarga de potencia) sigue sin medir `?`.
