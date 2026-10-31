@@ -175,7 +175,12 @@ canal social servido, `sent`. `sent` solo cuenta las tramas entregadas al USB: s
 monitor desde otro equipo no se sabe si salieron al aire ni si un par las confirmó.
 
 Limitaciones conocidas:
-- el MIF no lleva el TLV 16 (ARPA, nombre de host): si el iPhone lo exige para listar el par es `?`;
+- el TLV 16 (ARPA, nombre de host) va en el MIF sólo si la plantilla MI del kernel lo trae, y el kernel
+  lo añade mientras haya un servicio ARPA registrado (`_rarpv6Service`,
+  [AWDL_PSF_MIF_EMISSION.md](AWDL_PSF_MIF_EMISSION.md) §3.2; la capa usa esa plantilla desde
+  `6fd22ef`). Con AirDrop publicando como receptor (Bluetooth encendido) la línea
+  `awdl: MI template N bytes` debería crecer respecto a los 110 B de la plantilla de sincronía; que el
+  registro ARPA dependa de esa publicación es `?`;
 - un iPhone descarta los datos de una SA que su manager no tiene como par
   ([AWDL_RX_DATA_TO_SKYWALK.md](AWDL_RX_DATA_TO_SKYWALK.md) §6): los datos solo pasan si antes acepta
   los PSF/MIF de este Mac;

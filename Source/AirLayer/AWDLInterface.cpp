@@ -831,7 +831,8 @@ void RTLAwdInterface::deliverData(mbuf_t m)
  * its own master: then the slot boundary and the AW count of its TLV 4 are
  * taken (AWDL-7). Timing values follow owly's node: AW 16 TU, 4 AWs per slot,
  * 16 slots, PSF every 110 TU, MIF in the middle of each slot. The MIF carries
- * no ARPA (16) TLV: the host name is not available here (?).
+ * the manager's MI template, whose ARPA (16) TLV the kernel adds while an
+ * ARPA service is registered (Docs/AWDL_PSF_MIF_EMISSION.md, section 3.2).
  */
 #define AWDL_TU_US            1024
 #define AWDL_AW_TU            16
