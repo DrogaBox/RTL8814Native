@@ -15,12 +15,16 @@ objetivo (u32 LE). PSF = subtipo 0, MIF = subtipo 3.
 | Trama | iPhone (iOS 26, canal 44) | Propia |
 |---|---|---|
 | PSF | `4, 5, 18, 6, 24, 12, 7, 17, 21` | `4, 5, 18` + plantilla del 151 |
-| MIF | `4, 5, 18, 24, 12, 7, 17, 16, 21, 6, 2×6` | `4, 5, 18` + la misma plantilla |
+| MIF | `4, 5, 18, 24, 12, 7, 17, 16, 21, 6, 2×6` | `4, 5, 18` + plantilla MI de las peticiones 149/225 (desde `6fd22ef`) |
 
-`AWDL_TX_FRAME_REVIEW.md` §5 ya comprobó que la plantilla aporta `6, 24, 12, 7, 17, 21` en ese
-orden. En el MIF faltan el TLV 16 (ARPA, nombre de host) y los TLV 2 (respuestas de servicio), y
-el 6 va en la posición del PSF (H4 de esa revisión). Ni el kernel ni owly los exigen para dar de
-alta al emisor.
+`AWDL_TX_FRAME_REVIEW.md` §5 ya comprobó que la plantilla de sincronización (petición 151) aporta
+`6, 24, 12, 7, 17, 21` en ese orden. Hasta `6fd22ef` el MIF reutilizaba esa plantilla, así que le
+faltaban el TLV 16 (ARPA, nombre de host) y los TLV 2 (respuestas de servicio), y el 6 iba en la
+posición del PSF (H4 de esa revisión). El kernel compone esos TLV en la plantilla de *master
+indication* (`buildMasterIndicationTemplate`, `AWDL_PSF_MIF_EMISSION.md` §3.2), que entrega con las
+peticiones 225 (permanente) y 149 (envío inmediato). Desde `6fd22ef` cada MIF lleva esa plantilla
+tras `4, 5, 18`, y el orden coincide con el del iPhone. Ni el kernel ni owly exigen esos TLV para dar
+de alta al emisor, pero AirDrop necesita el ARPA y los servicios.
 
 ## 2. TLV 4 (sync params, longitud 73)
 
@@ -64,4 +68,5 @@ En las capturas no hay A-MSDU. La RX propia acepta datos y QoS, con o sin el bit
 - La plantilla real que entrega el gestor queda volcada en hexadecimal en `RTLAwdlLog` desde
   `020c32d`. Con ella se podrá comparar el TLV 21 (versión) propio con el `a0 02` del iPhone y los
   tamaños de 6, 12, 7 y 17.
-- TLV 16 (ARPA) en el MIF: falta averiguar de dónde saca el kernel el nombre de host.
+- La plantilla MI que entrega el gestor (longitud y contenido) queda en `RTLAwdlLog` desde
+  `6fd22ef` ("MI template N bytes"); falta verla en hardware.
