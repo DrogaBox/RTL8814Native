@@ -410,3 +410,17 @@ el primario y sin recarga de potencia), AirLayer `3699d28e` con capacidad 29, si
 Con `d5d828f7`, tras 2 h 14 min: 26.257 conmutaciones sin fallo, máximo 8928 µs, media 3394 µs, 30/30
 pings. La estimación de 10–15 ms del §4 queda muy por encima de lo medido en el caso de mismo bloque;
 el caso con cambio de bloque (recarga de potencia) sigue sin medir `?`.
+
+Ping al gateway cada 100 ms y `networkQuality` simultáneo, con la red en 157/80:
+| Prueba | Estado AWDL | Capacidad bajada / subida | Ping | > 5 ms | Máximo |
+|---|---|---|---|---|---|
+| Carga, AWDL en reposo | 31 (149 en 2 de 16 franjas) | 762 / 604 Mbps | 900/900 | 39 | 6,7 ms |
+| Carga, ventana AirDrop recién abierta | 45 → 3 → 31 | 772 / 605 Mbps | 600/600 | 39 | 7,1 ms |
+| 10 min sin carga, AirDrop reabierto cada 2 min | 24/45/3/31 | — | 6000/6000 | 4 | 6,6 ms |
+Los picos de 5–7 ms se concentran en los primeros ~14 s tras abrir AirDrop (estado 45, el 149 en 10
+de 16 franjas) y cuando coinciden con carga. No hubo pérdidas ni caída de capacidad medible. En los
+10 minutos: 2886 conmutaciones más sin fallo (media 2462 µs, máximo 5594 µs).
+Datos por `awdl0`: las 6 tramas descartadas por antigüedad son las que macOS manda por mDNS al
+arrancar, mientras la secuencia sólo tiene el 6 o está en reposo. Con la red en 5 GHz la capa sólo
+sirve las franjas del social de esa banda (149), no las del 6, y una trama que espera más de 1,2 s
+se descarta. En los 10 minutos con cinco aperturas de AirDrop el contador no subió (6 → 6).
