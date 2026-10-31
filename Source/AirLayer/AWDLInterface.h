@@ -449,8 +449,9 @@ private:
 	bool _seqValid;
 	bool _awOpen;               /* between events 41 and 43 */
 	bool _offSocialLogged;
-	uint8_t _parkCh;            /* social channel while not associated (boot-arg
-	                             * rtlawdl_ch, 149 by default), 0 = no parking */
+	uint8_t _parkCh;            /* preferred social channel while not associated
+	                             * (boot-arg rtlawdl_ch, 149 by default), used until
+	                             * a 129 names another; 0 = no parking */
 	uint64_t _parkReqUs;        /* last rtlRadioSetChannel request */
 	uint64_t _txPsf, _txMif, _txFail, _clkAligned, _ev41, _ev43;
 

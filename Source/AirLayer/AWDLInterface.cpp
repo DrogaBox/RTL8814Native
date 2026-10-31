@@ -882,21 +882,40 @@ void RTLAwdInterface::txTick()
 }
 
 /*
- * Without an association the radio is parked on _parkCh (rtlRadioSetChannel):
- * returns the channel to serve, or 0 until the radio sits there. A disconnect
- * leaves it on the old BSS channel, so the request is repeated, at most once
- * a second. Called from txTick only.
+ * Without an association the radio is parked on a social channel
+ * (rtlRadioSetChannel): the one the manager's 129 puts in most slots, or
+ * _parkCh before any 129, on a tie and when the 129 has none (the default
+ * sequence is channel 6 in slots 0 and 8, Docs/AWDL_SIN_ASOCIACION_INFRA.md
+ * §3). Returns the channel to serve, or 0 until the radio sits there. A
+ * disconnect leaves it on the old BSS channel, so the request is repeated, at
+ * most once a second. Called from txTick only.
  */
 uint8_t RTLAwdInterface::parkRadio(uint8_t idleCh, uint64_t nowUs)
 {
 	if (!_parkCh)
 		return 0;
-	if (idleCh == _parkCh)
+	uint8_t target = _parkCh;
+	IOLockLock(_txLock);
+	if (_seqValid) {
+		static const uint8_t social[3] = { 6, 44, 149 };
+		int best = 0;
+		for (int c = 0; c < 3; c++) {
+			int n = 0;
+			for (int i = 0; i < AWDL_SLOTS; i++)
+				n += _seq[i] == social[c];
+			if (n > best || (n == best && n && social[c] == _parkCh)) {
+				best = n;
+				target = social[c];
+			}
+		}
+	}
+	IOLockUnlock(_txLock);
+	if (idleCh == target)
 		return idleCh;
 	if (_parkReqUs && nowUs - _parkReqUs < 1000000)
 		return 0;
 	_parkReqUs = nowUs;
-	uint32_t want = _parkCh;
+	uint32_t want = target;
 	IOReturn r = _ctrl->radio(RTL_RADIO_FN_SET_CHANNEL, &want);
 	if (r == kIOReturnUnsupported) {
 		LOG("awdl: radio cannot park on a channel, AWDL only on an associated social channel");
