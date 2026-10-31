@@ -43,6 +43,24 @@ directos.
   `sub_1003C3C40`) arman servicios Wi-Fi Aware (`WiFiAwarePublishServiceSpecificInfo`). Con NAN
   apagado por la capacidad 72, esa ruta no corre. De dónde toma el valor no se siguió `?`.
 
+### 2.1 Consultas por número de capacidad
+
+`airportd` también consulta capacidades por valor: `-[CWInterface capabilities]` devuelve el
+conjunto de números y el llamador prueba `containsObject:` con un literal NSNumber. Así es la
+puerta SAE de `-[CWXPCInterfaceContext __allowJoinCandidate:trigger:reply:]` (`0x1000bbf66`):
+`capabilities` en `0x1000bbfc4`, `containsObject:` con el literal 75 de `__objc_intobj`
+(`0x10015df00`, referenciado desde `0x1000bbfd8`).
+
+- **airportd**: la sección `__objc_intobj` (`0x10015d618`–`0x10015e938`) no contiene ningún
+  literal 29, y ninguna de las 28 funciones que llaman al selector `capabilities` usa un
+  inmediato 29. Los números que esas funciones consultan son 0, 20, 32, 50, 75, 81, 88, 90, 94,
+  100, 105, 107, 109, 113, 144, 146 y 165. Nadie pregunta por el 29.
+- **wifip2pd**: no tiene sección `__objc_intobj` ni referencias al selector `capabilities`; sólo
+  usa las pruebas de bit de §2.
+- CoreWLAN, CoreWiFi y demás clientes de `-[CWInterface capabilities]` (sharingd, agentes de la
+  barra de menús) no se barrieron por valor: la imagen de CoreWiFi tallada del shared cache no
+  conserva bien las funciones `?`.
+
 ## 3. Veredicto
 
 Con lo encontrado, la capacidad 29 sólo cambia comportamiento AWDL: sociales de 5 GHz en la
@@ -51,7 +69,7 @@ de asociación, escaneo o roaming de la infraestructura, a diferencia de la capa
 `airportd` usa para elegir la seguridad. Además el bit es veraz (la 8814AU es doble banda), y
 todo Mac con radio de 5 GHz lo anuncia.
 
-Riesgo que queda: un consumidor en userspace que convierta la máscara en un conjunto de números
-de capacidad y pregunte por el 29 por valor, que un barrido de pruebas de bit no detecta `?`. Si
+Riesgo que queda: un consumidor en userspace fuera de `airportd` y `wifip2pd` que pregunte por
+el 29 por valor (§2.1) `?`. Si
 tras el arranque con `3699d28e` la asociación al 153/80 cambia, la vuelta es reinstalar
 `65266e39`.
