@@ -165,6 +165,8 @@ flag y `0xffffff80021b4a11` camino normal), `monitorPeerRssi` (`0xffffff80021aa4
 | estado 1: seguimiento de RSSI fiable (umbral −60/−55/`ivars+10272` según versión del par) | `0xffffff80021b4981`-`0xffffff80021b49f6` | marca `priv+128`/`priv+136` para la caducidad posterior; sin efecto sobre el 48 |
 | estado 3 (recuperación): RSSI de la cabecera (`hdr+0x2C`) contra `ivars+10276` si canal ≤ 14 o `ivars+10284` si > 14 (`getGoodRssiThreshold5G`, −55 por defecto: `initParamsToDefaults` lo escribe con el qword `0xFFFFFFC9FFFFFFD3` en `ivars+0x2828` en `0xffffff80021c7cf3`, y ningún otro acceso con desplazamiento `0x2828` o `0x282C` en las funciones AWDL de IO80211Family lo escribe; lo leen `isPeerRoutable`, `shouldStopAFProcessing` y `determinePeerReachability`); «NO ROUTE -> ROUTABLE» | `0xffffff80021b4a1f`-`0xffffff80021b4a54` | única condición de canal de todo el camino: elige el umbral, no prohibe canales |
 
+### 4.7 Primer AF de un par nuevo (`ctx+0x3A`)
+
 `actionFrameProcessInput` pone a cero el contexto completo con `bzero(ctx, 0x98)`
 (`0xffffff800220e9b4`; el contexto es `rbp-0xC8`) y solo escribe `ctx+0x3A = 1` en un sitio:
 `mov [rbp+var_8E], 1` en `0xffffff800220ecf0`, justo después de `addAWDLPeer`
