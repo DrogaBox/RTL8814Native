@@ -117,7 +117,7 @@ el bloque de tarjeta: sin cadena `+0x120`, descartados.
 
 | Lector | VA | Test | Efecto |
 |---|---|---|---|
-| `IO80211AWDLPeerManager::configure` | `0xffffff80021c5804` | bit 7 (cap 47) con `+0xB3C` bit 7 | Si AMBOS están claros: log `"Dynamic country code not supported on this device"` y `sub+0x6FC = 0` (variable que `NANLocaleManager::configure` pone a 1 al empezar y cuyo nombre sugiere aprendizaje de código de país; sus lectores no se han seguido `?`). La capa los tiene claros: el país sigue llegando por GET 8; efecto AWDL no hallado `?`. |
+| `IO80211AWDLPeerManager::configure` | `0xffffff80021c5804` | bit 7 (cap 47) con `+0xB3C` bit 7 | Si AMBOS están claros: log `"Dynamic country code not supported on this device"` y `sub+0x6FC = 0` (`sub` = `*(this+0x18)`; `initParamsToDefaults` la pone a 1 en `0xffffff80021c7a95` y `NANLocaleManager::configure` también a 1 en `0xffffff800229f4ea`, y las dos `configure` la bajan a 0 con la misma condición). Es el flag de código de país aprendido de un par: su único lector, `IO80211PeerManager::setCountryCodeState` (`0xffffff800225b5e6`, llamado desde `configureValidAWDLChannels` y `NANLocaleManager::configure`), sólo con la celda ≠ 0 y el país del host vacío o `X…` pasa al estado 2, «pedir el código de país a un par P2P». La capa los tiene claros: con un país válido por GET 8 la rama no se toma; sin país, AWDL no lo aprende de un iPhone. |
 | `IO80211PeerManager::isCardPeerCountryCodeLearningCapable` (`0xffffff800225b736`) | `0xffffff800225b74c`, `0xffffff800225b755` | bit 7 (cap 47) o `+0xB3C` bit 7 (cap 71) | Devuelve 1 si cualquiera de los dos está puesto. |
 | `IO80211NANLocaleManager::configure` (`0xffffff800229f4d2`) | `0xffffff800229f502`, `0xffffff800229f50b` | bits 7 (caps 47/71) | La misma condición de código de país dinámico, camino NAN. |
 | `IO80211InfraInterface::updateLinkSpeed` | `0xffffff80023612f3` | bit 3 (cap 43) | Elige `VHT_MCS_RATE_TABLE_80MHZ`. Broadcom lo pone con informe de firmware (`ivars+1024 >= 128` y `ivars+1066 & 0x20`). Claros en la capa: cosmético. |
@@ -315,7 +315,23 @@ lo deja a 0 y es lo honesto: la 8814AU no es 802.11ax.
 
 | Lector | VA | Test | Efecto |
 |---|---|---|---|
-| `IO80211AWDLPeerManager::configure` | `0xffffff80021c63c4`, `0xffffff80021c63d6`, `0xffffff80021c63e8` | bits 1/2/3 (caps 161/162/163) | Bit 1 limpia `state+0x401A` (el flag del DFS proxy de cap 67); bit 2 pone `state+0x103A0 = 1`; bit 3 pone `state+0x102F1 = 1`. Lectores de esas celdas no seguidos `?`. |
+| `IO80211AWDLPeerManager::configure` | `0xffffff80021c63c4`, `0xffffff80021c63d6`, `0xffffff80021c63e8` | bits 1/2/3 (caps 161/162/163) | Bit 1 limpia `state+0x401A` (el flag del DFS proxy de cap 67); bit 2 pone `state+0x103A0 = 1` (`0xffffff80021c63e1`; sin el bit no se escribe y queda el 0 de `initParamsToDefaults`, `0xffffff80021c83ac`); bit 3 escribe `state+0x102B1` = 1 o 0 (`0xffffff80021c63fc` / `0xffffff80021c63f3`). Antes de los tres tests, `state+0x102B0 = 1` incondicional (`0xffffff80021c63be`). Lectores en la tabla siguiente. |
+
+Lectores de las celdas que fija `p[24]` (barrido de operandos `[reg+0x103A0]` y
+`[reg+0x102B1]` en todo el kernel collection; no hay accesos a `+0x102F1`, que era una
+lectura errónea de `+0x102B1`):
+
+| Celda | Lector | VA | Uso | Con la capa (bit claro) |
+|---|---|---|---|---|
+| `state+0x103A0` (cap 162) | `reportDataPathEvents`, caso 127 | `0xffffff80021dded7` | Con la celda a 1, una asociación infra iniciada por driver/firmware suspende AWDL (`"Infra assoc started by driver/fw, suspend AWDL"`, `setAwdlSuspendedMode`) o pasa a `setRoamChannelSequence`. | A 0: el evento 127 no hace nada. |
+| `state+0x103A0` | `reportDataPathEvents` | `0xffffff80021df09b`, `0xffffff80021df610`, `0xffffff80021df6f8` | Sólo argumento del log `"DeviceCannotRoamDuringAWDL %d RoamChanSeqInEffect %d …"`, que da nombre a la celda. | Log con 0. |
+| `state+0x103A0` | `addPeerToRealTimeGroup` | `0xffffff80021e9346`, `0xffffff80021e938f` | A 1 desactiva el steering P2P y lo aplaza (`"Delaying the steering !"`). | A 0: no fuerza el aplazamiento (deciden las demás condiciones). |
+| `state+0x103A0` | `monitorAWDLState` | `0xffffff80021eda2e` | A 1, con `+0x103A1` puesto, mide el tiempo desde la asociación para roaming (`"Time since infra assoc for roam"`). | A 0: rama saltada. |
+| `state+0x102B1` (cap 163) | `gatherInfraStats` (llamado desde `monitorInfraTraffic`) | `0xffffff80021efdfc`, `0xffffff80021effc7`, `0xffffff80021f0121` | Fuente de los contadores de tráfico infra: a 1, un objeto que devuelve el controlador por su ranura vtable `+3200` (Broadcom); a 0, los canales IOReporter del `IO80211InterfaceMonitor` del controlador (`IfTxPkBe`, `IfTxPkBk`, `IfTxPkVo`, `IfTxPkVi`, …). | A 0: lee el `InterfaceMonitor`. Si la capa no alimenta esos canales, AWDL ve el tráfico infra a 0 `?`. |
+
+`state+0x102B0` (lo pone `configure` siempre) lo leen `setElectionMetricsToDefault`,
+`setAwdlElectionMetric`, `setElectionMetricForAirplaySink` y
+`setElectionMetricForNonAirplaySink`; no depende de `p[24]`.
 | `IO80211AWDLPeerManager::isProMode5Enabled` (`0xffffff8002236d76`) | `0xffffff8002236d9e` | `& 0x10` (cap 164) | Habilita el pro-mode 5. Broadcom lo pone junto a `p[15]` bit 7 (flag 93). Inofensivo claro. |
 
 ### `+0xB49`, `+0xB4A`, `+0xB4B` (p[25..27], capacidades 168–191) — RTL `0x00`
@@ -350,8 +366,8 @@ Estado actual (leído del árbol de trabajo de la otra sesión): `p[4..5] = 0xE6
 | `p[21]` (caps 136–143, HE y stats) | `getHeCapable`, `fillLegacyDataPathPayload`, gates de stats `& 0x40` | Dejarlo a 0. HE sería falso; el bit 142 sólo recorta métricas. |
 | `p[22]` bit `0x10` (cap 148) y `p[23]` bit `0x10` (cap 156) | `getRangingCaps`, `buildRangingTlv` | Opcional. Broadcom anuncia ranging siempre (cap 156 incondicional); sin él el TLV 30 sale sin el bit y userspace no ve fine timing. Inofensivo para AirDrop/AirPlay. |
 | `p[23]` bit `0x20` (cap 157, Limited SDB) | `configure` `0xffffff80021c5a83` | Dejarlo claro: ni siquiera el GET de Broadcom lo pone. |
-| `p[24]` (caps 160–167) | `configure`, `isProMode5Enabled` | Dejarlo claro: bits de configuración menor (DFS proxy, pro-mode 5, estados internos sin lector identificado `?`). |
-| `p[13]` bit `0x40` (cap 78, concurrencia) | `configure` `0xffffff80021c58b3` | Dejarlo claro por ahora: sólo fija `state+0xD066`, cuyos lectores no se han seguido `?`. |
+| `p[24]` (caps 160–167) | `configure`, `isProMode5Enabled` | Dejarlo claro. Bit 2 (cap 162) es «el dispositivo no puede hacer roaming durante AWDL»: puesto, una asociación iniciada por el firmware suspende AWDL y el steering P2P se aplaza; la 8814AU no tiene esa limitación. Bit 3 (cap 163) sólo elige de dónde lee AWDL los contadores de tráfico infra (§`+0xB48`). Bit 1 es el DFS proxy, bit 4 el pro-mode 5. |
+| `p[13]` bit `0x40` (cap 78, concurrencia) | `configure` `0xffffff80021c58b3` | Dejarlo claro: sólo afecta a la concurrencia SoftAP+AWDL (`AWDL_CAP78_CONCURRENCIA.md`). |
 
 En resumen: con el parche de doble banda (`p[7] |= 0x20`) el bloque queda completo para
 AWDL con asociación a infraestructura. Todo lo demás que falta es cosmético
@@ -375,8 +391,11 @@ claro (6E, pro-mode, DFS proxy, RSDB, HE).
 
 ## 8. Abiertos
 
-- Lectores de `state+0xD066` (concurrencia, cap 78), `state+0x103A0`/`state+0x102F1`
-  (bits 2/3 de `p[24]`) y `sub+0x6FC` tras la init: efecto sobre AWDL no seguido `?`.
+- Cerrados: `state+0xD066` (cap 78, en `AWDL_CAP78_CONCURRENCIA.md`), `state+0x103A0` y
+  `state+0x102B1` (bits 2/3 de `p[24]`, §`+0xB48`) y `sub+0x6FC` (§`+0xB39`).
+- Si la capa alimenta los canales IOReporter `IfTxPk*`, `IfTxBy*`, `IfRxPkts` e `IfRxByts` del `InterfaceMonitor`
+  que `gatherInfraStats` lee con la cap 163 clara; si no, AWDL ve tráfico infra nulo y el
+  efecto en `monitorInfraTraffic` no se siguió `?`.
 - Polaridad rama a rama del grupo byte ≠ 0 de `+0xB3F` (30+ sitios listados en §4):
   patrón común verificado, ramas individuales sin seguir `?`.
 - Semántica exacta de `isAirPlaySinkEnabled` (`0xffffff8002207fb4`) leyendo `+0xB3F`:
