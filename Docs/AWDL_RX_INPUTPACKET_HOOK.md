@@ -189,15 +189,23 @@ En 14 la tercera condición se sustituye por
 `IO80211AWDLPeerManager::supportAWDLToNANMigration() ∧ bit 6 de [[awdlPeer+0x20]+0x588]`
 (`0xffffff80021dc538`–`55f`); no hay cadena `[awdlMgr+0x18]→+0x518→+0x120/+0x168/+0x3A8`. El byte
 `+0x6DE/0x6AE` es el marcador de presencia ya conocido (`AWDL_WIFIP2PD_PRESENCE_ONCE.md`: escritura a 1
-cuando el par publica presencia); la identidad de los objetos del mapa del gestor (`+0xA5C8`/`+0x7EA8`/
-`+0x7E60`) es `?`.
+cuando el par publica presencia).
+
+En 26, el objeto de `ivars+0xA5C8` es la cola de servicios AWDL registrados localmente: un
+`IO80211CommandQueue::withGateAndCapacity(gate, 0x80, 0x100)` creado en
+`IO80211AWDLPeerManager::initWithInterface` (`0xffffff80021c2398`, guardado en `0xffffff80021c23a1`), y el
+dword `[[obj]+0x10]+0x24` es lo que devuelve `getRegisteredServicesCount` (`0xffffff80021dc598`). Sus
+otros usuarios son `updateLocalRequests`, `buildServiceResponseTlvs` y
+`buildMasterIndicationTemplate`. La identidad de `+0x7EA8`/`+0x7E60` en 15/14 se presume la misma por
+posición `?`.
 
 **Consecuencia para Bonjour.** El mDNS IPv6 (`33:33:00:00:00:FB`) cae en el primer caso y el IPv4
-(`01:00:5E:00:00:FB`) en el tercero. Con el pre-hook activo, el mDNS de un par conocido se descarta sin
-log ni contador mientras el objeto del mapa del gestor falte o tenga el dword `+0x24` a 0, o mientras
-el par no tenga el bit 0 de `+0x6DE`. Sin el pre-hook, como hoy, ese tráfico pasa siempre. El
-descubrimiento de AirDrop viaja por mDNS sobre `awdl0`, así que activar el pre-hook antes de tener la
-cadena de presencia completa puede cortarlo.
+(`01:00:5E:00:00:FB`) en el tercero. Con el pre-hook activo, el mDNS de un par conocido pasa solo si
+este Mac tiene al menos un servicio AWDL registrado (lo que ocurre cuando sharingd publica
+`_airdrop._tcp` con `IncludeAWDL`, `AWDL_AIRDROP_SIN_BLUETOOTH.md` §3) y el par tiene el bit 0 de
+`+0x6DE`; si no, se descarta sin log ni contador. Sin el pre-hook, como hoy, ese tráfico pasa siempre.
+Activar el pre-hook antes de comprobar en hardware que el bit de presencia del par se pone puede
+cortar el descubrimiento de AirDrop.
 
 ## 7. ¿Símbolo o vtable?
 
@@ -288,7 +296,7 @@ Notas del código:
    de una etiqueta a cero.
 4. Método de la ranura `+0x230` (26/23) / `+0x228` (15) de la vtable del PeerManager a la que el rol 7
    transfiere la llamada.
-5. Identidad del objeto del mapa del gestor (`+0xA5C8`/`+0x7EA8`/`+0x7E60`) y de su dword `+0x24`.
+5. Identidad de `+0x7EA8`/`+0x7E60` en 15/14 (en 26, `+0xA5C8` es la cola de servicios registrados, §6).
 6. Contador de descartes del llamador en 23: celda `+0x158` sobre `[var_50]` frente a `+0x150` sobre
    `[var_50]+0x10` en 24/26 — desplazamiento de layout no interpretado.
 7. Que en hardware el `awdl0` de la capa tenga el rol 6 en `[ [this+0x120]+0x58 ]` (26) — sin él el
