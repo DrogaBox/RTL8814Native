@@ -266,6 +266,9 @@ codificación 3 ≤ 3, TLV 18 con cursor 44 ≥ 9 y 2·16 ≤ 44 − 9, TLV 5 co
 - Que el manager no produzca hops de elección ≥ 256 (H2) ni plantillas sin TLV 24 (§4).
 - Unidad exacta de `phy_tx`/`target_tx` más allá del µs del host que espera `monitorTimeline`
   (`AWDL_FRAME_WIRE_FORMAT.md` §5.4 la da por buena; los docs la marcan `?`).
+
+## 11. Estado tras la revisión
+
 | # | Estado |
 |---|---|
 | H1 | Confirmado en el código y corregido en `2bb1c45`: `buildAf` toma la hora bajo `_txLock` y `txTick` la toma después del cerrojo. El mismo desbordamiento existía en `txTick` (`now` muestreado antes de `IOLockLock`) y queda corregido en el mismo commit |
