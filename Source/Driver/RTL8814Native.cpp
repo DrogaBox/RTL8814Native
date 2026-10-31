@@ -501,6 +501,10 @@ IOReturn RTL8814Native::callPlatformFunction(const OSSymbol *functionName,
                 _adapter->setDataHook((rtl_radio_rx_fn)param1, param2);
                 return kIOReturnSuccess;
         }
+        if (functionName->isEqualTo(RTL_RADIO_FN_AWDL_HOOK)) {
+                _adapter->setAwdlHook((rtl_radio_awdl_rx_fn)param1, param2);
+                return kIOReturnSuccess;
+        }
         if (functionName->isEqualTo(RTL_RADIO_FN_TX)) {
                 if (!param1)
                         return kIOReturnBadArgument;

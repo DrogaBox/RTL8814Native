@@ -227,6 +227,33 @@ void RTLEthernetAdapter::setDataHook(void (*fn)(void *ctx, void *mbuf), void *ct
                       getCurrentMedium());
 }
 
+void RTLEthernetAdapter::setAwdlHook(rtl_radio_awdl_rx_fn fn, void *ctx)
+{
+        if (!_stateLock)
+                return;
+        IOLockLock(_stateLock);
+        _awdlCtx = fn ? ctx : nullptr;
+        _awdlFn = fn;
+        IOLockUnlock(_stateLock);
+}
+
+/* RX thread (C glue entry: rtl8814native_awdl_rx). True when a hook took the
+ * frame, so the vendor core drops it instead of classifying it. */
+bool RTLEthernetAdapter::awdlInput(const uint8_t *frame, uint32_t len, int8_t rssi,
+                                   uint8_t channel)
+{
+        if (!_awdlFn || !_stateLock)
+                return false;
+        bool taken = false;
+        IOLockLock(_stateLock);
+        if (_awdlFn) {
+                _awdlFn(_awdlCtx, frame, len, rssi, channel);
+                taken = true;
+        }
+        IOLockUnlock(_stateLock);
+        return taken;
+}
+
 void RTLEthernetAdapter::setMacAddress(const uint8_t *mac)
 {
         if (!mac)

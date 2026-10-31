@@ -230,6 +230,17 @@ int rtl_netif_rx(struct net_device *dev, struct sk_buff *skb)
         return NET_RX_SUCCESS;
 }
 
+/* AWDL RX entry from validate_recv_frame (core/rtw_recv.c): nonzero when the
+ * radio ABI AWDL hook took the frame */
+extern "C" int rtl8814native_awdl_rx(struct net_device *dev, const uint8_t *frame,
+                                     uint32_t len, int8_t rssi, uint8_t channel)
+{
+        if (!dev || !dev->mac_adapter || !frame)
+                return 0;
+        RTLEthernetAdapter *a = (RTLEthernetAdapter *)dev->mac_adapter;
+        return a->awdlInput(frame, len, rssi, channel) ? 1 : 0;
+}
+
 void rtl_netif_carrier(struct net_device *dev, int on)
 {
         if (dev && dev->mac_adapter)

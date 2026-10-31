@@ -19,6 +19,8 @@
 #include <linux/netdevice.h>
 #include <linux/skbuff.h>
 
+#include "RTLRadioABI.h"
+
 class RTL8814Native;
 
 class RTLEthernetAdapter : public IOEthernetController {
@@ -69,6 +71,10 @@ public:
 	bool dataHookAttached() const { return _hookFn != nullptr; }
 	IOReturn transmitFrame(mbuf_t m);
 
+	/* Radio ABI AWDL hook: raw 802.11 frames with the AWDL BSSID */
+	void setAwdlHook(rtl_radio_awdl_rx_fn fn, void *ctx);
+	bool awdlInput(const uint8_t *frame, uint32_t len, int8_t rssi, uint8_t channel);
+
 	/* Update MAC address and notify DLIL / IORegistry */
 	void setMacAddress(const uint8_t *mac);
 
@@ -89,6 +95,8 @@ private:
 	IOLock *_stateLock;	/* guards the data hook (attach/detach vs RX) */
 	void (*_hookFn)(void *ctx, void *mbuf);
 	void *_hookCtx;
+	rtl_radio_awdl_rx_fn _awdlFn;	/* also under _stateLock */
+	void *_awdlCtx;
 };
 
 #endif /* _RTL8814_ETHERNET_ADAPTER_H */

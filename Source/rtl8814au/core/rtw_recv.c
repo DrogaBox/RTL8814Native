@@ -20,6 +20,11 @@
 
 /* RTL8814Native: defined in Compat/VendorOsDep.c */
 void rtl8814native_note_rx_phy(u8 rate, const s8 *pwr, const s8 *snr);
+/* RTL8814Native: defined in Driver/VendorGlue.cpp */
+int rtl8814native_awdl_rx(struct net_device *dev, const u8 *frame, u32 len, s8 rssi, u8 channel);
+
+/* AWDL frames carry this A3 (Docs/AWDL_RTL8814_RX_ACK.md §1) */
+static const u8 rtl_awdl_bssid[ETH_ALEN] = { 0x00, 0x25, 0x00, 0xFF, 0x94, 0x73 };
 
 #ifdef CONFIG_NEW_SIGNAL_STAT_PROCESS
 static void rtw_signal_stat_timer_hdl(void *ctx);
@@ -2301,6 +2306,16 @@ sint validate_recv_frame(_adapter *adapter, union recv_frame *precv_frame)
 			dump_rx_packet(ptr);
 	}
 #endif
+	/* RTL8814Native: AWDL frames go to the radio ABI hook when one is
+	 * attached; none of them belongs to the infrastructure BSS. */
+	if (precv_frame->u.hdr.len >= WLAN_HDR_A3_LEN && type != WIFI_CTRL_TYPE &&
+	    _rtw_memcmp(GetAddr3Ptr(ptr), rtl_awdl_bssid, ETH_ALEN) &&
+	    rtl8814native_awdl_rx(adapter->pnetdev, ptr, precv_frame->u.hdr.len,
+	                          pattrib->phy_info.recv_signal_power,
+	                          rtw_get_oper_ch(adapter))) {
+		retval = _FAIL;
+		goto exit;
+	}
 	switch (type) {
 	case WIFI_MGT_TYPE: /* mgnt */
 		DBG_COUNTER(adapter->rx_logs.core_rx_pre_mgmt);

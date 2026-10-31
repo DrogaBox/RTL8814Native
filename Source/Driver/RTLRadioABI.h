@@ -43,6 +43,18 @@
 
 typedef void (*rtl_radio_rx_fn)(void *ctx, void *mbuf);
 
+/*
+ * AWDL. While attached, every received 802.11 frame whose A3 is the AWDL
+ * BSSID 00:25:00:FF:94:73 is passed to the hook as raw bytes (header
+ * included, FCS stripped) and dropped by the radio afterwards. The bytes are
+ * only valid during the call: the hook copies what it keeps. Same thread and
+ * lock rules as the data hook. Older builds answer kIOReturnUnsupported.
+ */
+#define RTL_RADIO_FN_AWDL_HOOK    "rtlRadioAwdlHook"   /* p1: rtl_radio_awdl_rx_fn (NULL = detach), p2: void *ctx */
+
+typedef void (*rtl_radio_awdl_rx_fn)(void *ctx, const uint8_t *frame, uint32_t len,
+                                     int8_t rssi_dbm, uint8_t channel);
+
 /* rtl_radio_status.state */
 #define RTL_RADIO_S_IDLE          0
 #define RTL_RADIO_S_SCAN          1
