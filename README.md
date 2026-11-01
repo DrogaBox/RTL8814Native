@@ -1,6 +1,19 @@
 # RTL8814Native
 
-> **Heads up: this repo is frozen.** I decided to stop contributing here for now. I kept seeing my code get picked up all over the place without any credit, so new work is not landing in this repo anymore. It stays as it is until I decide otherwise.
+> [!CAUTION]
+> # ⛔ THIS REPO IS FROZEN
+>
+> **I'm done contributing here. As of November 1, 2026, nothing new lands in this repo, period.**
+>
+> I built this in the open, for free, to help people. In a few days it got cloned over a thousand times, and then I started seeing my work pop up in other places with **zero credit**. Not a mention, not a thanks. Some of those people sell their stuff. That's not how this community is supposed to work, and I'm not going to keep feeding it.
+>
+> When I use someone else's code, I credit them, like the Realtek HAL from `morrownr/8814au` in this README. That's the bare minimum, and apparently it's too much to ask.
+>
+> - Everything here is **GPL-2.0**. If you use any of it, you **must** keep the copyright notices and credit this project. Removing them is a license violation, and I will act on it.
+> - Development continues, **privately**.
+> - Issues and PRs here will be ignored.
+>
+> To everyone who tested, sent logs or just said thanks: this was for you, and I'm sorry it has to be like this.
 
 A native macOS driver for Realtek RTL8814AU (4x4 802.11ac) USB Wi-Fi adapters. I wrote it because the only options on macOS were closed-source Realtek utilities, and I wanted the adapter to show up in the normal Wi-Fi menu like any other card.
 
