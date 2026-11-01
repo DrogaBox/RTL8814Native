@@ -1,5 +1,7 @@
 # RTL8814Native
 
+> **Heads up: this repo is frozen.** I decided to stop contributing here for now. I kept seeing my code get picked up all over the place without any credit, so new work is not landing in this repo anymore. It stays as it is until I decide otherwise.
+
 A native macOS driver for Realtek RTL8814AU (4x4 802.11ac) USB Wi-Fi adapters. I wrote it because the only options on macOS were closed-source Realtek utilities, and I wanted the adapter to show up in the normal Wi-Fi menu like any other card.
 
 It runs on macOS Sequoia and Tahoe (x86_64) through OpenCore. It is two kexts:
