@@ -91,7 +91,9 @@
 #ifdef CONFIG_SINGLE_XMIT_BUF
 	#define NR_XMIT_EXTBUFF	(1)
 #else
-	#define NR_XMIT_EXTBUFF	(32)
+	/* RTL8814Native: 32 in the vendor tree. AWDL data frames go out through
+	 * these buffers and may hold all but 16 of them (AWDLTx.c). */
+	#define NR_XMIT_EXTBUFF	(128)
 #endif
 
 #ifdef CONFIG_RTL8812A
@@ -473,6 +475,10 @@ struct pkt_attrib {
 	u8	rate;
 	u8	intel_proxim;
 	u8	retry_ctrl;
+	u8	data_tries; /* hardware retry limit of this frame; 0 leaves it to retry_ctrl */
+	u8	rtl_awdl_rpt; /* RTL8814Native: AWDL data at the ladder's rate: CCX report, fallback to OFDM 6 */
+	u8	rtl_awdl_agg; /* RTL8814Native: AWDL QoS data for an A-MPDU: its TX descriptor rate, 0 = not one */
+	u8	rtl_awdl_agg_num; /* most MPDUs in that A-MPDU (descriptor MAX_AGG_NUM) */
 	u8   mbssid;
 	u8	ldpc;
 	u8	stbc;

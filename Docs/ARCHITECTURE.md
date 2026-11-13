@@ -10,7 +10,7 @@
 - **Operating System:** macOS Tahoe / Sequoia (`25G241`, Darwin Kernel `25.6.0: RELEASE_X86_64`)
 - **Target Hardware:** TP-Link Archer T9UH v1 (Realtek **RTL8814AU** 4T4R 802.11ac MU-MIMO USB 3.0 Adapter)
   - **USB IDs:** `idVendor = 0x2357` (`9047`), `idProduct = 0x0106` (`262`), `bcdDevice = 0x0200`
-  - **Permanent Hardware MAC (EFUSE `0xD8`):** `7C:C2:C6:03:EA:84` (Verified live on `en2`)
+  - **Permanent Hardware MAC (EFUSE `0xD8`):** `7C:C2:C6:xx:xx:xx` (Verified live on `en2`)
   - **Bus Speed: USB 2.0 High-Speed, NOT SuperSpeed.** `ioreg` shows `USBSpeed = 3`, but in IOUSBHostFamily that is `kUSBHostConnectionSpeedHigh` (Super = 4, which is what the parent hub shows). Also `bcdUSB = 0x0200`, `bMaxPacketSize0 = 64`, `"Device Speed" = 2`, bulk `wMaxPacketSize = 512`, and chip register `0xFF` bit 7 = 1 (USB2 mode). The 8814AU enumerates in USB2 mode unless mode-switched (`HW_VAR_USB_MODE`). Earlier docs wrongly said SuperSpeed.
   - **Physical Topology:** Dongle -> USB port on the monitor (`ioreg`: parent `USB3.0 Hub`) -> monitor upstream cable -> **red** USB port on the motherboard. Not plugged in directly; `UsbPowerSinkAllocation = 500`. The adapter works fine on this same port under Windows, so the hub is **not** a suspect. This is only for identifying the USB path; I can move it to another port if a test needs it.
   - **USB Endpoints (`bConfigurationValue = 1`, `bInterfaceNumber = 0`, `bNumEndpoints = 5`):**
@@ -32,7 +32,7 @@
 | [Source/Compat/VendorOsDep.c](../Source/Compat/VendorOsDep.c) | Realtek OS-dependent layer for Darwin (`usbctrl_vendorreq`, `ffaddr2pipehdl`, `usb_write_port`, async `usb_read_port` + `usb_read_port_complete` + `recvbuf2recvframe` + `usb_recv_tasklet`, `_rtw_xmit_entry`, `rtw_start_drv_threads`, `rtw_intf_start`). |
 | [Source/Driver/RTL8814Native.cpp](../Source/Driver/RTL8814Native.cpp) | Main `IOService` lifecycle (`start`/`stop`), orchestrating `RTLUsbDevice`, `VendorProbe`, and `RTLEthernetAdapter`. |
 | [Source/Driver/RTLUsbDevice.cpp](../Source/Driver/RTLUsbDevice.cpp) | `IOUSBHostInterface` wrapper: endpoint discovery (1 Bulk IN + up to 4 Bulk OUT pipes), `controlTransfer` (`ep0`), synchronous `bulkTransfer`, and async `submitUrb` with `IOMemoryDescriptor::prepare()`/`complete()`. |
-| [Source/Driver/RTLEthernetAdapter.cpp](../Source/Driver/RTLEthernetAdapter.cpp) | `IOEthernetController` subclass publishing `en2` to macOS networking stack, reporting hardware MAC `7C:C2:C6:03:EA:84` from EFUSE, and bridging `outputPacket` / `inputFromDriver`. |
+| [Source/Driver/RTLEthernetAdapter.cpp](../Source/Driver/RTLEthernetAdapter.cpp) | `IOEthernetController` subclass publishing `en2` to macOS networking stack, reporting hardware MAC `7C:C2:C6:xx:xx:xx` from EFUSE, and bridging `outputPacket` / `inputFromDriver`. |
 | [Source/Driver/RTLUserClient.cpp](../Source/Driver/RTLUserClient.cpp) | `IOUserClient` exposing Selectors `0..6` (`GetVersion`, `GetLinkStatus`, `TriggerScan`, `GetScanResult`, `JoinNetwork`, `Disconnect`, `GetRadioInfo`). |
 | [Source/Driver/VendorProbe.c](../Source/Driver/VendorProbe.c) | Hardware bring-up (`rtl8814native_vendor_probe`), thread/RX startup (`RTW_CMD_THREAD`, `rtw_intf_start`, `dynamic_chk_timer`), TX workqueue (`rtl8814native_vendor_xmit`), and Scan/Join/Status C API. |
 | [Source/Driver/WPA2Supplicant.c](../Source/Driver/WPA2Supplicant.c) | Self-contained in-kernel IEEE 802.11i WPA2-PSK 4-Way EAPOL Supplicant (SHA-1, HMAC-SHA1, PBKDF2-SHA1, PRF-384, FIPS 197 AES-128 decrypt, RFC 3394 Key Unwrap, PTK/GTK hardware CAM installation). |
@@ -57,7 +57,7 @@ Verified live after reboot using `./Tools/test_uc` and `ifconfig en2`:
 - `Vendor Probe Return Code`: `0 (SUCCESS)`
 - `Register REG_SYS_CFG (0x00F0)`: `0x044411B5`
 - `Chip Type`: `10 (CHIP_8814A)`, `Cut Version`: `1`
-- `Permanent Hardware MAC`: `7C:C2:C6:03:EA:84` (published live on `en2`)
+- `Permanent Hardware MAC`: `7C:C2:C6:xx:xx:xx` (published live on `en2`)
 - `HAL Init Status`: `1 (_SUCCESS)`
 - `Firmware Downloaded & OK`: `YES! (flag=1)` (68,320-byte `array_mp_8814a_fw_nic` downloaded via USB Bulk OUT RSVD page + IDDMA)
 
@@ -146,7 +146,7 @@ Verified live after reboot using `./Tools/test_uc` and `ifconfig en2`:
 - **Rule for future ports:** whenever a Linux `os_dep` function is re-implemented in `VendorProbe.c` / `VendorOsDep.c`, diff it against the original block by block. Skipped `#ifdef` blocks leave vendor state NULL and crash much later.
 
 ### Milestone 3.0 — Join, DHCP and Data Path VERIFIED ON HARDWARE (build `c9897d82...`)
-- `status`: `ASSOCIATED (_FW_LINKED)`, WPA2 `COMPLETED (KEYS INSTALLED)`, channel 157, BSSID `0E:84:08:68:FD:24`, RSSI -46 dBm, `usb_speed=2`, 0 RX drops, 0 TX write errors.
+- `status`: `ASSOCIATED (_FW_LINKED)`, WPA2 `COMPLETED (KEYS INSTALLED)`, channel 157, BSSID `0E:84:08:xx:xx:xx`, RSSI -46 dBm, `usb_speed=2`, 0 RX drops, 0 TX write errors.
 - macOS ran DHCP on `en2` automatically once carrier came up (no `ipconfig set` needed): `192.168.100.11/24`, gateway `192.168.100.1`, plus IPv6 SLAAC global addresses.
 - `ping -b en2` to the gateway (~2.5 ms), `8.8.8.8` (~16.5 ms) and `ping6 -I en2` to Google DNS: 0% loss.
 - Throughput forced through `en2` (`curl --interface en2`, Cloudflare): **~18.7 MB/s (~150 Mbit/s) down, ~10.3 MB/s (~83 Mbit/s) up**, still 0 RX drops / 0 TX errors after ~21k RX frames. This is about what USB 2.0 HS allows; more needs the USB3 mode switch.
@@ -177,7 +177,7 @@ Verified live after reboot using `./Tools/test_uc` and `ifconfig en2`:
 - **Symptom (`Kernel-2026-10-26-234823.panic`, build `ad8ae899`):** I unplugged the dongle from the hub (instance B, fully up in HS) and plugged it into a direct port (instance C). C panicked during firmware download: `IOLockLock+0x3` <- `rtl_schedule_work` (frame skipped) <- `tasklet_schedule` <- `usb_write_port` <- `_rtw_write_port` <- ... `FirmwareDownload8814A` <- `rtw_hal_init` <- `vendor_probe` <- `RTL8814Native::start`. `CR2 = 0xffffff9b00000000`, flagged by Probabilistic GZAlloc, i.e. a freed allocation: `g_system_wq.wq.lock`.
 - **Root cause:** all radio state is global (`g_padapter`, `g_dvobj`, the compat system workqueue), and nothing ordered B's `stop()` (termination thread; `vendor_remove` + `rtl_workqueue_exit`, slow on a vanished device) against C's `start()` (config thread). B's `rtl_workqueue_exit()` freed the lock C's `rtl_workqueue_init()` had just allocated. (The kernel log after the unplug was lost with the panic, so the overlap is inferred from the code and the backtrace.)
 - **Fix (build `78ef83a99fe3d38ef94490fbe808641e`, UUID `56D00139`, deployed, 0 undefined vendor symbols):** `RTL8814Native::start()` / `stop()` now run `startLocked()` / `stopLocked()` under a kext-lifetime `IORecursiveLock` (created with `OSCompareAndSwapPtr`; recursive because a failed start calls `stop()`). A new instance now waits for the previous teardown to finish. If teardown ever hangs, the new instance blocks instead of panicking; the per-reboot `shutdown_stall` reports suggest teardown is slow, which is Phase 4 work.
-- **Deploy note:** disk numbers change between boots (this boot: `disk0s1` = NTFS "Gordo", EFI = `disk1s1` at `/Volumes/NO NAME`). Always check `diskutil info` (`Partition Type: EFI`, 4.3 GB) and that `EFI/OC/Kexts` exists before copying.
+- **Deploy note:** disk numbers change between boots (this boot: `disk0s1` = an NTFS volume, EFI = `disk1s1` at `/Volumes/NO NAME`). Always check `diskutil info` (`Partition Type: EFI`, 4.3 GB) and that `EFI/OC/Kexts` exists before copying.
 
 ### Milestone 4.2 — RX Throughput Cap Investigation (build `7ca09811916157dc42b9931e42558f8b`, deployed, pending reboot)
 - **Air side is fine (decoded from `rxlog` on build `ad8ae899`, no new code needed):** RX descriptor `RX_RATE` = `0x3D`-`0x3F` = **VHT 2SS MCS7-9**, Jaguar phy-status byte 3 `r_RFMOD = 2` = **80 MHz**, 5 GHz ch 157. PHY rate ~650-866 Mbit/s. The router is 2x2, so 2 streams is its maximum; there is no bad 2.4 GHz / 20 MHz negotiation.
@@ -266,13 +266,13 @@ Verified live after reboot using `./Tools/test_uc` and `ifconfig en2`:
 
 
 ### Milestone 4.5 — Clean Radio Power-Off on Shutdown/Restart (build `cc2c41f3e3a9ca81a5f037f468acd6df`, 0 undefined vendor symbols, deployed to EFI)
-- **`shutdownStall` reports are not ours.** Decoded with `spindump -i <file> -o out.txt`. Reports from 2026-10-19 and 2026-10-23 predate the kext (no `com.DrogaBox` in the kext list) and show the same pattern as tonight's: `launchd` "system shutdown has begun" waits for user processes (`tuxera_ntfs` / `tuxera_ntfs_daemon` FUSE for the NTFS disk "Gordo", BlueTool, fseventsd, diskarbitrationd...). The latest report (01:33) has no thread executing inside our kext's range (0xffffff80043c0000 + 0x318000). Tonight's count (22) just reflects the many reboots.
+- **`shutdownStall` reports are not ours.** Decoded with `spindump -i <file> -o out.txt`. Reports from 2026-10-19 and 2026-10-23 predate the kext (no `com.DrogaBox` in the kext list) and show the same pattern as tonight's: `launchd` "system shutdown has begun" waits for user processes (`tuxera_ntfs` / `tuxera_ntfs_daemon` FUSE for an NTFS disk, BlueTool, fseventsd, diskarbitrationd...). The latest report (01:33) has no thread executing inside our kext's range (0xffffff80043c0000 + 0x318000). Tonight's count (22) just reflects the many reboots.
 - **Shutdown hook:** `RTL8814Native` now joins the power plane (`PMinit` + `provider->joinPMtree` + `registerPowerDriver`, 2 dummy states, no sleep handling yet; `PMstop` in `stopLocked`). It overrides `systemWillShutdown()`: on `kIOMessageSystemWillPowerOff` / `kIOMessageSystemWillRestart` it calls `rtl8814native_vendor_shutdown()` under the lifecycle lock, then `super::systemWillShutdown()`.
 - **`rtl8814native_vendor_shutdown()` (`VendorProbe.c`), mirroring Linux `rtw_dev_shutdown()`:** net_closed / bup off, `rtw_set_drv_stopped`, cancel + purge the TX work, `rtw_cancel_all_timer`, `rtw_hal_deinit` (-> `rtl8814au_hal_deinit` -> `rtw_hal_power_off` = card disable / NIC_DISABLE_FLOW, clears hw_init_completed), `rtw_set_surprise_removed`, `continual_io_error = MAX+1`. Memory is kept; a later `vendor_remove()` is still safe (it skips the second power-off because hw_init_completed is false).
 - **Verify after deploy:** restart; the boot log of the *previous* boot must contain `system shutdown, powering the radio off`; after the restart `test_uc status` should show `Probe Power State ... cold (chip was off)` (the 4.4 probe-time power-off becomes a fallback for panics / other OSes). Restart must not hang.
 - **VERIFIED (2026-10-27 02:14 restart through the 4.5 build):** `Probe Power State: SYS_CLKR+1=0xB0, CR=0xEA -> cold (chip was off)` — the hook powered the radio off at shutdown; the 4.4 probe-time power-off correctly did not trigger. Restart did not hang; the 02:14 shutdownStall decodes with zero thread frames inside our kext (tuxera_ntfs / fseventsd / BlueTool again — pre-existing). Performance after the hook shutdown: down 320-321 / up 200-214 Mbit/s (best upload ever), dup 1.06%, TX err 0. Milestone complete.
 - **First 4.5 boot (2026-10-27 01:46, UUID `C9E6124B`):** join + auto-DHCP on `en2`, down **369-371 Mbit/s** / up **171-172 Mbit/s** (above the Linux rtw88 reference down 288-366), RX dup **2.8%**, TX err 0, RX backlog ≤ 2. `Probe Power State` = warm start — expected: the shutdownStall spindump from 01:46 shows the previous boot ran 4.4 (UUID `9C499D78`), so the hook had not run yet. Note: the stall decodes from the spindump binary format (base64 -> zlib@offset8 -> bplist NSKeyedArchiver -> `$objects[48]` = kext list, `$objects[49]` = full sample) — that is how to check which build was live at shutdown.
-- **AP channel change observed:** same BSSID `0E:84:08:68:FD:24` moved 157 -> 161 mid-session; the driver does not follow Channel Switch Announcement, so the link dropped once (beacon loss) and a rejoin recovered on ch 161.
+- **AP channel change observed:** same BSSID `0E:84:08:xx:xx:xx` moved 157 -> 161 mid-session; the driver does not follow Channel Switch Announcement, so the link dropped once (beacon loss) and a rejoin recovered on ch 161.
 
 
 ### Milestone 4.6 — Sleep/Wake via `setPowerState` (build `4953df17912583d46c5a407a754cc45e`, UUID `198B7CED`, 0 undefined vendor symbols, deployed to EFI, pending reboot + sleep test)
@@ -337,7 +337,7 @@ Verified live after reboot using `./Tools/test_uc` and `ifconfig en2`:
 - **Observed on 4.6g:** the link stayed `DISCONNECTED` after wake. The old instance's `didTerminate` now gets the lock first and releases the radio, so `g_owner` is already NULL when the new `start()` runs, `took_over` stays false and the 4.6d re-join never fired.
 - **Fix:** `startLocked()` calls `rtl8814native_rejoin_last()` after every successful probe (`took_over` removed). It is a no-op until a join succeeded in this kext lifetime (`g_last_ssid` is static and empty at kext load), so a cold boot is unaffected; a replug also re-joins.
 
-- **4.6h VERIFIED (07:31 sleep, 07:32:52 wake):** no panic, one instance, 0 USB devices `inactive`, and the link re-joined by itself: `ASSOCIATED (_FW_LINKED)`, WPA2 `COMPLETED (KEYS INSTALLED)`. Two problems: `en2` showed `status: inactive` / no IP (`IOLinkStatus=1`, valid without active), and it joined the 2.4 GHz BSS (`0E:84:08:68:FD:20`, ch 8, 20 MHz, -40 dBm) instead of ch 161.
+- **4.6h VERIFIED (07:31 sleep, 07:32:52 wake):** no panic, one instance, 0 USB devices `inactive`, and the link re-joined by itself: `ASSOCIATED (_FW_LINKED)`, WPA2 `COMPLETED (KEYS INSTALLED)`. Two problems: `en2` showed `status: inactive` / no IP (`IOLinkStatus=1`, valid without active), and it joined the 2.4 GHz BSS (`0E:84:08:xx:xx:xx`, ch 8, 20 MHz, -40 dBm) instead of ch 161.
 
 ### Milestone 4.6i — Keep Carrier on Interface Enable; Prefer 5 GHz (build `f8b45cc7e89667b84361b50a3792ded7`, UUID `1591869B`, deployed, VERIFIED)
 - **en2 inactive while associated:** the 4.6h re-join completes inside `start()`, before configd brings `en2` up. `RTLEthernetAdapter::enable()` then wrote plain `kIONetworkLinkValid`, clearing the `LinkActive` that `netif_carrier_on` had set. `setCarrierFromDriver()` now remembers the carrier (`_carrier`) and `enable()` re-applies it.
@@ -345,7 +345,7 @@ Verified live after reboot using `./Tools/test_uc` and `ifconfig en2`:
 
 - **4.6i VERIFIED (07:38:30 sleep, 07:39:38 wake), the full sleep/wake path works:**
   - No panic. Exactly one instance, 0 USB devices `inactive`.
-  - Automatic re-join on 5 GHz: `0E:84:08:68:FD:24`, VHT 80 MHz, -44 dBm, WPA2 keys installed.
+  - Automatic re-join on 5 GHz: `0E:84:08:xx:xx:xx`, VHT 80 MHz, -44 dBm, WPA2 keys installed.
   - `en2` `status: active` with DHCP `192.168.100.11`.
   - Throughput after wake (curl `--interface en2`, speed.cloudflare.com):
     - Down: 291 / 328 / 273 / 300 Mbit/s (25 MB transfers; 100 MB requests now get HTTP 403).
@@ -681,7 +681,7 @@ Reference analysis and vtable comparisons are verified against Apple kernel coll
   kr=-536870181" (0xE00002DB kIOReturnNoSpace) in a retry loop. en0 (DriverKit E1000) shows the
   working order: unit 0 named, then BSDClient attached and "BSD Name" set.
 - **0.11** (`4437d6aa`, UUID `610853F2`, `Backups/airlayer_0.11`): with rtlair=1 the interface
-  uses a locally administered copy of the MAC (`_mac[0] |= 0x02`, 7e:c2:c6:03:ea:84) so
+  uses a locally administered copy of the MAC (`_mac[0] |= 0x02`, 7e:c2:c6:xx:xx:xx) so
   InterfaceNamer gives it a new unit (expected en3); rtlair=2 keeps the real MAC (en2 must not
   be published then — open). Checks: 0 vtable mismatches, 4 known pads, nm -u clean.
   Deploy: `phase5_deploy.sh <EFI> layer 1`.
@@ -747,7 +747,7 @@ Reference analysis and vtable comparisons are verified against Apple kernel coll
   private address) and aborts on any error except 0xE00002E2. 0x170 goes through
   `IO80211MacAddressAgent::setMacAddress` -> infra slot 468 `setMacAddress(mloAddrArray&)`
   (address + 3 spares; our stub answered 0) -> `updateMacAddress` (Skywalk ifnet + IOMACAddress).
-  The interface already sat at 7e:c2:c6:03:ea:84 (IOMACAddress) while the radio used 7c:...,
+  The interface already sat at 7e:c2:c6:xx:xx:xx (IOMACAddress) while the radio used 7c:...,
   so even a join would have carried no data.
 - **RTL8814Native 4.15** (`67dabfd9`, UUID `BB4394F7`, `Backups/build_4.15`): radio ABI function
   `rtlRadioSetMac` (as `rtw_net_set_mac_address`: refuses while linked/linking -> kIOReturnBusy,

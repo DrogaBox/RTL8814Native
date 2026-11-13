@@ -1,5 +1,5 @@
 == uname
-Linux CachyRyzen9 7.3.0-4-cachyos #1 SMP PREEMPT_DYNAMIC Fri, 23 Oct 2026 15:03:58 +0000 x86_64 GNU/Linux
+Linux linux-host 7.3.0-4-cachyos #1 SMP PREEMPT_DYNAMIC Fri, 23 Oct 2026 15:03:58 +0000 x86_64 GNU/Linux
 == os-release
 NAME="CachyOS Linux"
 PRETTY_NAME="CachyOS"
@@ -104,8 +104,8 @@ phy#2
 	Interface wlan0
 		ifindex 5
 		wdev 0x200000001
-		addr 7c:c2:c6:03:ea:84
-		ssid QueMirasBobo
+		addr 7c:c2:c6:xx:xx:xx
+		ssid home-ap
 		type managed
 		channel 157 (5785 MHz), width: 80 MHz, center1: 5775 MHz
 		txpower 30.00 dBm
@@ -116,7 +116,7 @@ phy#2
 Power save: on
 == ip addr
 5: wlan0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UP group default qlen 1000
-    link/ether 7c:c2:c6:03:ea:84 brd ff:ff:ff:ff:ff:ff
+    link/ether 7c:c2:c6:xx:xx:xx brd ff:ff:ff:ff:ff:ff
     inet 192.168.100.11/24 brd 192.168.100.255 scope global dynamic noprefixroute wlan0
        valid_lft 6047847sec preferred_lft 6047847sec
 == ip route

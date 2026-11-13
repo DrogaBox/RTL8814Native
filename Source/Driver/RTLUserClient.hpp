@@ -28,6 +28,10 @@ enum {
         kRTLUC_RadioCall     = 9,   /* in: op (RTL_UC_RADIO_*), struct in/out: radio ABI call through callPlatformFunction */
         kRTLUC_GetJoinLog    = 10,  /* out: struct rtl_jlog (RTLJoinLog.h) */
         kRTLUC_SetKnob       = 11,  /* in: knob id, value (live experiments, VendorProbe.c) */
+        /* Virtual AWDL peer (RTLAwdlSim.h): boot-arg rtlawdl_sim=1 and root */
+        kRTLUC_AwdlSimCtl    = 12,  /* in: op, arg0; out: RTL_AWDL_SIM_C_COUNT counters */
+        kRTLUC_AwdlSimInject = 13,  /* in: rssi (int8), struct: 802.11 frame */
+        kRTLUC_AwdlSimRead   = 14,  /* in: timeout us; struct out: rtl_awdl_sim_rec + frame */
         kRTLUC_SelCount
 };
 
@@ -72,6 +76,7 @@ public:
 
 private:
         IOReturn radioCall(IOExternalMethodArguments *args);
+        IOReturn awdlSim(uint32_t selector, IOExternalMethodArguments *args);
         RTL8814Native *_driver;
         task_t         _task;
 };

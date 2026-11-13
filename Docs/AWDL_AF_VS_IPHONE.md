@@ -63,7 +63,31 @@ Hay dos diferencias:
 En las capturas no hay A-MSDU. La RX propia acepta datos y QoS, con o sin el bit de reintento
 (`deliverData`, máscara `0x47` sobre el byte de flags).
 
-## 5. Pendiente
+## 5. Tramas propias capturadas
+
+El 2026-11-05, con `Tools/iphone_test.sh`, por primera vez se pudieron comparar tramas del Mac en la radio, no
+solo el código: en un minuto, 400 PSF de 298 B y 129 MIF de 958 B, sin par.
+
+| Trama | iPhone | Mac |
+|---|---|---|
+| PSF | `4, 5, 18, 6, 24, 12, 7, 17, 21` | `4, 5, 18, 6, 24, 12, 21` |
+| MIF | `4, 5, 18, 24, 12, 7, 17, 16, 21, 6, 2×6` | `4, 5, 18, 24, 12, 16, 21, 6, 2×6` |
+
+Solo faltaban los TLV 7 y 17: la capa no respondía las peticiones de las que salen
+([AWDL_CAPS_ADVERTISED.md](AWDL_CAPS_ADVERTISED.md) §6, §10). El §1 suponía que la plantilla los aportaba.
+
+Otras diferencias, sin cambio de momento:
+
+| Campo | iPhone | Mac |
+|---|---|---|
+| TLV 21 | `a0 02` | `a0 01`: clase de dispositivo, 1 es macOS |
+| TLV 12, extendidas | `7d 11` | `2d 00` |
+| TLV 12, +5 | `03 00` | `07 00` |
+| TLV 6 | `00 00 00 d7 00 30 02 00 80 01 20 20 08` | `00 00 00 07 00 30 44 00 00 01 20 08 01` |
+
+El significado del TLV 6 y si alguna de estas diferencias le importa a un iPhone son `?`.
+
+## 6. Pendiente
 
 - La plantilla real que entrega el gestor queda volcada en hexadecimal en `RTLAwdlLog` desde
   `020c32d`. Con ella se podrá comparar el TLV 21 (versión) propio con el `a0 02` del iPhone y los

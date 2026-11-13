@@ -17,6 +17,8 @@
 /* #include <drv_types.h> */
 #include <rtl8814a_hal.h>
 
+extern void rtl8814native_awdl_tx_report(int lost, u8 retries, u8 rate);
+
 #define CONFIG_H2C_EF
 
 #define RTL8814_MAX_H2C_BOX_NUMS	4
@@ -639,6 +641,14 @@ C2HTxFeedbackHandler_8814(
 		u8			CmdLen
 )
 {
+	/* RTL8814Native: every report comes from an AWDL data frame that asked
+	 * for one (rtl_awdl_rpt); the layer's rate ladder reads the counts. The
+	 * fields reach payload byte 5. */
+	if (CmdLen >= 6)
+		rtl8814native_awdl_tx_report(GET_8814A_C2H_TX_RPT_RETRY_OVER(CmdBuf) |
+		                             GET_8814A_C2H_TX_RPT_LIFE_TIME_OVER(CmdBuf),
+		                             GET_8814A_C2H_TX_RPT_DATA_RETRY_CNT(CmdBuf),
+		                             GET_8814A_C2H_TX_RPT_FINAL_DATA_RATE(CmdBuf));
 #ifdef CONFIG_XMIT_ACK
 	if (GET_8814A_C2H_TX_RPT_RETRY_OVER(CmdBuf) | GET_8814A_C2H_TX_RPT_LIFE_TIME_OVER(CmdBuf))
 		rtw_ack_tx_done(&Adapter->xmitpriv, RTW_SCTX_DONE_CCX_PKT_FAIL);

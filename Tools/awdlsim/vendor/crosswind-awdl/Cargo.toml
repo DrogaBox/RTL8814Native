@@ -1,0 +1,10 @@
+# Vendored crosswind-awdl 406272f (MIT, see LICENSE); local changes in PATCHES.md.
+[package]
+name = "crosswind-awdl"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "MIT"
+publish = false
+
+[dependencies]

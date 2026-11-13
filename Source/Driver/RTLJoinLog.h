@@ -41,7 +41,10 @@ enum {
 	JL_CSA,                 /* a: RTL_CSA_* kind, b: channel | bw << 8 | count << 16 */
 	JL_BA,                  /* Block Ack action from the AP. a: action | tid << 8 | initiator << 16,
 	                         * b: ADDBA req: buffer size | timeout << 16; DELBA: reason; ADDBA resp: status */
-	JL_WPA2_REPLAY          /* a: 1=M1, 3=M3, 4=Group M1, bit 8=response resent; b: -1=old, 0=repeat */
+	JL_WPA2_REPLAY,         /* a: 1=M1, 3=M3, 4=Group M1, bit 8=response resent; b: -1=old, 0=repeat */
+	JL_BCN_AUTH_NULL        /* first beacon in OnBeacon while waiting to start auth: a: sitesurvey
+	                         * state | A3 is the join BSSID << 8 | linking wait done << 9 |
+	                         * join_abort << 10, b: beacon length */
 };
 
 enum {

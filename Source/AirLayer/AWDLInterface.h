@@ -24,6 +24,8 @@
 #define RTL_AWDL_INTERFACE_H
 
 #include "RTLAirLayer.hpp"
+#include "AWDLBaOrig.h"
+#include "AWDLShare.h"
 
 /* ---- apple80211 payloads used by pointer in the AWDL vtables ---- */
 /* Already declared in IO80211_25_6_0.h: channel, state, key, debug command,
@@ -302,10 +304,21 @@ public:
 	void stop(IOService *provider) override;
 	void free() override;
 	const char *bsdName() const { return _bsdName; }
+	/* A new radio after a USB re-enumeration: hooks and port 1 again. */
+	void radioBack();
+	void radioGone();
 
 	uintptr_t setMacAddress(ether_addr &) override { return kIOReturnSuccess; }
+	uintptr_t prepareBSDInterface(__ifnet *ifp, unsigned int unit) override;
 	uintptr_t enable(unsigned int opts) override;
 	uintptr_t disable(unsigned int opts) override;
+
+	/* Group-addressed packets while peers exist: the peer manager stashes
+	 * them and hands them over in the availability window from
+	 * handleMulticastTimer, which frees with freeMulticastPacket the ones not
+	 * taken. The family's own bodies drop them. */
+	uintptr_t p2pMulticastTx(IO80211NetworkPacket **pkts, unsigned int count) override;
+	uintptr_t freeMulticastPacket(IO80211NetworkPacket *pkt) override;
 
 	/* Stage 3: the setters IO80211AWDLPeerManager::configure() sends through
 	 * ioctl_internal (types 125, 122, 132, 135, 213, 134) and the ones interfaceStateChange()/enableAWDL() send after it (116, 117, 226) and the setters of the channel sequence, election, sync frame template, secondary master, AF TX mode, advertisers, extension state machine and PSF dwell (129, 155, 151, 205, 208, 229, 126, 118, 418). It aborts on the first
@@ -341,7 +354,24 @@ public:
 	 * window, 225 keeps the template for every MIF. */
 	AWDL_ACK(setAWDL_OOB_REQUEST, apple80211_awdl_oob_request)
 	AWDL_ACK(setAWDL_OOB_AUTO_REQUEST, apple80211_awdl_oob_request)
+	/* A peer's traffic registration (type 164), sent once a service wants
+	 * data with it; the radio keeps no per-peer state. */
+	AWDL_ACK(setAWDL_PEER_TRAFFIC_REGISTRATION, apple80211_awdl_peer_traffic_registration)
 #undef AWDL_ACK
+
+	/* The peer cache (types 143 and 130). IO80211P2PDataPathManager::
+	 * addPeerToFWCache marks a peer cached only when the 143 add succeeds,
+	 * and IO80211PeerManager::preQueuePacket drops every packet to a peer
+	 * that is not: the radio keeps no per-peer state, so both are answered
+	 * here. The size limit is the family's own default, 8. */
+	IOReturn setPEER_CACHE_CONTROL(apple80211_peer_cache_control *req) override;
+	IOReturn getPEER_CACHE_MAXIMUM_SIZE(apple80211_peer_cache_maximum_size *out) override;
+	/* Sync enabled (type 117). wifip2pd reads it once when it builds its
+	 * AWDL interface object and keeps the answer as the flag that lets it
+	 * publish a peer's presence (the awdl0 neighbour entry and ioctl 415)
+	 * from the peer's action frames; an error or 0 leaves that path off for
+	 * the life of the interface. See Docs/AWDL_RESULTADO_IPHONE_1.md §4. */
+	IOReturn getAWDL_SYNC_ENABLED(apple80211_awdl_sync_enabled *out) override;
 
 #define AWDL_STUB(name, type) \
 	IOReturn name(type *) override { return kIOReturnUnsupported; }
@@ -350,14 +380,12 @@ public:
 	AWDL_STUB(getBSSID, apple80211_bssid_data)
 	AWDL_STUB(getSTATE, apple80211_state_data)
 	AWDL_STUB(getAWDL_SYNC_PARAMS, apple80211_awdl_sync_params)
-	AWDL_STUB(getAWDL_SYNC_ENABLED, apple80211_awdl_sync_enabled)
 	AWDL_STUB(getAWDL_EXTENSION_STATE_MACHINE_PARAMETERS,
 	          apple80211_awdl_extension_state_machine_parameter)
 	AWDL_STUB(getAWDL_ELECTION_ID, apple80211_awdl_election_id)
 	AWDL_STUB(getAWDL_ELECTION_METRIC, apple80211_awdl_election_metric)
 	AWDL_STUB(getAWDL_SYNCHRONIZATION_CHANNEL_SEQUENCE,
 	          apple80211_awdl_sync_channel_sequence)
-	AWDL_STUB(getPEER_CACHE_MAXIMUM_SIZE, apple80211_peer_cache_maximum_size)
 	AWDL_STUB(getAWDL_MASTER_CHANNEL, apple80211_awdl_master_channel)
 	AWDL_STUB(getAWDL_SYNC_STATE, apple80211_awdl_sync_state)
 	AWDL_STUB(getAWDL_ELECTION_RSSI_THRESHOLDS,
@@ -378,10 +406,8 @@ public:
 	AWDL_STUB(getLLW_PARAMS, apple80211_llw_params)
 	AWDL_STUB(setSSID, apple80211_ssid_data)
 	AWDL_STUB(setCHANNEL, apple80211_channel_data)
-	AWDL_STUB(setAWDL_PRESENCE_MODE, apple80211_awdl_presence_mode)
-	AWDL_STUB(setPEER_CACHE_CONTROL, apple80211_peer_cache_control)
-	AWDL_STUB(setAWDL_PEER_TRAFFIC_REGISTRATION,
-	          apple80211_awdl_peer_traffic_registration)
+	/* Accepted: the manager keeps the presence mode only when the driver takes it. */
+	IOReturn setAWDL_PRESENCE_MODE(apple80211_awdl_presence_mode *) override;
 	AWDL_STUB(setAWDL_ENCRYPTION_KEYS, apple80211_key)
 	AWDL_STUB(setAWDL_ENCRYPTION_TYPE, apple80211_encrypt)
 	AWDL_STUB(setAWDL_DFSP_CONFIG, apple80211_awdl_dfsp_config)
@@ -421,7 +447,43 @@ private:
 	bool _rxHooked;
 	bool _rxAllowed;            /* boot-arg rtlawdl_rx, 1 unless set to 0 */
 	uint64_t _rxAf, _rxData, _rxOther, _rxDropped;
-	uint64_t _rxDataUp, _rxDataBad, _rxDataNotUs, _rxDataFail;
+	uint64_t _rxLagMax;         /* longest arrival-to-drain delay of an AF since the last log */
+	uint64_t _rxDataUp, _rxDataBad, _rxDataNotUs, _rxDataFail, _rxDataWrapped;
+
+	/* Block Ack recipient sessions (Docs/AWDL_BLOCK_ACK.md): the layer answers
+	 * a peer's ADDBA request and keeps a reorder window per (peer, TID); the
+	 * MAC sends the BlockAck frames itself. Boot-arg rtlawdl_ba=0 declines
+	 * every request (status 37), as before. Under _baLock; the frames are
+	 * delivered with it dropped. */
+	struct AwdlBaSession {
+		uint8_t peer[6];
+		uint8_t tid;
+		bool on;
+		uint16_t ws;            /* next sequence number expected, 12 bits */
+		uint16_t win;           /* agreed window, 1..64 */
+		uint16_t held;          /* frames waiting in slot[] */
+		uint16_t oldRun;        /* frames in a row behind the window */
+		uint64_t heldUs;        /* when the oldest waiting frame arrived */
+		uint64_t lastUs;        /* last frame or request, 0 = free */
+		mbuf_t slot[64];        /* by sequence number modulo 64 */
+	};
+	IOLock *_baLock;
+	bool _baAllowed;
+	bool _baRefuse;             /* the peers keep tearing sessions down: decline */
+	enum { kBaSessions = 8 };   /* TIDs 0-7 of one peer, or a few peers */
+	AwdlBaSession _ba[kBaSessions];
+	uint64_t _baReq, _baAccept, _baDecline, _baDelba, _baHeld, _baTimeout, _baOld, _baDup;
+	uint64_t _baDelbaUs;         /* first DELBA of the current run */
+	uint32_t _baDelbaRun;       /* DELBAs from peers since _baDelbaUs */
+	uint64_t _baRefuseUs;       /* when _baRefuse was set; it lapses after AWDL_BA_REFUSE_US */
+	bool baExpireDue(uint64_t now);
+	void handleBlockAck(mbuf_t m);
+	void rxReorder(mbuf_t m);
+	uint32_t baRelease(AwdlBaSession *s, mbuf_t *out, uint32_t cap, bool skipHoles);
+	void baExpire(uint64_t now);
+	void baClose(AwdlBaSession *s, mbuf_t *out, uint32_t *n, uint32_t cap);
+	void baFlushAll(bool deliver);
+	bool queueMgmt(const uint8_t *frame, uint16_t len);
 
 	void setRadioRx(bool on);
 	void flushRadioRx();
@@ -436,19 +498,21 @@ private:
 	 * rtlawdl_tx=1): PSF every 110 TU and a MIF in each served slot, built
 	 * from the kernel's sync frame template (151) plus the TLVs 4, 5 and 18
 	 * rendered here; events 41/43 at the edges of the served slots. */
-	IOService *_radioSvc;       /* the nub's provider, as the controller's */
-	const OSSymbol *_symTx80211;
 	IOLock *_txLock;            /* template and clock */
 	thread_call_t _txTick;
 	bool _txAllowed;
 	bool _txOn;
 	bool _tickBusy;             /* a txTick is running; it rearms itself */
-	uint8_t _tpl[512];
+	uint8_t _tpl[0x724];        /* sync template (151), Broadcom's firmware buffer size */
 	uint32_t _tplLen;
-	uint8_t _miTpl[1200];       /* MI template of the last 149/225, the kernel's size */
+	uint8_t _miTpl[1200];       /* MI template of the last 225 or broadcast 149, the kernel's size */
 	uint32_t _miTplLen;
 	bool _mifNow;               /* a broadcast 149: one MIF in the next window */
-	uint8_t _umiDst[4][6];      /* unicast 149s waiting for the next window */
+	struct {                    /* unicast 149s waiting for the next window */
+		uint8_t dst[6];
+		uint16_t len;
+		uint8_t tpl[sizeof(_miTpl)]; /* this UMI's own, without the service TLVs */
+	} _umi[4];
 	uint8_t _umiCount;
 	uint64_t _txUmi, _txUmiDrop;
 	uint8_t _afBuf[1488];       /* sendAf, tick only: the radio's frame limit */
@@ -458,15 +522,35 @@ private:
 	uint32_t _lastMifSlot;
 	uint32_t _lastTickAw;
 	uint8_t _seq[16];           /* channel per slot from the 129 */
+	uint32_t _seqVer[16];
 	uint32_t _seqFlags[16];
 	bool _seqValid;
 	uint8_t _seqLogs;           /* sequence changes logged so far */
 	bool _awOpen;              /* between events 41 and 43 */
+	bool _awPosted;             /* the open window was posted (event 41): not a dense-only slot */
 	uint8_t _offSocialCh;       /* last non-social channel logged */
 	uint8_t _parkCh;            /* preferred social channel while not associated
 	                             * (boot-arg rtlawdl_ch, 149 by default), used until
 	                             * a 129 names another; 0 = no parking */
 	uint64_t _parkReqUs;        /* last rtlRadioSetChannel request */
+	/* Time sharing while en2 is associated on a non-social channel (boot-arg
+	 * rtlawdl_mcc: 0 off, 1 the first slot of each run of the social channel
+	 * in the 129, 2 all of its slots): rtlRadioAwdlOffch takes the radio there
+	 * for those slots only. _mccLock orders the switches against tx off. */
+	uint32_t _mccMode;
+	uint32_t _mccRun;           /* boot-arg rtlawdl_mccrun: slots in a row a transfer takes from the BSS, 0 = none */
+	uint32_t _mccAw;            /* boot-arg rtlawdl_mccaw, 1..4: AWs of a served slot
+	                             * spent there with nothing to send; 0 = by peers */
+	uint32_t _mccDwell;         /* the same, for the slot txTick is in */
+	uint64_t _mccPeerUs;        /* last action frame from a peer, 0 = none */
+	bool _mccOff;              /* the driver has no rtlRadioAwdlOffch */
+	bool _mccActive;            /* servedMask keeps to _mccServe */
+	uint16_t _mccServe;
+	uint8_t _mccCur;            /* channel the radio was sent to, 0 = the BSS */
+	uint8_t _mccTarget;         /* social channel served while associated, 0 = none */
+	uint64_t _mccPreUs;         /* slot start a tick armed early switches for, 0 = none */
+	IOLock *_mccLock;
+	uint64_t _mccSwitches, _mccFail, _mccUsMax, _mccUsSum, _mccEarly;
 	uint8_t _clkMaster[6];      /* master the AW clock follows (alignClock) */
 	uint64_t _clkMasterUs;      /* last frame from it, 0 = none */
 
@@ -490,20 +574,116 @@ private:
 	bool _port1On;              /* rtlRadioAwdlPort took awdl0's MAC */
 	uint64_t _txDataQueued, _txDataSent, _txDataDropFull, _txDataDropOld, _txDataDropBad,
 	         _txDataFail;
+	uint64_t _txDataBusy;       /* batches the radio ended with a transient refusal */
+	uint32_t _txAirUs;          /* data air time per AW tick (rtlawdl_air) */
+	bool _txLastAw;             /* data also in a slot's last AW (rtlawdl_lastaw) */
+	uint64_t _txMcast;          /* p2pMulticastTx batches */
+	uint64_t _peerCacheOps;     /* setPEER_CACHE_CONTROL requests */
+	uint8_t _pccDst[8][6];      /* their answers, event 51, for the next tick */
+	uint8_t _pccOp[8];
+	uint8_t _pccCount;
+	void postPeerCache(uint8_t op, const uint8_t *mac);
+
+	/* Each peer's channel sequence as it announces it (notePeerSeq), so data
+	 * waits for a slot the destination is on this channel. Under _txLock. */
+	struct AwdlPeerSeq {
+		uint8_t mac[6];
+		uint8_t ch[16];
+		uint64_t lastUs;        /* 0 = empty, or its slots are not ours to compare */
+	};
+	AwdlPeerSeq _peerSeq[8];
+	uint64_t _txDataHeld;       /* ticks that stopped at a frame whose peer is away */
+	void notePeerSeq(mbuf_t m, const uint8_t *src);
+	bool peerOnChannel(const uint8_t *da, uint32_t slot, uint8_t ch, uint64_t now) const;
 
 	void queueData(const uint8_t *eth, uint32_t len);
-	void sendData();
 	void flushRadioTx();
+
+	/* The data pump. txTick runs once per AW and sets what data may do in it:
+	 * whether a window is open (_pumpOk), its slot and channel, when it ends
+	 * and how much air it has left. pumpData sends from the ring within that,
+	 * from the tick and from its own thread call: a frame queued in the middle
+	 * of an AW kicks it, and a radio that was full is tried again 1 ms later,
+	 * so a window is used whole and not only at its start. One sender at a
+	 * time (_sendBusy), so the frames keep their order. All under _txLock.
+	 * Boot-arg rtlawdl_pump=0 leaves only the tick's call. */
+	thread_call_t _txPump;
+	bool _pumpAllowed;
+	bool _sendBusy;
+	bool _pumpOk;
+	bool _pumpStall;            /* this AW has no more to give (air spent, or the peer is away) */
+	uint8_t _pumpCh;
+	uint32_t _pumpSlot, _pumpAw, _pumpAir;
+	uint64_t _pumpEndUs;
+	uint64_t _txPumpRuns;
+	static void pumpEntry(thread_call_param_t p0, thread_call_param_t p1);
+	void armPump(uint64_t deadline);
+	void pumpData();
+
+	/* A-MPDU to a peer (AWDLBaOrig.h): a Block Ack agreement the layer asks
+	 * for once a peer gets a run of unicast data, then that peer's data goes
+	 * as QoS data the radio joins into A-MPDUs at a VHT rate
+	 * (rtlRadioAwdlAgg), picked from the peers' signal like the single-frame
+	 * rate. _bao under _txLock; the rate fields from txTick only. Boot-args
+	 * rtlawdl_agg=0 (off), rtlawdl_aggwd=0 (never close a silent session),
+	 * rtlawdl_aggmax, rtlawdl_aggden, rtlawdl_aggbw. */
+	AwdlBaoTab _bao;
+	bool _aggAllowed;
+	bool _aggOff;               /* the radio has no rtlRadioAwdlAgg */
+	bool _aggSet;               /* the radio took a rate: requests may go */
+	uint8_t _aggIdx, _aggBw;
+	uint32_t _aggMbps;          /* of that rate at the radio's width; under _txLock */
+	uint32_t _aggMax, _aggDensity, _aggBwMax;
+	uint64_t _aggUs, _aggWatchUs, _aggChanges;
+	uint64_t _txDataAgg;        /* data frames sent as QoS data of a session */
+	uint8_t _txQos[24 + 2 + 16 + 1428]; /* the frame pumpData is sending, as QoS data */
+	void aggRate(uint64_t now);
 	uint64_t _txPsf, _txMif, _txFail, _clkAligned, _ev41, _ev43;
 
 	void setRadioTx(bool on);
 	void txTick();
 	void armTick(uint64_t deadline);
-	uint8_t parkRadio(uint8_t idleCh, uint64_t nowUs);
+	uint8_t parkRadio(uint8_t idleCh, uint64_t nowUs, bool infraBusy);
+	uint8_t mccChannel(uint8_t home, uint64_t nowUs);
+	bool mccSwitch(uint8_t want);
 	uint16_t servedMask(uint8_t ch) const;
-	bool sendAf(uint8_t subtype, uint8_t channel, uint16_t mask, const uint8_t *da = nullptr);
+	/* Dense presence (MtkWireless 1.0.3, docs/AIRDROP-PERFORMANCE.md): awdld
+	 * keeps its idle sequence during AirDrop, 2 of 16 slots on the data
+	 * channel, and a peer only sends in slots we announce. While data flows
+	 * every slot the 129 leaves at 0 is announced and served too, unless the
+	 * radio is time-shared with a BSS on another channel. Boot-arg
+	 * rtlawdl_dense=0 turns it off. Under _txLock. */
+	bool _denseAllowed;
+	bool _dense;
+	uint8_t _denseRun;	/* busy bits of the last 4 samples, newest in bit 0 */
+	uint64_t _denseFrames, _denseSampleUs, _denseBusyUs, _denseChanges;
+	bool updateDense(uint64_t now, bool off);
+	/* TX rate ladder for unicast data (MtkWireless 1.0.3): OFDM 6/12/24/36/48/
+	 * 54 Mb/s, then HT MCS 7 with the boot-arg rtlawdl_ratemax=6. The radio
+	 * reports every frame sent at the ladder's rate (CCX TX report): 32 clean
+	 * ones climb a step, a failed probe or two failures within 128 clean ones
+	 * go down, and a failed probe waits 256 << backoff clean frames before the
+	 * next. Starts at 12 Mb/s, the old fixed rate; rtlawdl_rate=0 keeps it.
+	 * From txTick only, outside _txLock. */
+	bool _rateOff;
+	uint8_t _rateIdx, _rateMax, _rateBackoff;
+	bool _rateProbe, _rateFailed, _rateSet, _rateEverClean;
+	uint32_t _rateOk, _rateCleanRun, _rateHold;
+	uint32_t _rateLast[4];
+	uint64_t _rateChanges, _rateSentAt;
+	uint32_t _rateLastReports, _ratePollLeft;
+	/* Without TX reports the rate follows the peers' signal instead: the
+	 * RTL8814AU sent no report for 984 data frames (2026-11-09). */
+	bool _rateByRssi;
+	uint32_t _rateNoRpt;        /* data frames sent while the radio reported none */
+	int32_t _peerRssi16;        /* peers' RSSI, dBm x 16, smoothed over 8 frames; under _txLock */
+	uint64_t _peerRssiUs, _rateRssiUs;
+	void rateByRssi(uint64_t now);
+	void updateRate();
+	bool setRate(uint8_t idx);
+	bool sendAf(uint8_t subtype, uint8_t channel, uint16_t mask, bool umi = false);
 	size_t buildAf(uint8_t *out, size_t cap, uint8_t subtype, uint8_t channel, uint16_t mask,
-	               const uint8_t *da);
+	               bool umi);
 	bool copyMiTemplate(const uint8_t *req);
 	void alignClock(mbuf_t m, const uint8_t *src);
 	static void txTickEntry(thread_call_param_t p0, thread_call_param_t);

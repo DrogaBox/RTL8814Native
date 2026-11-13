@@ -189,8 +189,23 @@ En 14 la tercera condición se sustituye por
 `IO80211AWDLPeerManager::supportAWDLToNANMigration() ∧ bit 6 de [[awdlPeer+0x20]+0x588]`
 (`0xffffff80021dc538`–`55f`); no hay cadena `[awdlMgr+0x18]→+0x518→+0x120/+0x168/+0x3A8`. El byte
 `+0x6DE/0x6AE` es el marcador de presencia ya conocido (`AWDL_WIFIP2PD_PRESENCE_ONCE.md`: escritura a 1
-cuando el par publica presencia); la identidad de los objetos del mapa del gestor (`+0xA5C8`/`+0x7EA8`/
-`+0x7E60`) es `?`.
+cuando el par publica presencia).
+
+En 26, el objeto de `ivars+0xA5C8` es la cola de servicios AWDL registrados localmente: un
+`IO80211CommandQueue::withGateAndCapacity(gate, 0x80, 0x100)` creado en
+`IO80211AWDLPeerManager::initWithInterface` (`0xffffff80021c2398`, guardado en `0xffffff80021c23a1`), y el
+dword `[[obj]+0x10]+0x24` es lo que devuelve `getRegisteredServicesCount` (`0xffffff80021dc598`). Sus
+otros usuarios son `updateLocalRequests`, `buildServiceResponseTlvs` y
+`buildMasterIndicationTemplate`. La identidad de `+0x7EA8`/`+0x7E60` en 15/14 se presume la misma por
+posición `?`.
+
+**Consecuencia para Bonjour.** El mDNS IPv6 (`33:33:00:00:00:FB`) cae en el primer caso y el IPv4
+(`01:00:5E:00:00:FB`) en el tercero. Con el pre-hook activo, el mDNS de un par conocido pasa solo si
+este Mac tiene al menos un servicio AWDL registrado (lo que ocurre cuando sharingd publica
+`_airdrop._tcp` con `IncludeAWDL`, `AWDL_AIRDROP_SIN_BLUETOOTH.md` §3) y el par tiene el bit 0 de
+`+0x6DE`; si no, se descarta sin log ni contador. Sin el pre-hook, como hoy, ese tráfico pasa siempre.
+Activar el pre-hook antes de comprobar en hardware que el bit de presencia del par se pone puede
+cortar el descubrimiento de AirDrop.
 
 ## 7. ¿Símbolo o vtable?
 
@@ -236,7 +251,7 @@ Sustituir el tramo final del bucle de subtramas (`Source/AirLayer/AWDLInterface.
 		 * is stripped, so it stays zeroed. Called through the vtable: the
 		 * symbol is not exported on macOS 14 and the qualified base call
 		 * would not link there. */
-		uint8_t tag[0x30];
+		uint8_t tag[0x100];
 		bzero(tag, sizeof(tag));
 		bool held = false;
 		uintptr_t ok = inputPacket((IO80211NetworkPacket *)pkt, (packet_info_tag *)tag,
@@ -261,9 +276,13 @@ Notas del código:
   implemente `+0xF30`/`+0xF38` (`AWDL_PEER_PRESENCE_PPP.md` §3: la base responde "Not Implemented"), un
   paquete retenido no tendría ruta de liberación posterior — riesgo de fuga que se cierra con esos dos
   overrides (etapa de presencia).
-- Etiqueta de 0x30 bytes a cero: cubre los campos que Broadcom escribe (`+0x00`, `+0x0C`, `+0x18`,
-  `+0x28`); el tamaño real de `packet_info_tag` es `?` (§3) y las lecturas que hagan
-  `logRxCompletionPacket`/`skywalkInputPacket` de campos a cero se presumen inocuas (`?`). Propagar el
+- Etiqueta de 0x100 bytes a cero. Cubre los campos que Broadcom escribe (`+0x00`, `+0x0C`, `+0x18`,
+  `+0x28`) y deja margen. `skywalkInputPacket` lee la etiqueta hasta `+0x2A` (entre ellos el u16 de
+  `+0x22`) y la pasa a `IO80211PeerMonitor::incrementRxExtStats`, cuyas lecturas no están acotadas.
+  El tamaño real de `packet_info_tag` es `?` (§3). Las lecturas de campos a cero que hagan
+  `logRxCompletionPacket`/`skywalkInputPacket` se presumen inocuas (`?`).
+- No activar el pre-hook antes de tener la cadena de presencia: el filtro de grupo del §6 puede
+  descartar el mDNS del par. Si se activa antes para probar, conviene hacerlo detrás de un boot-arg. Propagar el
   RSSI y el canal de `injectFrame` (hoy se pierden al entrar en `deliverData`) dejaría la etiqueta
   idéntica a la de Broadcom; requiere pasar ambos valores como parámetros.
 
@@ -277,7 +296,7 @@ Notas del código:
    de una etiqueta a cero.
 4. Método de la ranura `+0x230` (26/23) / `+0x228` (15) de la vtable del PeerManager a la que el rol 7
    transfiere la llamada.
-5. Identidad del objeto del mapa del gestor (`+0xA5C8`/`+0x7EA8`/`+0x7E60`) y de su dword `+0x24`.
+5. Identidad de `+0x7EA8`/`+0x7E60` en 15/14 (en 26, `+0xA5C8` es la cola de servicios registrados, §6).
 6. Contador de descartes del llamador en 23: celda `+0x158` sobre `[var_50]` frente a `+0x150` sobre
    `[var_50]+0x10` en 24/26 — desplazamiento de layout no interpretado.
 7. Que en hardware el `awdl0` de la capa tenga el rol 6 en `[ [this+0x120]+0x58 ]` (26) — sin él el

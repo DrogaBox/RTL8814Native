@@ -439,3 +439,25 @@ With all three set (layer 0.30), `setWCL_ASSOCIATE` finally runs for a WPA3 hots
 - request header dwords: `+16` is 1 and `+20` is 0x1000, which I read as open-system lower auth plus the SAE upper auth.
 
 Layer 0.30 offered SAE but previously refused any association key that was not a 32-byte PMK. ABI 2 now appends an SAE marker and bounded passphrase buffer to `rtl_radio_join`. For upper auth `0x1000`, the layer copies the passphrase (length only is logged); the radio placeholder wipes the request and its temporary buffer, resets security state, and returns unsupported. This is a plumbing-only, build-verified but undeployed milestone; SAE still cannot join. The mixed-mode router still may choose SAE and fail. What is missing for real SAE is the Dragonfly exchange on P-256 (commit and confirm in auth frames), PMF with BIP, and the key schedule into the existing 4-way handshake.
+
+## Version gate (0.32)
+
+The layer is built against the IO80211 / Skywalk layouts of one macOS build, and nothing in 0.31 checked that the running system still has them. A different layout can panic at boot, because the layer is loaded as `Network-Root`. 0.32 decides before it creates anything (`Source/AirLayer/GateLogic.h`, `VersionGate.h`):
+
+- **Structure, always required:** Darwin major, and for the 7 classes the layer subclasses or uses (`IOSkywalkInterface` … `IO80211Controller`) the instance size and the superclass name, read from `OSMetaClass` and compared with the header the layer was generated from. `KnownBuilds.inc` is written from the header's `static_assert(sizeof(...))` lines by `Tools/airlayer_gate.py gen`, which `build_airlayer.sh` runs on every build.
+- **Build:** `kern.osversion` must be in `Tools/airlayer_builds.txt` (validated on hardware), or the boot-arg `rtlairtrust=<build>` must name it. The permission is per build, so a later update starts closed again.
+- **`rtlairnogate=1`** skips every check. For bring-up only.
+- When closed, the nub never starts, so no controller or interface is created; `en2` and the radio driver are untouched.
+
+The result is published on the RTL8814Native node (`ioreg -r -c RTL8814Native -d 1`): `RTLAirGate` (`<verdict>: <reason>`), `RTLAirGateBuild` and `RTLAirFingerprint` (the measured sizes and superclasses). `Tools/airlayer_gate.py status` reads them and says what to do.
+
+After a macOS update:
+1. Boot as usual. `Tools/airlayer_gate.py status`.
+2. `closed-unknown-build` (structure matches): boot with `rtlairtrust=<build>` (`Tools/airlayer_gate.py trust-arg`), test scan, join and data, then `Tools/airlayer_gate.py learn --yes`, `./build_airlayer.sh` and redeploy.
+3. `closed-structure`: a class changed. Regenerate the header from the new KC (`Tools/re/gen_io80211.py`), run `Tools/re/check_airlayer.sh`, rebuild, retest.
+
+Limits:
+- A new build whose class sizes and superclasses are unchanged can still have moved a vtable slot or a struct field. That is why a build is only opened by being validated or named in `rtlairtrust`, not by the structure alone.
+- `kmod_get_info` returns "service not supported" on 26.7.1, so the Apple family versions are not part of the fingerprint.
+- Host test of the decision logic: `clang++ -std=c++17 -ISource/AirLayer Tools/gate_test.cpp -o Tools/gate_test && ./Tools/gate_test`.
+- 0.32 has been built and checked (`check_airlayer.sh`: 0 vtable mismatches, no new missing imports) and runs on 25G241 (26.7.1), the validated build, since 2026-10-31.

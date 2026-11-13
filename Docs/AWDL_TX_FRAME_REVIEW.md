@@ -198,25 +198,25 @@ coincide con `AWDL_PEERMANAGER_DRIVER_ABI.md` §3.7. OK.
 
 ## 8. PSF de ejemplo y aceptación por las reglas de owly
 
-Parámetros: A2 `56:0d:25:02:1f:ce`, canal 149, plantilla inventada de 60 B (TLV 24 de 43 B con
+Parámetros: A2 `56:0d:25:xx:xx:xx`, canal 149, plantilla inventada de 60 B (TLV 24 de 43 B con
 raíz = propia MAC, métricas 60; TLV 6 de 12 B; TLV 21 de 5 B), máscara 0xFFFF (todas las franjas
 servidas, estado sin 129), reloj con `_clkBaseUs = 0`, `_clkBaseAw = 0` y `nowUs = 6 574 080`
 (`0x00645000`). Con eso: `tu = 6420`, `aw = 401`, `toSlot = 44`, `awLeft = 12`, `slot = 4`.
 
 ```
-000  d0 00 00 00 ff ff ff ff  ff ff 56 0d 25 02 1f ce   FC+dur; A1 difusión; A2
+000  d0 00 00 00 ff ff ff ff  ff ff 56 0d 25 xx xx xx   FC+dur; A1 difusión; A2
 010  00 25 00 ff 94 73 00 00  7f 00 17 f2 08 10 00 00   A3 BSSID; seq=0; 7F,OUI,08,ver 1.0,sub 0,rsvd
 020  00 50 64 00 00 50 64 00  04 49 00 95 2c 00 95 00   phy=target=6574080 µs; TLV4 len 73; tchan 149; dc 44; mchan 149; guarda 0
 030  10 00 6e 00 00 18 10 00  10 00 0c 00 03 03 03 03   AW 16; AF 110; 1800; ext 16; común 16; rem 12; ext 03×4
-040  56 0d 25 02 1f ce 04 00  91 01 00 00 0f 03 00 03   master; pm 4; rsvd; sn 401; AP align 0; seq: 15,enc 3,dup 0,step 3
+040  56 0d 25 xx xx xx 04 00  91 01 00 00 0f 03 00 03   master; pm 4; rsvd; sn 401; AP align 0; seq: 15,enc 3,dup 0,step 3
 050  ff ff 95 80 95 80 95 80  95 80 95 80 95 80 95 80   fill FFFF; entradas {149,128}
 060  95 80 95 80 95 80 95 80  95 80 95 80 95 80 95 80
-070  95 80 00 00 05 15 00 00  00 00 00 00 56 0d 25 02   fin seq; relleno 2; TLV5 len 21; flags/ID/dist/rsvd 0; raíz
-080  1f ce 3c 00 00 00 3c 00  00 00 00 00 12 29 00 0f   métricas 60/60; relleno; TLV18 len 41; 15,enc 3,dup 0,step 3
+070  95 80 00 00 05 15 00 00  00 00 00 00 56 0d 25 xx   fin seq; relleno 2; TLV5 len 21; flags/ID/dist/rsvd 0; raíz
+080  xx xx 3c 00 00 00 3c 00  00 00 00 00 12 29 00 0f   métricas 60/60; relleno; TLV18 len 41; 15,enc 3,dup 0,step 3
 090  03 00 03 ff ff 95 80 95  80 95 80 95 80 95 80 95   fill FFFF; entradas {149,128}
 0a0  80 95 80 95 80 95 80 95  80 95 80 95 80 95 80 95
-0b0  80 95 80 95 80 00 00 00  18 28 00 56 0d 25 02 1f   fin seq; relleno 3; TLV24 len 40; root
-0c0  ce 56 0d 25 02 1f ce 00  00 00 00 00 00 00 00 3c   master; contador 0; distancia 0
+0b0  80 95 80 95 80 00 00 00  18 28 00 56 0d 25 xx xx   fin seq; relleno 3; TLV24 len 40; root
+0c0  xx 56 0d 25 xx xx xx 00  00 00 00 00 00 00 00 3c   master; contador 0; distancia 0
 0d0  00 00 00 3c 00 00 00 00  00 00 00 00 00 00 00 00   métrica raíz 60; métrica propia 60; electionId 0
 0e0  00 00 00 06 09 00 00 00  00 00 00 00 00 00 00 15   selfLFC 0; TLV6 len 9 (ceros)
 0f0  02 00 34 01                                       TLV21 len 2: versión 3.4, clase 1
@@ -232,7 +232,7 @@ cero errores):
 - `tlvs()`: recorrido exacto, sin cola sobrante — TLVs `4(73), 5(21), 18(41), 24(40), 6(9), 21(2)`
   suman 204 = 244 − 24 − 16.
 - `SyncParams::parse` (tlv.rs:109-121): tchan 149, next_tu 44, aw_period 16, af_period 110,
-  master `56:0d:25:02:1f:ce`, presence 4, aw_counter 401.
+  master `56:0d:25:xx:xx:xx`, presence 4, aw_counter 401.
 - `Sequence::parse` (channel.rs:188-211): forma estricta 15/3/0/3/0xFFFF aceptada; 16 slots de
   canal 149; el relleno de 3 B se ignora.
 - `ElectionParams::parse_v1` (dist 0, raíz propia, métricas 60/60) y `parse_v2` (master/sync

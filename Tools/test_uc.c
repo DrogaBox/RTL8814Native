@@ -14,6 +14,7 @@
  *   ./Tools/test_uc reassemble <0|1>    (Toggle carrying split frames across transfers)
  *   ./Tools/test_uc recycle <0|1>       (Toggle reusing bulk IN skbs instead of a 32KB alloc per URB)
  *   ./Tools/test_uc perfreset           (Zero RX aggregation/timing counters)
+ *   sudo ./Tools/test_uc sim ...        (Virtual AWDL peer port, boot-arg rtlawdl_sim=1)
  *
  * Build:
  *   clang -Wall -O2 Tools/test_uc.c -framework IOKit -framework CoreFoundation -o Tools/test_uc
@@ -24,9 +25,15 @@
 #include <stdint.h>
 #include <string.h>
 #include <unistd.h>
+#include <errno.h>
+#include <signal.h>
+#include <time.h>
 #include <CommonCrypto/CommonKeyDerivation.h>
 #include "../Source/Driver/RTLRadioABI.h"
 #include "../Source/Driver/RTLJoinLog.h"
+#include "../Source/Driver/ReplayCheck.h"
+#include "../Source/Driver/RTLAwdlSim.h"
+#include <mach/mach_time.h>
 
 enum {
     kRTLUC_GetVersion    = 0,
@@ -41,6 +48,9 @@ enum {
     kRTLUC_RadioCall     = 9,
     kRTLUC_GetJoinLog    = 10,
     kRTLUC_SetKnob       = 11,
+    kRTLUC_AwdlSimCtl    = 12,
+    kRTLUC_AwdlSimInject = 13,
+    kRTLUC_AwdlSimRead   = 14,
 };
 
 #define RX_XFER_LOG_N 16
@@ -749,6 +759,358 @@ static int radio_cmd(io_connect_t c, int argc, char **argv) {
     return 1;
 }
 
+/*
+ * Virtual AWDL peer port (boot-arg rtlawdl_sim=1, root). The sim lives as
+ * long as the connection that enabled it, so each command enables, works and
+ * disables in one run.
+ */
+static const char *const sim_counter_names[RTL_AWDL_SIM_C_COUNT] = {
+    "enabled", "channel", "tapped", "overruns", "injected", "inj_offch", "inj_nohook",
+    "inj_notready",
+};
+
+static kern_return_t sim_ctl(io_connect_t c, uint64_t op, uint64_t arg0, uint64_t *cnt)
+{
+    uint64_t in[2] = { op, arg0 };
+    uint32_t n = RTL_AWDL_SIM_C_COUNT;
+    return IOConnectCallScalarMethod(c, kRTLUC_AwdlSimCtl, in, 2, cnt, &n);
+}
+
+static void sim_print_counters(const uint64_t *cnt)
+{
+    for (int i = 0; i < RTL_AWDL_SIM_C_COUNT; i++)
+        printf("%s%s %llu", i ? ", " : "", sim_counter_names[i], cnt[i]);
+    printf("\n");
+}
+
+static uint64_t sim_now_us(void)
+{
+    static mach_timebase_info_data_t tb;
+    if (!tb.denom)
+        mach_timebase_info(&tb);
+    return mach_absolute_time() * tb.numer / tb.denom / 1000;
+}
+
+/* Reads tapped records for `seconds`, printing the AWDL ones. */
+static int sim_drain(io_connect_t c, double seconds, int quiet)
+{
+    uint8_t buf[RTL_AWDL_SIM_READ_MIN];
+    uint64_t end = sim_now_us() + (uint64_t)(seconds * 1e6);
+    int n = 0;
+    while (sim_now_us() < end) {
+        uint64_t to = 20000;
+        size_t sz = sizeof(buf);
+        kern_return_t kr = IOConnectCallMethod(c, kRTLUC_AwdlSimRead, &to, 1, NULL, 0, NULL, NULL,
+                                               buf, &sz);
+        if (kr == kIOReturnTimeout)
+            continue;
+        if (kr != KERN_SUCCESS) {
+            printf("[-] read: 0x%08x\n", kr);
+            return -1;
+        }
+        const struct rtl_awdl_sim_rec *h = (const void *)buf;
+        const uint8_t *f = buf + sizeof(*h);
+        n++;
+        if (quiet)
+            continue;
+        uint64_t now = sim_now_us();
+        const char *kind = "data";
+        if ((f[0] & 0x0C) == 0) {
+            uint8_t st = h->len > 30 ? f[30] : 0xFF;
+            kind = st == 0 ? "PSF" : st == 3 ? "MIF" : "AF";
+        }
+        printf("t %llu lag %lld us ch %u len %u %s %02x:%02x:%02x:%02x:%02x:%02x -> "
+               "%02x:%02x:%02x:%02x:%02x:%02x%s\n",
+               h->t_us, (long long)(now - h->t_us), h->channel, h->len, kind, f[10], f[11], f[12],
+               f[13], f[14], f[15], f[4], f[5], f[6], f[7], f[8], f[9],
+               (h->flags & RTL_AWDL_SIM_F_OVERRUN) ? " [overrun]" : "");
+    }
+    return n;
+}
+
+/* Same layout as Tools/awdlsim/src/pcapng.rs: link type 105, microseconds on
+ * the mach clock, the direction in each packet's comment. */
+static int sim_png_put(FILE *o, const void *p, size_t n)
+{
+    return fwrite(p, 1, n, o) == n ? 0 : -1;
+}
+
+static int sim_png_header(FILE *o)
+{
+    static const uint32_t shb[7] = { 0x0a0d0d0a, 28, 0x1a2b3c4d, 1, 0xffffffff, 0xffffffff, 28 };
+    static const uint32_t idb[5] = { 1, 20, 105, 65535, 20 };
+    return sim_png_put(o, shb, sizeof(shb)) || sim_png_put(o, idb, sizeof(idb)) ? -1 : 0;
+}
+
+static int sim_png_frame(FILE *o, uint64_t t_us, const uint8_t *f, uint32_t len, const char *comment)
+{
+    static const uint8_t zero[4];
+    uint32_t clen = (uint32_t)strlen(comment), fpad = (4 - len % 4) % 4, cpad = (4 - clen % 4) % 4;
+    uint32_t total = 28 + len + fpad + 4 + clen + cpad + 4 + 4;
+    uint32_t h[7] = { 6, total, 0, (uint32_t)(t_us >> 32), (uint32_t)t_us, len, len };
+    uint16_t opt[2] = { 1, (uint16_t)clen };
+    return sim_png_put(o, h, sizeof(h)) || sim_png_put(o, f, len) || sim_png_put(o, zero, fpad) ||
+           sim_png_put(o, opt, sizeof(opt)) || sim_png_put(o, comment, clen) ||
+           sim_png_put(o, zero, cpad) || sim_png_put(o, zero, 4) || sim_png_put(o, &total, 4)
+               ? -1 : 0;
+}
+
+static volatile sig_atomic_t sim_stop;
+
+static void sim_on_signal(int s)
+{
+    (void)s;
+    sim_stop = 1;
+}
+
+static void sim_clock(char *out, size_t n)
+{
+    time_t t = time(NULL);
+    strftime(out, n, "%H:%M:%S", localtime(&t));
+}
+
+/* Frames of both directions into a pcapng until a signal or `seconds`. The
+ * radio behaves as with the sim off. Prints each new source as it is heard. */
+static int sim_capture(io_connect_t c, const char *path, double seconds)
+{
+    enum { MAX_SRC = 64 };
+    static uint8_t src[MAX_SRC][6];
+    /* A probe request on the AWDL BSSID: it enters the same RX entry as a frame
+     * from the air, and the layer counts it as "other" and frees it. */
+    static const uint8_t probe[24] = { 0x40, 0, 0, 0, 0x02, 0, 0, 0, 0, 0xff, 0x02, 0, 0, 0xaa, 0xbb, 0xfe,
+                                       0x00, 0x25, 0x00, 0xff, 0x94, 0x73, 0, 0 };
+    uint64_t probe_rssi = (uint64_t)(int64_t)-40;
+    int tap_ok = 0, tap_warned = 0;
+    uint8_t buf[RTL_AWDL_SIM_READ_MIN];
+    uint64_t cnt[RTL_AWDL_SIM_C_COUNT] = { 0 };
+    uint64_t tx = 0, rx_af = 0, rx_data = 0, gaps = 0;
+    int nsrc = 0, reenable = 0, last_rssi = 0, last_ch = 0, ret = 0;
+    char now[16];
+    kern_return_t kr = sim_ctl(c, RTL_AWDL_SIM_OP_CAPTURE, 0, cnt);
+    if (kr != KERN_SUCCESS) {
+        printf("[-] capture: 0x%08x (unsupported: driver without the capture or no rtlawdl_sim=1; "
+               "not permitted: not root; exclusive access: awdlsim is running)\n", kr);
+        return 1;
+    }
+    FILE *o = fopen(path, "wb");
+    if (!o || sim_png_header(o)) {
+        printf("[-] %s: %s\n", path, strerror(errno));
+        sim_ctl(c, RTL_AWDL_SIM_OP_DISABLE, 0, cnt);
+        return 1;
+    }
+    signal(SIGINT, sim_on_signal);
+    signal(SIGTERM, sim_on_signal);
+    signal(SIGHUP, sim_on_signal);
+    uint64_t start = sim_now_us(), next_line = start + 5000000, next_flush = start + 1000000;
+    uint64_t end = seconds > 0 ? start + (uint64_t)(seconds * 1e6) : UINT64_MAX;
+    printf("[+] capture to %s; mach %llu us is unix %lld\n", path, start, (long long)time(NULL));
+    fflush(stdout);
+    kern_return_t probe_kr = IOConnectCallMethod(c, kRTLUC_AwdlSimInject, &probe_rssi, 1, probe, sizeof(probe),
+                                                 NULL, NULL, NULL, NULL);
+    while (!sim_stop && sim_now_us() < end) {
+        uint64_t to = 20000, t = sim_now_us();
+        size_t sz = sizeof(buf);
+        if (t >= next_flush) {
+            fflush(o);
+            next_flush = t + 1000000;
+        }
+        if (!tap_ok && !tap_warned && t >= start + 2000000) {
+            tap_warned = 1;
+            printf("[-] capture self-test: no RX record (inject 0x%08x); received frames will not be saved\n",
+                   probe_kr);
+            fflush(stdout);
+        }
+        if (t >= next_line) {
+            sim_clock(now, sizeof(now));
+            printf("[%s] tx %llu | rx af %llu data %llu | sources %d | rssi %d ch %d | lost %llu\n", now,
+                   tx, rx_af, rx_data, nsrc, last_rssi, last_ch, gaps);
+            fflush(stdout);
+            next_line = t + 5000000;
+        }
+        kr = IOConnectCallMethod(c, kRTLUC_AwdlSimRead, &to, 1, NULL, 0, NULL, NULL, buf, &sz);
+        if (kr == kIOReturnTimeout)
+            continue;
+        if (kr == kIOReturnAborted && !sim_stop && reenable < 20) {
+            /* Sleep or USB takeover turned the port off. */
+            reenable++;
+            sleep(1);
+            sim_clock(now, sizeof(now));
+            printf("[%s] radio released, capture %s\n", now,
+                   sim_ctl(c, RTL_AWDL_SIM_OP_CAPTURE, 0, cnt) == KERN_SUCCESS ? "on again" : "still off");
+            fflush(stdout);
+            continue;
+        }
+        if (kr != KERN_SUCCESS) {
+            if (!sim_stop) {
+                printf("[-] read: 0x%08x\n", kr);
+                ret = 1;
+            }
+            break;
+        }
+        const struct rtl_awdl_sim_rec *h = (const void *)buf;
+        const uint8_t *f = buf + sizeof(*h);
+        const char *trunc = (h->flags & RTL_AWDL_SIM_F_TRUNC) ? " trunc" : "";
+        const char *over = (h->flags & RTL_AWDL_SIM_F_OVERRUN) ? " overrun" : "";
+        int rx = (h->flags & RTL_AWDL_SIM_F_RX) != 0;
+        if (rx && !memcmp(f + 10, probe + 10, 6)) {
+            tap_ok = 1;
+            printf("[+] capture self-test: RX path ok\n");
+            fflush(stdout);
+            continue;
+        }
+        char comment[64];
+        if (rx)
+            snprintf(comment, sizeof(comment), "air > awdl0 ch %u rssi %d%s%s", h->channel, h->rssi, trunc, over);
+        else
+            snprintf(comment, sizeof(comment), "awdl0 > air ch %u%s%s", h->channel, trunc, over);
+        if (h->flags & RTL_AWDL_SIM_F_OVERRUN)
+            gaps++;
+        if (sim_png_frame(o, h->t_us, f, h->len, comment)) {
+            printf("[-] %s: %s\n", path, strerror(errno));
+            ret = 1;
+            break;
+        }
+        if (!rx) {
+            tx++;
+            continue;
+        }
+        int mgmt = (f[0] & 0x0C) == 0;
+        if (mgmt)
+            rx_af++;
+        else
+            rx_data++;
+        last_rssi = h->rssi;
+        last_ch = h->channel;
+        int known = 0;
+        for (int i = 0; i < nsrc && !known; i++)
+            known = memcmp(src[i], f + 10, 6) == 0;
+        if (!known && nsrc < MAX_SRC) {
+            memcpy(src[nsrc++], f + 10, 6);
+            sim_clock(now, sizeof(now));
+            printf("[%s] HEARD %02x:%02x:%02x:%02x:%02x:%02x rssi %d ch %u %s len %u\n", now, f[10], f[11],
+                   f[12], f[13], f[14], f[15], h->rssi, h->channel, mgmt ? "action" : "data", h->len);
+            fflush(stdout);
+        }
+    }
+    fclose(o);
+    sim_ctl(c, RTL_AWDL_SIM_OP_DISABLE, 0, cnt);
+    printf("[+] end: tx %llu, rx af %llu, rx data %llu, sources %d, lost runs %llu; ", tx, rx_af, rx_data, nsrc, gaps);
+    sim_print_counters(cnt);
+    return ret;
+}
+
+/* PSFs a peer sent, from an owly/Crosswind capture: radiotap with fields
+ * (the phone's frames; the local node's carry an empty radiotap header). */
+static int sim_load_psfs(const char *path, uint8_t frames[][RTL_AWDL_SIM_FRAME_MAX],
+                         uint16_t *lens, int max)
+{
+    FILE *fp = fopen(path, "rb");
+    if (!fp) {
+        perror(path);
+        return -1;
+    }
+    uint8_t gh[24];
+    int n = 0;
+    if (fread(gh, 1, 24, fp) != 24 || gh[0] != 0xd4 || gh[1] != 0xc3 || gh[20] != 127) {
+        printf("[-] %s: not a little-endian radiotap pcap\n", path);
+        fclose(fp);
+        return -1;
+    }
+    uint8_t rh[16], pkt[4096];
+    while (n < max && fread(rh, 1, 16, fp) == 16) {
+        uint32_t incl = rh[8] | rh[9] << 8 | rh[10] << 16 | (uint32_t)rh[11] << 24;
+        if (incl > sizeof(pkt) || fread(pkt, 1, incl, fp) != incl)
+            break;
+        uint16_t rl = pkt[2] | pkt[3] << 8;
+        if (rl <= 8 || rl >= incl)
+            continue;
+        const uint8_t *f = pkt + rl;
+        uint32_t len = incl - rl;
+        /* action frame, AWDL category/OUI/type, subtype 0 (PSF) */
+        if (len < 31 || len > RTL_AWDL_SIM_FRAME_MAX || f[0] != 0xd0 || f[24] != 0x7f ||
+            f[25] != 0x00 || f[26] != 0x17 || f[27] != 0xf2 || f[28] != 0x08 || f[30] != 0)
+            continue;
+        memcpy(frames[n], f, len);
+        lens[n++] = (uint16_t)len;
+    }
+    fclose(fp);
+    return n;
+}
+
+static int sim_cmd(io_connect_t c, int argc, char **argv)
+{
+    uint64_t cnt[RTL_AWDL_SIM_C_COUNT] = { 0 };
+    kern_return_t kr;
+    if (argc >= 3 && strcmp(argv[2], "query") == 0) {
+        kr = sim_ctl(c, RTL_AWDL_SIM_OP_QUERY, 0, cnt);
+        if (kr != KERN_SUCCESS) {
+            printf("[-] query: 0x%08x (unsupported: no rtlawdl_sim=1; not permitted: not root)\n", kr);
+            return 1;
+        }
+        sim_print_counters(cnt);
+        return 0;
+    }
+    if (argc >= 4 && strcmp(argv[2], "watch") == 0) {
+        uint64_t ch = strtoul(argv[3], NULL, 0);
+        double secs = argc >= 5 ? atof(argv[4]) : 5;
+        if ((kr = sim_ctl(c, RTL_AWDL_SIM_OP_ENABLE, ch, cnt)) != KERN_SUCCESS) {
+            printf("[-] enable: 0x%08x\n", kr);
+            return 1;
+        }
+        int n = sim_drain(c, secs, 0);
+        sim_ctl(c, RTL_AWDL_SIM_OP_DISABLE, 0, cnt);
+        printf("[+] %d records; ", n);
+        sim_print_counters(cnt);
+        return n < 0;
+    }
+    if (argc >= 4 && strcmp(argv[2], "capture") == 0)
+        return sim_capture(c, argv[3], argc >= 5 ? atof(argv[4]) : 0);
+    if (argc >= 5 && strcmp(argv[2], "inject") == 0) {
+        static uint8_t frames[64][RTL_AWDL_SIM_FRAME_MAX];
+        static uint16_t lens[64];
+        uint64_t ch = strtoul(argv[3], NULL, 0);
+        int want = argc >= 6 ? atoi(argv[5]) : 20;
+        unsigned m[6] = { 0x02, 0x00, 0x00, 0xaa, 0xbb, 0x01 };
+        if (argc >= 7 && sscanf(argv[6], "%x:%x:%x:%x:%x:%x", &m[0], &m[1], &m[2], &m[3], &m[4],
+                                &m[5]) != 6) {
+            printf("[-] bad MAC %s\n", argv[6]);
+            return 1;
+        }
+        int have = sim_load_psfs(argv[4], frames, lens, 64);
+        if (have <= 0) {
+            printf("[-] no PSF in %s\n", argv[4]);
+            return 1;
+        }
+        if ((kr = sim_ctl(c, RTL_AWDL_SIM_OP_ENABLE, ch, cnt)) != KERN_SUCCESS) {
+            printf("[-] enable: 0x%08x\n", kr);
+            return 1;
+        }
+        int ok = 0;
+        for (int i = 0; i < want; i++) {
+            uint8_t *f = frames[i % have];
+            for (int k = 0; k < 6; k++)
+                f[10 + k] = (uint8_t)m[k];
+            uint64_t rssi = (uint64_t)(int64_t)-40;
+            kr = IOConnectCallMethod(c, kRTLUC_AwdlSimInject, &rssi, 1, f, lens[i % have], NULL,
+                                     NULL, NULL, NULL);
+            if (kr == KERN_SUCCESS)
+                ok++;
+            else if (i < 4)
+                printf("[-] inject %d: 0x%08x\n", i, kr);
+            sim_drain(c, 0.11, 1);      /* one PSF period; keeps the ring empty */
+        }
+        sim_ctl(c, RTL_AWDL_SIM_OP_DISABLE, 0, cnt);
+        printf("[+] injected %d/%d PSFs as %02x:%02x:%02x:%02x:%02x:%02x; ", ok, want, m[0], m[1],
+               m[2], m[3], m[4], m[5]);
+        sim_print_counters(cnt);
+        printf("    the AirLayer logs 'awdl: rx af <MAC>' for the first frames of a new source\n");
+        return 0;
+    }
+    printf("sim subcommands (rtlawdl_sim=1, root): query | watch <ch> [seconds] | "
+           "inject <ch> <capture.pcap> [count] [MAC] | capture <file.pcapng> [seconds]\n");
+    return 1;
+}
+
 int main(int argc, char **argv) {
     io_service_t service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("RTL8814Native"));
     if (!service) {
@@ -806,10 +1168,39 @@ int main(int argc, char **argv) {
         uint32_t prev;
         if (reg_access(connect, 3, 4, 2, 0, &prev) == 0)
             printf("[+] RX perf counters reset\n");
+    } else if (strcmp(argv[1], "awdlbw") == 0 && argc >= 3) {
+        uint32_t prev, mhz = (uint32_t)strtoul(argv[2], NULL, 0);
+        if (reg_access(connect, 3, 4, 3 /* RTL_OPT_AWDL_BW */, mhz, &prev) == 0)
+            printf("[+] AWDL park width: %u -> %u MHz (5 GHz, idle radio)\n", prev, mhz);
+        else
+            printf("[-] AWDL park width %u refused (20, 40 or 80; older driver?)\n", mhz);
+    } else if (strcmp(argv[1], "awdlprot") == 0 && argc >= 3) {
+        uint32_t prev, mode = (uint32_t)strtoul(argv[2], NULL, 0);
+        if (reg_access(connect, 3, 4, 4 /* RTL_OPT_AWDL_PROT */, mode, &prev) == 0)
+            printf("[+] AWDL session protection: %u -> %u (0 none, 1 RTS/CTS, 2 CTS-to-self)\n", prev, mode);
+        else
+            printf("[-] AWDL session protection %u refused (0, 1 or 2; older driver?)\n", mode);
+    } else if (strcmp(argv[1], "awdlscan") == 0 && argc >= 3) {
+        uint32_t prev, s = (uint32_t)strtoul(argv[2], NULL, 0);
+        if (reg_access(connect, 3, 4, 5 /* RTL_OPT_AWDL_SCAN_HOLD */, s, &prev) == 0)
+            printf("[+] AWDL scan hold: %u -> %u s (0 = scans never return to the parked channel)\n", prev, s);
+        else
+            printf("[-] AWDL scan hold %u refused (0 to 60 s; older driver?)\n", s);
+    } else if (strcmp(argv[1], "awdlcal") == 0) {
+        uint32_t v;
+        if (reg_access(connect, 3, 4, 6 /* RTL_OPT_AWDL_CAL */, 0, &v) == 0)
+            printf("[+] Thermal I/Q calibrations: %u run, %u put off by an AWDL slot\n", v & 0xFFFF, v >> 16);
+        else
+            printf("[-] No calibration counters (older driver?)\n");
     } else if (strcmp(argv[1], "reassemble") == 0 && argc >= 3) {
         uint32_t prev;
         if (reg_access(connect, 3, 4, 0 /* RTL_OPT_RX_REASSEMBLE */, (uint32_t)strtoul(argv[2], NULL, 0), &prev) == 0)
             printf("[+] RX reassembly: %u -> %s\n", prev, strtoul(argv[2], NULL, 0) ? "ON" : "off");
+    } else if (strcmp(argv[1], "sim") == 0) {
+        int rc = sim_cmd(connect, argc, argv);
+        IOServiceClose(connect);
+        IOObjectRelease(service);
+        return rc;
     } else if (strcmp(argv[1], "radio") == 0) {
         int rc = radio_cmd(connect, argc, argv);
         IOServiceClose(connect);
@@ -830,8 +1221,13 @@ int main(int argc, char **argv) {
         printf("  %s rf <path 0-3> <reg>\n", argv[0]);
         printf("  %s rxlog\n", argv[0]);
         printf("  %s reassemble <0|1>\n", argv[0]);
+        printf("  %s awdlbw <20|40|80>\n", argv[0]);
+        printf("  %s awdlprot <0|1|2>\n", argv[0]);
+        printf("  %s awdlscan <seconds>\n", argv[0]);
+        printf("  %s awdlcal\n", argv[0]);
         printf("  %s recycle <0|1>\n", argv[0]);
         printf("  %s perfreset\n", argv[0]);
+        printf("  %s sim query | watch <ch> [seconds] | inject <ch> <capture.pcap> [count] [MAC]\n", argv[0]);
     }
 
     IOServiceClose(connect);

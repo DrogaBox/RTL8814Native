@@ -154,7 +154,7 @@ leídos por el manager y campos escritos por Broadcom:
 | `+0x00` | `uint8_t[6]` | MAC de origen del AF | escrito en `0xffffff800171795c` (`*(u32*)(ev+24)`, `*(u16*)(ev+28)`); leído en `0xffffff800220e8b0` (`findPeer`, `addAWDLPeer`) y comparado con el parent en `+37237` |
 | `+0x06` | `uint16_t` | sin uso (`?`) | queda a cero |
 | `+0x08` | `uint8_t[4]` | sin uso (`?`) | queda a cero |
-| `+0x0c` | `apple80211_channel` (12 B) | canal del AF | escrito con `ChanSpecConvToApple80211Channel` en `0xffffff800171795c`; no leído por el manager |
+| `+0x0c` | `apple80211_channel` (12 B) | canal del AF | escrito con `ChanSpecConvToApple80211Channel` en `0xffffff800171795c` (banda `0x08`/`0x10`/`0x2000`, ancho `0x02`/`0x04`/`0x400`/`0x800`, DFS `0x100`); los flags los lee `IO80211Peer::reportRssi` (`0xffffff8002242c4e`, desde `actionFrameReport` `0xffffff80021afbb0`): `0x10` actualiza la media de RSSI de 5 GHz (`+1188`), `0x08` la de 2,4 GHz (`+1180`); `wifip2pd` saca la banda de ellos |
 | `+0x18` | `uint8_t[16]` | ceros | — |
 | `+0x28` | `uint32_t` | tasa de RX (`rate` del evento) | escrito en `0xffffff800171795c`; no leído por el manager |
 | `+0x2c` | `int32_t` | **RSSI del AF en dBm** (`rssi` del evento) | leído en `actionFrameProcessInput` (`mov eax, [r15+2Ch]` en `0xffffff800220ecac` y `0xffffff800220ecce`) y comparado **con signo** con el umbral RSSI de borde `ivars+10268` |
@@ -338,9 +338,9 @@ Payload (36 B leídos; el manager no valida `len`):
 | `+0x08` | `uint8_t[6]` | MAC del maestro actual | `monitorTimeline` (`memcmp` con `ivars+784`) y log |
 | `+0x0e` | `uint8_t[6]` | MAC del top master (raíz) | `monitorTimeline` (`memcmp` con `ivars+790`); en la rama del 41 se copia a `ivars+37231` si cambia y `ivars+16289` está activo |
 | `+0x14` | `uint32_t` | `FwAwStartTime` **big-endian** | `monitorTimeline` hace `_byteswap_ulong` y lo compara con el esperado |
-| `+0x18` | `uint32_t` | flags/banda del canal (`?`) | `ivars+42824` (qword `+0x18..+0x1f`) |
+| `+0x18` | `uint32_t` | versión de `apple80211_channel` | `ivars+42824` (qword `+0x18..+0x1f`, el que devuelve `getMyCurrChanInfo`, `0xffffff80022143b2`) |
 | `+0x1c` | `uint32_t` | número de canal de la ventana | `ivars+42828`; el evento 43 lo compara con su tabla de canales |
-| `+0x20` | `uint32_t` | flags de la ventana | `ivars+42832` (bits `0x2018` consultados en el evento 43) |
+| `+0x20` | `uint32_t` | flags del canal de la ventana | `ivars+42832`; los bits `0x2018` los comparan `sanityCheckAWStart`, `handleUmiTimer` y el evento 43 |
 
 Acciones inmediatas tras `monitorTimeline`, todas dentro de la rama del 41 de
 `0xffffff80021dd8f4`:
@@ -353,7 +353,11 @@ Acciones inmediatas tras `monitorTimeline`, todas dentro de la rama del 41 de
   slot y sub-slot dentro de la ventana (`?` sobre el nombre del método).
 - `ivars+16108 = awNumber & 0xFFFFFFC0`; si cambió respecto a `+16112`, guarda `mach_absolute_time()`
   en `+16120` y actualiza `+16112`.
-- `logAWStart` + `sanityCheckAWStart` (`?` no decompilada).
+- `logAWStart` + `sanityCheckAWStart` (`0xffffff80021e21de`): espera el canal en `ivars+12*slot+42872` y los
+  flags en `+42876`; si el canal difiere, o `(flags_esperados ^ ivars+42832) & 0x2018` no es 0, incrementa
+  `ivars+64328`, que `monitorAWDLState` lee para imprimir `mismatch of channel sequence with Firmware`. Lleva
+  otros contadores: `+64324` inicios seguidos, `+64336` secuencia seguida, `+64340` eventos de inicio que no
+  llegaron en slots con canal, `+43880` número de secuencia inesperado.
 - `ivars+42696 = mach_absolute_time()` (inicio de ventana en tiempo de host).
 - Si el slot actual devuelto por `getCurrentAWSlot` (celda 94, `+0x2F0`) es 0 y `ivars+66376 != 0`:
   si han pasado menos de 64 ms desde el anterior se registra `"slot 0 start too soon (%dms), ignore"`
@@ -495,6 +499,7 @@ Ids que el manager AWDL sí trata y su efecto:
 | 43 | §2.5 (fin de ventana, CCA, elección) | 40 B |
 | 46 | si `data[0] != 0`: nada (sólo se reenvía a userspace). Con `data[0] == 0`: limpia `+16096` bit 1, `+17028` y `+10480`, llama `setEnableState(false)` y, si antes estaba habilitado, `postSyncStateChanged` | 4 B |
 | 49 | `APPLE80211_M_RESET_INTERFACE`: assert `len == 4`, guarda `data[0]` en `ivars+16100`, reenvía a la base como id `0x31`; con `data[0] != 0` marca recuperación AWDL y reconfigura | 4 B |
+| 51 | caché de pares, ver abajo (lo trata `IO80211PeerManager::reportDataPathEvents`) | opcode en `+4`, MAC en `+8` |
 | 58 | estado de interfaz (`IFACE_STATE`) → `setDataPathState` | `u32` |
 | 64 | SDB mode changed (assert `len == 8`) → reconstruye y baja la plantilla de sync y el MI | 8 B |
 | 82 | roam completado → `setSteerComplete`, `setScheduleState` | `u32` |
@@ -503,6 +508,22 @@ Ids que el manager AWDL sí trata y su efecto:
 | 183 | DFS suspend/resume (`data[2]`, `data[3]`) | 4 B |
 | 198 | overlay de scan 6 GHz → `setChannelSequenceUnconditional` | `u32` |
 | 204 | dwell start (`data[2] != 0`) | 4 B |
+
+**Evento 51: respuesta al ioctl 143.** `AppleBCMWLANCore::completePeerCacheControl` (`0xffffff800165b8b6`) lo
+publica con 464 B, opcode en `+4` (1 alta, 3 borrado) y MAC en `+8`. `IO80211PeerManager::reportDataPathEvents` lo
+pasa a `handleCacheControlMessages` (`0xffffff800229ce24`):
+
+- Con opcode 1, `handlePeerAddIndication` (`0xffffff800229cf14`) despierta a quien espera la operación 8
+  (`kApplePeerCacheOperationCompleted`), añade el par a la lista de cacheados y `setStateForCachedPeer`
+  (`0xffffff8002242830`) deja `peer_ivars+601 = 1` y `+600 = 0`. `handleUmiTimer` exige ese estado.
+- Con opcode 3, `handlePeerDeleteIndication` (`0xffffff800229d3bc`) baja `_currentPeerCacheSize`, el contador que
+  `sendIoctlToCachePeer` (`0xffffff800229e458`) sube al enviar el alta. Solo baja aquí: `deletePeerFromFWCache`
+  (`0xffffff800229d798`) no lo toca. Con el contador en el máximo de 8 (ioctl 130), IO80211 registra
+  `No space to cache peer` y no envía el alta.
+
+Si llega un borrado mientras un alta está sin confirmar, `deletePeerFromFWCache` no envía el 143 y deja
+`peer_ivars+6 = 1`; `handlePeerAddIndication` lo envía al confirmarse el alta. Medido en
+`AWDL_PAR_VIRTUAL.md` §9.6.
 
 Los ids que no figuran arriba ni en la lista blanca de `routeToP2PInterface` no llegan nunca al
 manager.
@@ -959,7 +980,8 @@ resultado a contadores (`ivars+16360` y `ivars+16368`).
    (`ivars+772` queda a 0) y `sendUnicastMI` rechaza todo.
 3. **Aceptar los ioctls 116/117/129/132/134/149/151/155/205/208/229** con los layouts de §3 y
    devolver 0. El único cuyo fallo revierte el estado es el 117; el 341 debe devolver 0 capacidades
-   si no se implementan `SEC_PAYLOAD`, `CCA_STATS` ni `PSF_DWELL_*`.
+   si no se implementan `SEC_PAYLOAD`, `CCA_STATS` ni `PSF_DWELL_*`. El 143 debe devolver 0 y, además,
+   publicar después el evento 51 (§2.6).
 4. **Repetir la plantilla del 151** cada `sync_frame_period` (116) alineada con la línea temporal
    compartida: es la única obligación que el manager delega por completo y de la que no tiene
    realimentación.

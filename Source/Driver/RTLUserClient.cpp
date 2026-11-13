@@ -12,6 +12,7 @@
 #include "VendorGlue.hpp"
 #include "RTLRadioABI.h"
 #include "RTLJoinLog.h"
+#include "RTLAwdlSim.h"
 
 #include <IOKit/IOLib.h>
 #include <libkern/libkern.h>
@@ -60,6 +61,7 @@ void RTLUserClient::stop(IOService *provider)
 
 void RTLUserClient::free()
 {
+        rtlAwdlSimClientGone(this);
         if (_driver)
                 _driver->setUserClient(nullptr);
         super::free();
@@ -67,6 +69,7 @@ void RTLUserClient::free()
 
 IOReturn RTLUserClient::clientClose(void)
 {
+        rtlAwdlSimClientGone(this);
         /* Detach this client; the driver itself stays for the device
          * lifetime (OC reload). App reconnects on next use. */
         terminate();
@@ -117,7 +120,7 @@ IOReturn RTLUserClient::externalMethod(uint32_t selector,
         }
 
         case kRTLUC_TriggerScan: {
-                int rc = rtl8814native_trigger_scan();
+                int rc = rtl8814native_trigger_scan(NULL, 0);
                 return (rc == 0) ? kIOReturnSuccess : kIOReturnBusy;
         }
 
@@ -220,6 +223,11 @@ IOReturn RTLUserClient::externalMethod(uint32_t selector,
                 int rc = rtl8814native_set_knob((uint32_t)args->scalarInput[0], (uint32_t)args->scalarInput[1]);
                 return (rc == 0) ? kIOReturnSuccess : kIOReturnBadArgument;
         }
+
+        case kRTLUC_AwdlSimCtl:
+        case kRTLUC_AwdlSimInject:
+        case kRTLUC_AwdlSimRead:
+                return awdlSim(selector, args);
 
         default:
                 return kIOReturnUnsupported;
@@ -325,4 +333,56 @@ IOReturn RTLUserClient::radioCall(IOExternalMethodArguments *args)
         if (out)
                 IOFree(out, outCap);
         return ret;
+}
+
+/*
+ * Virtual AWDL peer (RTLAwdlSim.h). The token newUserClient passes to
+ * initWithTask is the driver, not a task, so root is checked on the owning
+ * task kept in _task. The client that enables the sim owns it; Read and
+ * Inject from any other connection are refused.
+ */
+IOReturn RTLUserClient::awdlSim(uint32_t selector, IOExternalMethodArguments *args)
+{
+        if (!rtl_awdl_sim_available())
+                return kIOReturnUnsupported;
+        if (!_task || clientHasPrivilege(_task, kIOClientPrivilegeAdministrator) != kIOReturnSuccess)
+                return kIOReturnNotPermitted;
+        switch (selector) {
+        case kRTLUC_AwdlSimCtl: {
+                if (!args->scalarInput || args->scalarInputCount < 1)
+                        return kIOReturnBadArgument;
+                uint64_t counters[RTL_AWDL_SIM_C_COUNT];
+                IOReturn ret = rtlAwdlSimCtl(this, (uint32_t)args->scalarInput[0],
+                                             args->scalarInputCount > 1 ? args->scalarInput[1] : 0,
+                                             counters);
+                if (args->scalarOutput) {
+                        uint32_t n = args->scalarOutputCount < RTL_AWDL_SIM_C_COUNT
+                                   ? args->scalarOutputCount : RTL_AWDL_SIM_C_COUNT;
+                        memcpy(args->scalarOutput, counters, n * sizeof(uint64_t));
+                        args->scalarOutputCount = n;
+                }
+                return ret;
+        }
+        case kRTLUC_AwdlSimInject:
+                if (!_driver || !args->scalarInput || args->scalarInputCount < 1 ||
+                    !args->structureInput)
+                        return kIOReturnBadArgument;
+                return _driver->awdlSimInject(this, (const uint8_t *)args->structureInput,
+                                              args->structureInputSize,
+                                              (int8_t)(int64_t)args->scalarInput[0]);
+        case kRTLUC_AwdlSimRead: {
+                if (!args->scalarInput || args->scalarInputCount < 1 || !args->structureOutput)
+                        return kIOReturnBadArgument;
+                uint64_t t = args->scalarInput[0];
+                uint32_t used = 0;
+                IOReturn ret = rtlAwdlSimRead(this, t > RTL_AWDL_SIM_WAIT_MAX_US
+                                                    ? RTL_AWDL_SIM_WAIT_MAX_US : (uint32_t)t,
+                                              args->structureOutput, args->structureOutputSize,
+                                              &used);
+                args->structureOutputSize = ret == kIOReturnSuccess ? used : 0;
+                return ret;
+        }
+        default:
+                return kIOReturnUnsupported;
+        }
 }

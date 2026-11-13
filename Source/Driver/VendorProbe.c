@@ -24,6 +24,7 @@ void rtl8814native_get_join_log(struct rtl_jlog *out)
 {
 	_rtw_memcpy(out, &g_jlog, sizeof(*out));
 }
+extern u8 rtl8814native_awdl_backop;
 extern volatile uint32_t g_rx_reassemble;
 extern volatile uint32_t g_rx_skb_recycle;
 static uint32_t g_bulk_in_mps;
@@ -837,15 +838,44 @@ void rtl8814native_rejoin_last(void)
  * Phase 2 & 3: 802.11 Scan, Join, Link Status, Disconnect & TX Entry
  * ====================================================================== */
 
-int rtl8814native_trigger_scan(void)
+/*
+ * Scans the whole channel plan, or with count only the listed channels: a
+ * macOS request usually names 2-3 of them, and associated every channel is
+ * ~100 ms away from the BSS. Channels off the plan are dropped; when none is
+ * left nothing is scanned (an empty list would make rtw scan the whole plan).
+ */
+int rtl8814native_trigger_scan(const uint32_t *channels, uint32_t count)
 {
+	struct sitesurvey_parm *parm = NULL;
+	u8 res;
+
 	if (!g_padapter || !g_padapter->bup)
 		return -ENODEV;
 
-	/* Note: rtw_set_802_11_bssid_list_scan acquires &mlmepriv.lock internally */
-	u8 res = rtw_set_802_11_bssid_list_scan(g_padapter, NULL);
+	if (channels && count) {
+		parm = (struct sitesurvey_parm *)rtw_zmalloc(sizeof(*parm));
+		if (!parm)
+			return -ENOMEM;
+		rtw_init_sitesurvey_parm(g_padapter, parm);
+		for (uint32_t i = 0; i < count && parm->ch_num < RTW_CHANNEL_SCAN_AMOUNT; i++) {
+			if (channels[i] == 0 || channels[i] > 255 ||
+			    rtw_chset_search_ch(adapter_to_chset(g_padapter), (u32)channels[i]) < 0)
+				continue;
+			parm->ch[parm->ch_num++].hw_value = (u16)channels[i];
+		}
+		if (!parm->ch_num) {
+			rtw_mfree((u8 *)parm, sizeof(*parm));
+			return 0;
+		}
+	}
 
-	rtl_printk("RTL8814Native: triggered 802.11 scan (res=%u)\n", res);
+	/* Note: rtw_set_802_11_bssid_list_scan acquires &mlmepriv.lock internally */
+	res = rtw_set_802_11_bssid_list_scan(g_padapter, parm);
+
+	rtl_printk("RTL8814Native: triggered 802.11 scan, %u channels (res=%u)\n",
+		   parm ? parm->ch_num : 0, res);
+	if (parm)
+		rtw_mfree((u8 *)parm, sizeof(*parm));
 	return (res == _TRUE) ? 0 : -EBUSY;
 }
 
@@ -1196,10 +1226,13 @@ void rtl8814native_radio_status(struct rtl_radio_status *st)
 	else
 		st->state = RTL_RADIO_S_IDLE;
 
-	st->scanning = check_fwstate(pmlmepriv, _FW_UNDER_SURVEY) ? 1 : 0;
+	st->scanning = !check_fwstate(pmlmepriv, _FW_UNDER_SURVEY) ? 0 :
+	               rtl8814native_awdl_backop ? RTL_RADIO_SCAN_BACKOP : 1;
 	st->rsn = wpa != 0;
 	st->port_valid = st->state == RTL_RADIO_S_LINKED && (!st->rsn || wpa == 3);
-	if (st->state == RTL_RADIO_S_IDLE)
+	/* also in an unlinked scan's return to the parked channel */
+	if (st->state == RTL_RADIO_S_IDLE ||
+	    (st->state == RTL_RADIO_S_SCAN && st->scanning == RTL_RADIO_SCAN_BACKOP))
 		st->idle_channel = pmlmeext->cur_channel;
 	if (st->state != RTL_RADIO_S_LINKED)
 		return;
@@ -1496,6 +1529,14 @@ int rtl8814native_reg_access(uint32_t op, uint32_t width, uint32_t addr, uint32_
 			*out = g_rx_skb_recycle;
 			g_rx_skb_recycle = value ? 1 : 0;
 			return 0;
+		case RTL_OPT_AWDL_BW:
+			return rtl8814native_awdl_set_park_bw(value, out);
+		case RTL_OPT_AWDL_PROT:
+			return rtl8814native_awdl_set_prot(value, out);
+		case RTL_OPT_AWDL_SCAN_HOLD:
+			return rtl8814native_awdl_set_scan_hold(value, out);
+		case RTL_OPT_AWDL_CAL:
+			return rtl8814native_awdl_cal_stats(out);
 		case RTL_OPT_RESET_PERF:
 			*out = 0;
 			g_rate_diag.rx_xfers = 0;

@@ -1,4 +1,4 @@
-Station 0e:84:08:68:fd:24 (on wlan0)
+Station 0e:84:08:xx:xx:xx (on wlan0)
 	authorized:	yes
 	authenticated:	yes
 	associated:	yes

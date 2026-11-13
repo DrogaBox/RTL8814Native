@@ -22,7 +22,9 @@
 
 /* Function names (OSSymbol keys for callPlatformFunction); p1..p4 below */
 #define RTL_RADIO_FN_ABI          "rtlRadioAbi"        /* p1: uint32_t *abi (out) */
-#define RTL_RADIO_FN_SCAN_START   "rtlRadioScanStart"  /* no args; kIOReturnBusy if one is running */
+#define RTL_RADIO_FN_SCAN_START   "rtlRadioScanStart"  /* p1: const uint32_t *channels or NULL (whole plan), p2: const uint32_t *count;
+                                                        * channels off the plan are dropped, none left scans nothing;
+                                                        * kIOReturnBusy if one is running. Older drivers ignore p1/p2. */
 #define RTL_RADIO_FN_SCAN_COPY    "rtlRadioScanCopy"   /* p1: struct rtl_radio_bss[], p2: uint32_t *count (in: capacity, out: filled) */
 #define RTL_RADIO_FN_CHANNELS     "rtlRadioChannels"   /* p1: struct rtl_radio_chan[], p2: uint32_t *count (in/out) */
 #define RTL_RADIO_FN_JOIN         "rtlRadioJoin"       /* p1: struct rtl_radio_join * (SAE password consumed and wiped) */
@@ -47,8 +49,10 @@ typedef void (*rtl_radio_rx_fn)(void *ctx, void *mbuf);
  * AWDL. While attached, every received 802.11 frame whose A3 is the AWDL
  * BSSID 00:25:00:FF:94:73 is passed to the hook as raw bytes (header
  * included, FCS stripped) and dropped by the radio afterwards. The bytes are
- * only valid during the call: the hook copies what it keeps. Same thread and
- * lock rules as the data hook. Older builds answer kIOReturnUnsupported.
+ * only valid during the call: the hook copies what it keeps. Same lock rules
+ * as the data hook; it runs on the RX workqueue thread, and with
+ * rtlawdl_sim=1 also on a user client thread (RTLAwdlSim.h), never both at
+ * once. Older builds answer kIOReturnUnsupported.
  */
 #define RTL_RADIO_FN_AWDL_HOOK    "rtlRadioAwdlHook"   /* p1: rtl_radio_awdl_rx_fn (NULL = detach), p2: void *ctx */
 
@@ -60,8 +64,8 @@ typedef void (*rtl_radio_awdl_rx_fn)(void *ctx, const uint8_t *frame, uint32_t l
  * 0, A3 = 00:25:00:FF:94:73), 802.11 header and body, no FCS, sent on the
  * current operating channel at the management rate (OFDM 6 Mb/s, 12 for data,
  * on the AWDL BSSID). The radio sets the sequence number; group-addressed
- * frames go without retries. Data frames get kIOReturnNoResources while half
- * of the radio's management buffers are in use. Builds before
+ * frames go without retries. Data frames get kIOReturnNoResources while all
+ * but 16 of the radio's management buffers are in use. Builds before
  * AWDL data TX answer kIOReturnBadArgument for a data frame. The bytes are copied
  * before the call returns. kIOReturnNotReady while the radio is down,
  * kIOReturnBusy while TX waits for a channel, kIOReturnNoResources with no
@@ -76,6 +80,24 @@ typedef void (*rtl_radio_awdl_rx_fn)(void *ctx, const uint8_t *frame, uint32_t l
  * registers over USB: not from inside a radio hook.
  */
 #define RTL_RADIO_FN_AWDL_PORT    "rtlRadioAwdlPort"   /* p1: const uint8_t mac[6] or NULL */
+/*
+ * Rate of unicast AWDL data frames, as a TX descriptor rate index: 0x04..0x0b
+ * OFDM 6..54 Mb/s, 0x0c..0x13 HT MCS 0..7; 0 goes back to the fixed 12 Mb/s.
+ * While one is set each such frame asks the chip for a CCX TX report and may
+ * fall back to slower rates on its retries, no lower than OFDM 6 Mb/s; the
+ * reports add up in rtl_radio_awdl_txstat. Lasts until changed or the kext
+ * unloads. Older builds answer kIOReturnUnsupported to both.
+ */
+#define RTL_RADIO_FN_AWDL_RATE    "rtlRadioAwdlRate"   /* p1: const uint32_t *rate */
+#define RTL_RADIO_FN_AWDL_TXSTAT  "rtlRadioAwdlTxStat" /* p1: struct rtl_radio_awdl_txstat * (out) */
+struct rtl_radio_awdl_txstat {
+	uint32_t clean;            /* acknowledged at the first try */
+	uint32_t retried;          /* acknowledged after one retry */
+	uint32_t retried2;         /* acknowledged after two or more */
+	uint32_t lost;             /* retry limit or lifetime reached */
+	uint32_t rate;             /* final rate of the last report (descriptor index) */
+	uint32_t reports;          /* all of them, since the kext loaded */
+};
 
 /*
  * Parks the radio on one channel at 20 MHz while it is not associated, so
@@ -86,12 +108,50 @@ typedef void (*rtl_radio_awdl_rx_fn)(void *ctx, const uint8_t *frame, uint32_t l
  * radio sits. Older builds answer kIOReturnUnsupported.
  */
 #define RTL_RADIO_FN_SET_CHANNEL  "rtlRadioSetChannel" /* p1: const uint32_t *channel */
+/*
+ * While associated, moves the radio to another channel for an AWDL slot, or
+ * back to the BSS with channel 0. Leaving sends a null frame with PM set and
+ * holds the data queues; returning sends PM clear. Inside the BSS's 40 or
+ * 80 MHz block only the primary sub-channel moves; elsewhere it goes at
+ * 20 MHz. Synchronous (USB register writes): not from inside a radio hook.
+ * rtl_radio_status keeps reporting the BSS channel. kIOReturnBusy unless
+ * linked with no join running and either no scan or a scan in its back-op
+ * (RTL_RADIO_SCAN_BACKOP), which then waits for channel 0 before going on;
+ * older builds answer kIOReturnUnsupported.
+ */
+#define RTL_RADIO_FN_AWDL_OFFCH   "rtlRadioAwdlOffch"  /* p1: const uint32_t *channel (0 = BSS) */
 
+/*
+ * A-MPDU for AWDL data. While a rate is set, a unicast AWDL frame that is QoS
+ * data (subtype 8) keeps the sequence number its header carries, goes into
+ * the AC queue of its TID at that rate and may be joined with the frames
+ * behind it into an A-MPDU. The caller holds a Block Ack agreement with the
+ * receiver for that TID and numbers the frames in order; other frames go as
+ * before. rate is a TX descriptor index, HT 0x0c..0x1b or VHT one or two
+ * streams 0x2c..0x3f, and 0 turns it off. bw is the widest RTL_RADIO_BW_* to
+ * use: the frame goes no wider than the radio is tuned, which radio_bw
+ * returns. Lasts until changed or the kext unloads. Older builds answer
+ * kIOReturnUnsupported, and with them QoS data must not be sent.
+ */
+#define RTL_RADIO_FN_AWDL_AGG     "rtlRadioAwdlAgg"    /* p1: struct rtl_radio_awdl_agg * (in, out) */
+struct rtl_radio_awdl_agg {
+	uint32_t rate;             /* TX descriptor rate index, 0 = off */
+	uint32_t bw;               /* widest RTL_RADIO_BW_* for these frames */
+	uint32_t sgi;              /* short guard interval */
+	uint32_t max_agg;          /* most MPDUs in an A-MPDU, 1..31; 0 = 31 */
+	uint32_t density;          /* A-MPDU density code 0..7 (the receiver's minimum MPDU start spacing) */
+	uint32_t radio_bw;         /* out: the width the radio is tuned to now */
+};
 /* rtl_radio_status.state */
 #define RTL_RADIO_S_IDLE          0
 #define RTL_RADIO_S_SCAN          1
 #define RTL_RADIO_S_JOINING       2   /* auth/assoc in progress */
 #define RTL_RADIO_S_LINKED        3   /* associated (keys may still be pending, see port_valid) */
+
+/* rtl_radio_status.scanning, non-zero while a scan runs */
+#define RTL_RADIO_SCAN_BACKOP     2   /* back on its home channel between channels: the BSS when
+                                       * linked, else the parked channel (idle_channel), while
+                                       * an AWDL peer is around */
 
 #define RTL_RADIO_BAND_2G         0
 #define RTL_RADIO_BAND_5G         1
@@ -158,9 +218,10 @@ struct rtl_radio_status {
 	uint8_t  scanning;         /* a scan is running (state stays LINKED during a
 	                            * scan while associated); 0 from builds before 4.11 */
 	int8_t   noise_dbm;        /* noise floor estimate, 0 = unknown (and before 4.16) */
-	uint8_t  idle_channel;     /* channel the radio sits on while IDLE, 0 in the
-	                            * other states and from builds without
-	                            * rtlRadioSetChannel */
+	uint8_t  idle_channel;     /* channel the radio sits on while IDLE, and in a
+	                            * scan's return to it (RTL_RADIO_S_SCAN with
+	                            * RTL_RADIO_SCAN_BACKOP); 0 in the other states
+	                            * and from builds without rtlRadioSetChannel */
 };
 
 #endif /* _RTL8814_RADIO_ABI_H */

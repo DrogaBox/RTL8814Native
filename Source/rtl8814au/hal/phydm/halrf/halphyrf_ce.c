@@ -26,6 +26,9 @@
 #include "mp_precomp.h"
 #include "phydm_precomp.h"
 
+extern int rtl8814native_awdl_cal_enter(void *adapter);
+extern void rtl8814native_awdl_cal_exit(void *adapter);
+
 #define CALCULATE_SWINGTALBE_OFFSET(_offset, _direction, _size, _delta_thermal)\
 	do {                                                                   \
 		u32 __offset = (u32)_offset;                                   \
@@ -784,12 +787,16 @@ void odm_txpowertracking_callback_thermal_meter(void *adapter)
 		if (!(dm->support_ic_type & ODM_RTL8723B)) {
 			/*Delta temperature is equal or larger than 20 Celsius*/
 			/*When threshold is 8*/
-			if (delta_iqk >= c.threshold_iqk) {
+			/* RTL8814Native: not across an AWDL slot off the BSS channel
+			 * (AWDLTx.c, rtl8814native_awdl_cal_enter) */
+			if (delta_iqk >= c.threshold_iqk &&
+			    rtl8814native_awdl_cal_enter(dm->adapter)) {
 				cali_info->thermal_value_iqk = thermal_value;
 				RF_DBG(dm, DBG_RF_TX_PWR_TRACK,
 				       "delta_iqk(%d) >= threshold_iqk(%d)\n",
 				       delta_iqk, c.threshold_iqk);
 				(*c.do_iqk)(dm, delta_iqk, thermal_value, 8);
+				rtl8814native_awdl_cal_exit(dm->adapter);
 				RF_DBG(dm, DBG_RF_TX_PWR_TRACK,
 				       "do pwrtrk iqk\n");
 			}

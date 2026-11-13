@@ -12,6 +12,7 @@
 #include "VendorGlue.hpp"
 #include "RTLUsbDevice.hpp"
 #include "RTLEthernetAdapter.hpp"
+#include "RTLAwdlSim.h"
 
 #include <linux/usb.h>
 #include <linux/netdevice.h>
@@ -237,8 +238,12 @@ extern "C" int rtl8814native_awdl_rx(struct net_device *dev, const uint8_t *fram
 {
         if (!dev || !dev->mac_adapter || !frame)
                 return 0;
+        rtl_awdl_sim_tap_rx(frame, len, rssi, channel);
         RTLEthernetAdapter *a = (RTLEthernetAdapter *)dev->mac_adapter;
-        return a->awdlInput(frame, len, rssi, channel) ? 1 : 0;
+        if (!a->awdlInput(frame, len, rssi, channel))
+                return 0;
+        rtl8814native_awdl_note_peer(len >= 2 && (frame[0] & 0x0C) == 0x08);
+        return 1;
 }
 
 void rtl_netif_carrier(struct net_device *dev, int on)

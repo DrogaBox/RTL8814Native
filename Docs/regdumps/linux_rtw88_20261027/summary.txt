@@ -1,5 +1,5 @@
 IF=wlan0 DRV=rtw88_8814au usb_speed=5000
-	SSID: QueMirasBobo
+	SSID: home-ap
 	freq: 5785.0
 	signal: -46 dBm
 	rx bitrate: 6.0 MBit/s

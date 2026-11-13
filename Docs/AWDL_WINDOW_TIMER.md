@@ -113,9 +113,9 @@ Payload de 36 B ([AWDL_PEERMANAGER_DRIVER_ABI.md](AWDL_PEERMANAGER_DRIVER_ABI.md
 | `+0x08` | MAC del maestro (la del 134, o la de `awdl0` si es maestra) |
 | `+0x0e` | MAC del maestro raíz (`root` del 229, o la de `awdl0`) |
 | `+0x14` | `FwAwStartTime` = inicio de la franja en µs, **big-endian** |
-| `+0x18` | flags del canal (los de la entrada del 129) |
+| `+0x18` | versión de `apple80211_channel` (la de la entrada de la secuencia) |
 | `+0x1c` | número de canal |
-| `+0x20` | flags de ventana (0) |
+| `+0x20` | flags del canal (los de la entrada de la secuencia) |
 
 Efectos en el manager: `inAvailabilityWindow()` pasa a cierto y empieza a pedir paquetes
 (`dequeueTxPacket`). Si la franja 0 empieza menos de 64 ms después de la anterior, el manager ignora
@@ -159,7 +159,7 @@ las conoce: entrega los paquetes en cuanto `inAvailabilityWindow()` es cierto.
 ## 8. Canal de la infraestructura en el equipo de pruebas
 
 Leído con `system_profiler SPAirPortDataType` el 2026-10-30: `en2` asociado en el canal 153, 80 MHz,
-802.11ac. `awdl0` existe y está `UP` (MAC `56:0d:25:02:1f:ce`).
+802.11ac. `awdl0` existe y está `UP` (MAC `56:0d:25:xx:xx:xx`).
 
 El bloque de 80 MHz 149–161 contiene el canal social 149, pero el primario del enlace es el 153. Las
 tramas AWDL van a 20 MHz por el primario 149, y una radio sintonizada con primario 153 no las

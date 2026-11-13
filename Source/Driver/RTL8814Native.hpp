@@ -60,6 +60,12 @@ public:
          * USB interface (didTerminate and its deferred helper) */
         void releaseAndCloseLocked();
 
+        /* Virtual AWDL peer (RTLAwdlSim.h): one frame into the AWDL RX hook,
+         * only from the client that owns the sim and only on the instance
+         * that owns the radio. */
+        IOReturn awdlSimInject(const void *client, const uint8_t *frame, uint32_t len,
+                               int8_t rssi);
+
 private:
         bool startLocked(IOService *provider);
         void stopLocked(IOService *provider);

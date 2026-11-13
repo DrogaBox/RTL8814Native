@@ -38,7 +38,7 @@ todas vistas en el desensamblado/decompilado. Lo no observado va con `?`.
    A-MPDU; la decisión es del driver/firmware.
 6. **Para la capa RTL8814**: responder la ADDBA por sí misma (la familia no lo hará nunca),
    procesar DELBA y BAR, llevar un buffer de reordenado por (par, TID) y entregar en orden a la
-   `RxCompletionQueue`. La petición `setPEER_CACHE_CONTROL` (hoy stub en la capa,
+   `RxCompletionQueue`. La petición `setPEER_CACHE_CONTROL` (en la capa, hoy solo confirma con el evento 51,
    `AWDLInterface.h`) es el interruptor por par exactamente equivalente al que Broadcom le da al
    firmware.
 
@@ -253,7 +253,7 @@ Mientras no haya acuerdo BA con el par, la capa RTL no debe enviar A-MPDU.
 | ADDBA response entrante y DELBA (acciones 1 y 2) | Procesar en la capa: confirmar/cerrar la sesión por (par, TID) | Mismo contrato de sesión que la firmware sostiene hoy (§4) |
 | BAR | Procesar: avance de ventana y emisión del Block Ack (control 0x94); si el MAC del 8814AU puede hacer el BA por hardware, dejarlo al hardware `?` (RX_ACK §5 ya apunta la `?` equivalente del CAM) | Receptor del acuerdo: la firmware Broadcom es quien procesa `rxbar`/`txback` (§4) |
 | Reordenado | Buffer por (par, TID), ventana 64, expiración, entrega en orden a `enqueuePackets` de la `RxCompletionQueue` | La familia no reordena (§5); sin orden, TCP sufre y el par rebasa la ventana |
-| `setPEER_CACHE_CONTROL` | Hoy stub (`Source/AirLayer/AWDLInterface.h:376`, slot +0x1108): seguir respondiendo 0 y usar opcionalmente opcode ADD/DELETE/UPDATE + flag ampdu (+44) como interruptor de sesión BA por par, emulado desde la señal de userspace | Es exactamente el semántico Broadcom: registrar el par como A-MPDU-capable ante «la firmware» (aquí, la propia capa) |
+| `setPEER_CACHE_CONTROL` | Hoy responde 0 y confirma con el evento 51 (`AWDL_PEERMANAGER_DRIVER_ABI.md` §2.6; slot +0x1108): mantenerlo y usar opcionalmente opcode ADD/DELETE/UPDATE + flag ampdu (+44) como interruptor de sesión BA por par, emulado desde la señal de userspace | Es exactamente el semántico Broadcom: registrar el par como A-MPDU-capable ante «la firmware» (aquí, la propia capa) |
 | `AWDL_PEER_TRAFFIC_REGISTRATION` | Sin cambios funcionales: no toca BA (§3) | Su efecto High Thruput converge en el peer cache, no en sesiones BA |
 | TX | Sin A-MPDU hasta tener acuerdo; si se agrega, respetar las capacidades HT que la capa anuncia (20 MHz: los límites de [AWDL_CAPS_ADVERTISED.md](AWDL_CAPS_ADVERTISED.md) siguen aplicando) | Ningún límite viene del manager (§6); anunciar A-MPDU sin soportarlo degrada igual que en winawdl con 40 MHz |
 

@@ -1,9 +1,11 @@
 # Índice de los documentos AWDL
 
-Inventario de los 63 documentos `Docs/AWDL_*.md` a fecha de 2026-10-29, agrupados por tema, con el
-resumen en una línea y el estado de cada uno. Base del estado: el título, el primer párrafo y las
-secciones de cierre o de puntos abiertos de cada documento, más `HANDOFF_AWDL.md` (raíz del repo,
-sección 4, que recoge los `?` deduplicados).
+Inventario de los 128 documentos `Docs/AWDL_*.md` (127 más este índice) a fecha de 2026-11-06,
+agrupados por tema, con el resumen en una línea y el estado de cada uno; `AIRLAYER_PORT_14_15.md`
+no lleva el prefijo `AWDL_` y se lista igualmente. Base del estado: el título, el primer párrafo y
+las secciones de cierre o de puntos abiertos de cada documento, más `HANDOFF_AWDL.md` (raíz del
+repo, sección 4, que recoge los `?` deduplicados). Los grupos 3, 4 y 5 se dividen en
+subgrupos. La copia inglesa es [en/AWDL_INDICE.md](en/AWDL_INDICE.md).
 
 Convención de estado:
 
@@ -27,6 +29,7 @@ Convención de estado:
 | [AWDL_WIFIP2PD_INTERFACE_LIFECYCLE.md](AWDL_WIFIP2PD_INTERFACE_LIFECYCLE.md) | Ciclo de vida del objeto `AWDLInterface`: descubrimiento, creación, configuración y ausencia de destrucción | Cerrado y verificado; los tramos que dejaba `?` los cierran [AWDL_WIFIP2PD_POST_CREATE.md](AWDL_WIFIP2PD_POST_CREATE.md) y [AWDL_LLW_COMPANION.md](AWDL_LLW_COMPANION.md) |
 | [AWDL_WIFIP2PD_P2P_EVENTS.md](AWDL_WIFIP2PD_P2P_EVENTS.md) | Registro del monitoreo de eventos P2P y las 16 ids de infraestructura | Cerrado y verificado; su punto abierto (dónde está el switch de ids) lo cierra [AWDL_EVENTS.md](AWDL_EVENTS.md) |
 | [AWDL_WIFIP2PD_LOGSTRINGS.md](AWDL_WIFIP2PD_LOGSTRINGS.md) | Inventario de cadenas de log AWDL del daemon, agrupadas por tema | Cerrado como inventario; funciones consumidoras con `?` |
+| [AWDL_WIFIP2PD_PRESENCE_ONCE.md](AWDL_WIFIP2PD_PRESENCE_ONCE.md) | El Bool «presencia publicada» de `AWDLPeer` (una publicación por par) y el byte `DataPathState+64` (`unicastOptions: UMIOptions?`), con los nombres tomados de los field descriptors de reflection Swift; implicaciones para el driver | Verificado en IDA sobre `wifip2pd` de 25G241; correspondencia rawValue↔caso de `UMIOptions`, limpiezas de la recuperación de la interfaz y origen del evento de aged-out `?`; cierra los dos puntos de [AWDL_WIFIP2PD_PRESENCE_TRIGGER.md](AWDL_WIFIP2PD_PRESENCE_TRIGGER.md) §7 |
 
 ## 2. Superficie del kernel: despacho, vtables, structs y ciclo de vida
 
@@ -50,42 +53,75 @@ Convención de estado:
 | [AWDL_STAGE4_LLW_CLOSURE.md](AWDL_STAGE4_LLW_CLOSURE.md) | Cierre de los puntos abiertos de la etapa 4: ioctls 130/131 (socket IPv6, no apple80211), ausencia de `op = 0` en `wifip2pd`, ruta de destrucción en el kernel y clase `RTLLlwInterface` mínima | Cabezas de función, rutas del 293 y de destrucción, constantes del `processBSDCommand` LL y sitios de `ioctl` del daemon verificados en IDA; puente del 131 hasta `processBSDCommand` y captura del error por el daemon `?` |
 | [AWDL_STAGE2B_MBUF_TO_PACKET.md](AWDL_STAGE2B_MBUF_TO_PACKET.md) | Etapa 2b: del mbuf del `if_output` propio al paquete de `awdl0`; la cola de envío no admite paquetes del driver y el patrón con soporte es la llamada directa a la acción (como el multicast de Broadcom) | Cabezas de función, `p2pMulticastTx`, `if_output` de la familia, `legacyDequeue`, vtable de la cola y códigos `0xE00002DB`/`cmp [r9+3Ch],2` verificados en IDA; copia mbuf→paquete del kernel, escritor del bit `+0xCC` y errno en `dlil_output` `?` |
 | [AWDL_STAGE3_CONFIGURE_RESULTS.md](AWDL_STAGE3_CONFIGURE_RESULTS.md) | Resultado en hardware de la etapa 3: cadena de ioctls internos de `configure`, `interfaceStateChange` y `enableAWDL`, cuáles son fatales (116 corregido), qué queda sin implementar y por qué faltan los eventos 41/42/43 | Observado en el equipo (log del kernel y de `wifip2pd`) y código leído en IDA; ventanas, pares y TX/RX reales sin probar `?` |
-| [AWDL_ESTADO_Y_BLOQUEO.md](AWDL_ESTADO_Y_BLOQUEO.md) | Punto de situación a 2026-10-30: hitos validados en hardware, trabajo detenido por falta de un par Apple, por qué no hay sustituto y orden de pruebas cuando haya un dispositivo | Resumen de resultados ya documentados; pruebas con par sin ejecutar `?` |
-| [AWDL_REFERENCIAS_EXTERNAS.md](AWDL_REFERENCIAS_EXTERNAS.md) | Proyectos AWDL externos (owly, ESP32Drop, winawdl, omdrop-awdl, OWL, opendrop): par AWDL sin Apple con un ESP32-S3, contraste con capturas de iOS 26 (nombres de campos del TLV 4, cabecera de datos en el aire), radio fija y lecciones de hardware Realtek | Medido sobre las capturas de owly; lo no probado en hardware con `?` |
+| [AWDL_ESTADO_Y_BLOQUEO.md](AWDL_ESTADO_Y_BLOQUEO.md) | Punto de situación a 2026-10-30: hitos validados en hardware, trabajo detenido por falta de un par Apple, por qué no hay sustituto y orden de pruebas cuando haya un dispositivo | Superado por [AWDL_PAR_VIRTUAL.md](AWDL_PAR_VIRTUAL.md): el bloqueo por falta de par se resolvió con el par virtual (2026-11-03); el documento conserva el punto de situación de 2026-10-30 y la lista de hitos validados |
+| [AWDL_REFERENCIAS_EXTERNAS.md](AWDL_REFERENCIAS_EXTERNAS.md) | Proyectos AWDL externos (owly, ESP32Drop, winawdl, omdrop-awdl, OWL, opendrop): par AWDL sin Apple con un ESP32-S3, contraste con capturas de iOS 26 (nombres de campos del TLV 4, cabecera de datos en el aire), radio fija y lecciones de hardware Realtek; revisión de 2026-11-08 (reglas de owly, AWDL en `brcmfmac`, artefacto Airfuzz de CISPA, fork de OCLP) | Medido sobre las capturas de owly; lo no probado en hardware con `?` |
 | [AWDL_REQUEST_ISSUERS.md](AWDL_REQUEST_ISSUERS.md) | Quién emite cada request AWDL: el `IO80211AWDLPeerManager` del kernel y `IO80211.framework`; airportd el resto | Cerrado y verificado |
+| [AWDL_AF_TO_DAEMON.md](AWDL_AF_TO_DAEMON.md) | Qué action frames llegan al daemon como evento 48: la puerta es `ctx+0x2C == 0` y `peerReachability == 1` al final de `actionFrameProcessInput`, no el subtipo ni el canal; qué se consume en silencio, dedup y límite de tasa, implicaciones para el driver | Verificado en IDA (25G241); cierra el interrogante E3 de [AWDL_ETAPAS_2_A_4.md](AWDL_ETAPAS_2_A_4.md) §5; bloque de contadores de `actionFrameReport`, bit 0 de `priv+88` y segundo `ud1` del hilo `?` |
+| [AWDL_REF_SIMPLEBCM.md](AWDL_REF_SIMPLEBCM.md) | SimpleBCM (AirPortBrcmNIC sobre Sequoia/Tahoe sin el IOSkywalkFamily del sistema, commit `624fca1`): user client propio, traducción de structs, cómo sube `awdl0` y respuestas para este proyecto | Lectura de código únicamente (nada compilado ni ejecutado); lo que depende de binarios de Apple ausentes del repositorio `?` |
 
 ## 3. Protocolo en el aire, PeerManager, firmware y hardware RTL8814
+
+### 3.1 Protocolo, PeerManager, presencia y hardware
 
 | Documento | Contenido | Estado |
 |---|---|---|
 | [AWDL_FRAME_WIRE_FORMAT.md](AWDL_FRAME_WIRE_FORMAT.md) | Trama AWDL en el aire tal como la parsea el kernel: cabeceras, validaciones y TLVs | Cerrado y verificado; `?` sobre quién retira la cabecera 802.11 y el FCS |
-| [AWDL_TLV_BODIES.md](AWDL_TLV_BODIES.md) | Cuerpos de los TLV sync params (tipo 4) y secuencia de canales (tipo 18) | Cerrado y verificado; ampliado por [AWDL_OPEN_QUESTIONS_1.md](AWDL_OPEN_QUESTIONS_1.md) |
-| [AWDL_CHANNEL_SEQUENCE_CONTROL.md](AWDL_CHANNEL_SEQUENCE_CONTROL.md) | Quién decide la secuencia de canales (estrategia, estado, tabla de 56×16 tipos de ranura), cómo baja al driver (129, 132/205, 136, 118) y por qué el driver compone los TLV 4 y 18: una radio fija puede anunciar canal 0 en las ranuras que no atiende | Verificado; semántica de varias fuentes de canal con `?` |
-| [AWDL_WINDOW_TIMER.md](AWDL_WINDOW_TIMER.md) | Reloj de franjas en el host para una radio sin firmware AWDL: unidades (AW 16 TU, franja 64 TU, µs), reloj libre como maestro, alineación al maestro con el ioctl 229 y los TLV 4 recibidos, eventos 41/43 solo en franjas servidas, guardas de TX | Especificación sobre hechos ya verificados; precisión del temporizador sin medir `?` |
-| [AWDL_PSF_MIF_EMISSION.md](AWDL_PSF_MIF_EMISSION.md) | Contrato de emisión de PSF y MIF sin firmware: plantillas 151 (PSF), 149 (MIF/UMI ahora), 225 (MIF permanente por AW) y 342, orden en el aire con los TLV 4, 5 y 18 del driver delante, periodo 110 por 116/418, cabecera 802.11 y lista de lo que construye la capa por trama | Verificado; unidad del periodo y tasa con `?` |
+| [AWDL_TLV_BODIES.md](AWDL_TLV_BODIES.md) | Cuerpos de los TLV sync params (tipo 4) y secuencia de canales (tipo 18) | Cerrado y verificado; ampliado por [AWDL_OPEN_QUESTIONS_1.md](AWDL_OPEN_QUESTIONS_1.md); el TLV 18 lo corrige en dos puntos [AWDL_TLV18_OPCLASS_PARSER.md](AWDL_TLV18_OPCLASS_PARSER.md) |
+| [AWDL_CHANNEL_SEQUENCE_CONTROL.md](AWDL_CHANNEL_SEQUENCE_CONTROL.md) | Quién decide la secuencia de canales (estrategia, estado, tabla de 56×16 tipos de ranura), cómo baja al driver (129, 132/205, 136, 118) y por qué el driver compone los TLV 4 y 18: una radio fija puede anunciar canal 0 en las ranuras que no atiende | Verificado; semántica de varias fuentes de canal con `?`; dos puntos los corrige [AWDL_SECUENCIA_CON_INFRA.md](AWDL_SECUENCIA_CON_INFRA.md) §11 |
+| [AWDL_WINDOW_TIMER.md](AWDL_WINDOW_TIMER.md) | Reloj de franjas en el host para una radio sin firmware AWDL: unidades (AW 16 TU, franja 64 TU, µs), reloj libre como maestro, alineación al maestro con el ioctl 229 y los TLV 4 recibidos, eventos 41/43 solo en franjas servidas, guardas de TX | Especificación sobre hechos ya verificados; la sincronía con un maestro se midió después con el par virtual (desfase máximo 1 TU durante minutos, [AWDL_PAR_VIRTUAL.md](AWDL_PAR_VIRTUAL.md) §9.2); la precisión sin par real `?` |
+| [AWDL_PSF_MIF_EMISSION.md](AWDL_PSF_MIF_EMISSION.md) | Contrato de emisión de PSF y MIF sin firmware: plantillas 151 (PSF), 149 (MIF/UMI ahora), 225 (MIF permanente por AW) y 342, orden en el aire con los TLV 4, 5 y 18 del driver delante, periodo 110 por 116/418, cabecera 802.11 y lista de lo que construye la capa por trama | Verificado; unidad del periodo y tasa con `?`; el TLV 5 de elección lo cierra [AWDL_TLV5_ELECTION.md](AWDL_TLV5_ELECTION.md) |
 | [AWDL_CAPS_ADVERTISED.md](AWDL_CAPS_ADVERTISED.md) | Fuente de cada campo de los TLV 7 (HT), 17 (VHT), 21 (versión `0xA0`, clase 1) y 12 que emite el peer manager, qué responde hoy la capa (los TLV 7 y 17 no salen) y qué bits mantener a 20 MHz si se implementan los GET 154/214 | Verificado; escritores de algunos campos del TLV 12 con `?` |
 | [AWDL_OPEN_QUESTIONS_1.md](AWDL_OPEN_QUESTIONS_1.md) | TLV de elección v2 (tipo 24), `monitorPeersTimeline` y los bytes aún sin nombre | Cerrado y verificado; los nombres canónicos del protocolo no son verificables desde el binario |
 | [AWDL_PEERMANAGER_SOFTWARE.md](AWDL_PEERMANAGER_SOFTWARE.md) | Qué calcula `IO80211AWDLPeerManager` en software y qué exige al driver que tiene debajo | Cerrado y verificado |
 | [AWDL_PEERMANAGER_DRIVER_ABI.md](AWDL_PEERMANAGER_DRIVER_ABI.md) | Contrato binario driver↔PeerManager: inyección de AF, eventos 41/42/43, ioctls internos y tirón de TX | Cerrado con `?` en su núcleo; constructores de TLV 6/8/10/11 y contenido exacto del tirón TX sin nombrar (etapa 2, tabla §3) |
 | [AWDL_FIRMWARE_DUTIES.md](AWDL_FIRMWARE_DUTIES.md) | Qué delega Broadcom en el firmware para el rol 6: iovars, comandos y suscripción de eventos | Cerrado y verificado como inventario; unidad del guard time y mapas finos de payload en `?` |
-| [AWDL_RTL8814_HW_SUPPORT.md](AWDL_RTL8814_HW_SUPPORT.md) | Qué ofrece el RTL8814AU para cada obligación del firmware: feasible / parcial / missing | Cerrado como inventario estático; ninguna conclusión está probada en hardware |
+| [AWDL_RTL8814_HW_SUPPORT.md](AWDL_RTL8814_HW_SUPPORT.md) | Qué ofrece el RTL8814AU para cada obligación del firmware: feasible / parcial / missing | Cerrado como inventario estático; TX y RX de action frames, puerto 1 y reloj se midieron después con el par virtual ([AWDL_PAR_VIRTUAL.md](AWDL_PAR_VIRTUAL.md) §9); el resto de la clasificación sin probar `?` |
 | [AWDL_RTL8814_RX_ACK.md](AWDL_RTL8814_RX_ACK.md) | Recepción y ACK para `awdl0`: direcciones reales de las tramas AWDL (A1 broadcast, A3 `00:25:00:FF:94:73`), dónde las descarta hoy el software, puerto 1 ad-hoc con la MAC de `awdl0`, `RCR_CBSSID_DATA` y punto de desvío en `validate_recv_frame` | Medido en código, volcado y capturas; comportamiento del MAC por puerto con `?` |
 | [AWDL_RTL8814_TX_RECIPE.md](AWDL_RTL8814_TX_RECIPE.md) | Cómo emitir PSF/MIF y datos de `awdl0` con el driver: patrón de inyección del vendor, direcciones intactas, tasa (VHT MCS9 a 20 MHz del helper no es válida), límite de reintentos 6/12 y ACK con el puerto 1 | Leído del código; tasas y latencia sin probar `?` |
 | [AWDL_DATA_ENCAP.md](AWDL_DATA_ENCAP.md) | Formato de los paquetes de `awdl0`: Ethernet II en la cola TX y en la RxCompletionQueue; Broadcom inserta y quita el SNAP AWDL en el host; stash de multicast en el manager; qué construye y quita el driver | Verificado; semántica del nibble AC de la secuencia con `?` |
 | [AWDL_BLOCK_ACK.md](AWDL_BLOCK_ACK.md) | Block Ack en `awdl0`: la familia no lo hace (handlers de `BLOCK_ACK` son stubs), Broadcom lo deja al firmware vía `PEER_CACHE_CONTROL` → `awdl_peer_op`; la capa debe responder ADDBA, procesar DELBA/BAR y reordenar | Verificado; selectores exactos con `?` |
-| [AWDL_PEER_PRESENCE_PPP.md](AWDL_PEER_PRESENCE_PPP.md) | Evento 47 solo de ausencia (`u32@8 = 1`), ioctl 415 que libera la cola PPP del par, ruta RX `inputPacket` → `IO80211AWDLPeer::skywalkInputPacket`, slots +0xF30/+0xF38 que el driver debe implementar y condiciones de `setPeerRoutable` | Emisores, payload, colas y slots verificados en IDA (25G241); umbrales de RSSI (−45/−58 para pares solo en 2,4 GHz) e ioctl 135 al driver; emisores del 415 en `wifip2pd` localizados; disparador en el daemon y cerrojo de los slots `?` |
-| [AWDL_WIFIP2PD_PRESENCE_TRIGGER.md](AWDL_WIFIP2PD_PRESENCE_TRIGGER.md) | Qué dispara el ioctl 415 en `wifip2pd`: el primer action frame de cada par (evento 48), más el datapath establecido, la respuesta de datapath y el registro de tráfico; la ausencia por cierre de datapath, borrado de registro o vencimiento | Llamadas, condiciones (`0x100305aa7`, Bool del par en `sub_10041C470`), cadenas y llamadores de presencia y ausencia verificados en IDA; nombres de los Bools y byte `DataPathState+64` `?` |
-| [AWDL_PEERMANAGER_CREATION.md](AWDL_PEERMANAGER_CREATION.md) | Creación y publicación del `IO80211AWDLPeerManager` para una `awdl0` de driver externo: factoría heredada de `0xB08` llamada desde `IO80211SkywalkInterface::start`, puntero en `*(ivars+0x120)+0x28`, lectura con `getPeerManager`, `getP2PSkywalkPeerMgr` siempre 0, `createVirtualInterface` base solo para el rol 7 | Sitios de llamada, stores, getters y puentes (45/19) verificados en IDA; liberación del manager y offsets de ivars en 14/15 `?` |
+| [AWDL_PEER_PRESENCE_PPP.md](AWDL_PEER_PRESENCE_PPP.md) | Evento 47 solo de ausencia (`u32@8 = 1`), ioctl 415 que libera la cola PPP del par, ruta RX `inputPacket` → `IO80211AWDLPeer::skywalkInputPacket`, slots +0xF30/+0xF38 que el driver debe implementar y condiciones de `setPeerRoutable` | Emisores, payload, colas y slots verificados en IDA (25G241); umbrales de RSSI (−45/−58 para pares solo en 2,4 GHz) e ioctl 135 al driver; emisores del 415 en `wifip2pd` localizados; el disparador en el daemon lo cierra [AWDL_WIFIP2PD_PRESENCE_TRIGGER.md](AWDL_WIFIP2PD_PRESENCE_TRIGGER.md) y los prerrequisitos y el hilo de los slots, [AWDL_PRESENCE_PREREQS.md](AWDL_PRESENCE_PREREQS.md) |
+| [AWDL_WIFIP2PD_PRESENCE_TRIGGER.md](AWDL_WIFIP2PD_PRESENCE_TRIGGER.md) | Qué dispara el ioctl 415 en `wifip2pd`: el primer action frame de cada par (evento 48), más el datapath establecido, la respuesta de datapath y el registro de tráfico; la ausencia por cierre de datapath, borrado de registro o vencimiento | Llamadas, condiciones (`0x100305aa7`, Bool del par en `sub_10041C470`), cadenas y llamadores de presencia y ausencia verificados en IDA; los nombres de los Bools y el byte `DataPathState+64`, que dejó en `?`, los cierra [AWDL_WIFIP2PD_PRESENCE_ONCE.md](AWDL_WIFIP2PD_PRESENCE_ONCE.md) |
+| [AWDL_PEERMANAGER_CREATION.md](AWDL_PEERMANAGER_CREATION.md) | Creación y publicación del `IO80211AWDLPeerManager` para una `awdl0` de driver externo: factoría heredada de `0xB08` llamada desde `IO80211SkywalkInterface::start`, puntero en `*(ivars+0x120)+0x28`, lectura con `getPeerManager`, `getP2PSkywalkPeerMgr` siempre 0, `createVirtualInterface` base solo para el rol 7 | Sitios de llamada, stores, getters y puentes (45/19) verificados en IDA; la liberación del manager la cierra [AWDL_PEERMANAGER_TEARDOWN.md](AWDL_PEERMANAGER_TEARDOWN.md) y los offsets de ivars en 14/15 los porta [AWDL_PRESENCE_OFFSETS_14_15.md](AWDL_PRESENCE_OFFSETS_14_15.md) |
 | [AWDL_IMPLEMENTATION_PLAN.md](AWDL_IMPLEMENTATION_PLAN.md) | Plan de implementación en 9 pasos con boot-arg propio cada uno: puerto 1, desvío RX, inyección de AF, almacén de plantillas, reloj y eventos 41/43, PSF/MIF, datos (con `inputPacket` y la cola PPP), multicast y Block Ack; grafo de dependencias y orden de pruebas sin par Apple | Citas de código y de documentos verificadas sobre el árbol de trabajo; 4893 AF y 56 ADDBA de las capturas recontados; firmas de las funciones de plataforma nuevas `?` |
 | [AIRLAYER_PORT_14_15.md](AIRLAYER_PORT_14_15.md) | Porte de la capa a 14.8.9 (23J631) y 15.8.2 (24H232): mismos tamaños de instancia entre 14 y 15 (+0x10 en Tahoe desde `IOSkywalkNetworkInterface`), pero vtables distintas en 6 de las 9 clases, así que hace falta un header y un binario por build; slots de cada método que la capa declara, cambios de firma y volcados en `Docs/re/io80211_23J631/` y `Docs/re/io80211_24H232/` | Recuentos de celdas de las 9 clases reproducidos con un volcado independiente; slots de `start`/`stop`/`inputPacket`/`sendPendingPacketsToStack`/`freePendingPackets`/`init` y escrituras de `init` comprobados en IDA; comportamiento en ejecución `?` |
 | [AWDL_VERSION_SENSITIVE_OFFSETS_14_15.md](AWDL_VERSION_SENSITIVE_OFFSETS_14_15.md) | Tabla de offsets sensibles a la versión portada a 23J631 y 24H232 (`Tools/awdl_offsets_23J631.tsv`, `Tools/awdl_offsets_24H232.tsv`): `RegistrationInfo` y `ifnet_init_eparams` intactos; bloque de salida e hilo de arranque del `ifnet` reasentado en cada versión; ranuras `0x8E0`/`0x8E8` a `0x8D0`/`0x8D8` solo en 14 | Comprobador mecánico 58/61 y 60/61 OK con las ausencias explicadas; `assert_wait(ifp+0x2A0)` y ranura `0x9A8` de `getTxDataOffset` en 23J631 comprobados en IDA; sucesor de la cola netem `+0x900` `?` |
+| [AWDL_PRESENCE_PREREQS.md](AWDL_PRESENCE_PREREQS.md) | Qué activa `LLAValid` (`PM+65308`), quién escribe `AWDLOn` (`PM+16096`) y en qué hilo, workloop y cerrojos corren `monitorPeer` y el ioctl 415 cuando llaman a los slots PPP; resumen para la interfaz AWDL del RTL8814 | Verificado en IDA (25G241); cierra los tres pendientes de [AWDL_PEER_PRESENCE_PPP.md](AWDL_PEER_PRESENCE_PPP.md) §6 y los nombres de los ivars de §1.5 los cierra [AWDL_CHANNEL_STRATEGY.md](AWDL_CHANNEL_STRATEGY.md); emisores de las fuentes 0, 1, 8 y 12 de `StateChangedSource`, cerrojo de cada llamador de `removeAllPeers` y bit 5 de `PM+16096` `?` |
+| [AWDL_PEERMANAGER_TEARDOWN.md](AWDL_PEERMANAGER_TEARDOWN.md) | Desmontaje del `IO80211AWDLPeerManager` de una `awdl0` de driver externo (rol 6): qué libera o cancela el manager, orden respecto al `stop` de la interfaz y al desregistro BSD, caminos que llaman al driver y cerrojos; receta de teardown para el RTL8814 y compatibilidad entre builds | Verificado en IDA (25G241); cierra el `?` de [AWDL_PEERMANAGER_CREATION.md](AWDL_PEERMANAGER_CREATION.md) §8 (quién libera `ivars+0x28`); barrido de retenedores, barrera de `removeEventSource`, asiento `+0x190`, singleton `P2PSupervisor`, serialización ageout↔`removeFlushedPeers` y destino de los paquetes de `flushQueues` `?` |
+| [AWDL_TLV5_ELECTION.md](AWDL_TLV5_ELECTION.md) | TLV 5 (elección v1): cuerpo en el aire, parser `parseAwdlElectionParamsV1` del kernel, correspondencia campo a campo con el payload del ioctl 155 (36 B) y matriz de las capturas | Verificado en IDA y contra capturas; cierra el `?` de [AWDL_PSF_MIF_EMISSION.md](AWDL_PSF_MIF_EMISSION.md) §5.2; regla de owly «ignorar el 5 si llega el 24» y origen de las métricas 525 y 65 de los maestros capturados `?` |
+| [AWDL_TLV18_OPCLASS_PARSER.md](AWDL_TLV18_OPCLASS_PARSER.md) | Cierre de H8: `convertOpClassToChannel` del kernel, cadena de llamadas desde el parser del TLV 18, efecto de un fallo de conversión, codificaciones 0/1/3 y aceptación de un par que anuncia solo algunos slots servidos; consecuencias para la TX de la capa | Verificado en IDA (25G241); corrige [AWDL_TLV_BODIES.md](AWDL_TLV_BODIES.md) en dos puntos y cierra H8 de [AWDL_TX_FRAME_REVIEW.md](AWDL_TX_FRAME_REVIEW.md); pendientes propios en su §7 `?` |
+| [AWDL_AF_VS_IPHONE.md](AWDL_AF_VS_IPHONE.md) | Tramas propias de `RTLAwdInterface` (`buildAf`, `putChanSeq`, `queueData`) contra las capturas de iOS 26 de owly (4893 action frames, 4424 tramas de datos): TLV 4 (longitud 73), TLV 5 y 18, tramas de datos | Comparación campo a campo sobre capturas; la plantilla real del gestor y la plantilla MI quedan volcadas en `RTLAwdlLog` y falta verlas en hardware `?` |
 
-## 4. Etapa 1: especificación, implementación y revisiones
+### 3.2 Secuencia de canales, capacidades de tarjeta y escaneo
+
+| Documento | Contenido | Estado |
+|---|---|---|
+| [AWDL_CHANNEL_STRATEGY.md](AWDL_CHANNEL_STRATEGY.md) | Los cuatro campos que gobiernan `ivars+4` (estrategia de secuencia de canales del peer manager), condiciones de `monitorAWDLState` antes de volver a `AwdlFollowsInfra`, rama «Transitioning to Solo mode» de `interfaceStateChange`, peticiones de userland que tocan los campos y tablas auxiliares | Verificado en IDA (25G241); gate `ivars+0x4008 == 8` de `setChannelSequenceStrategy`, máscaras MI, emisión de `AWDL_CTL` (162) y `AWDL_SOCIAL_TIME_SLOTS` (163) en hardware Apple y `setAwdlAutoMode` sin xrefs `?` |
+| [AWDL_SECUENCIA_129_EMISOR.md](AWDL_SECUENCIA_129_EMISOR.md) | Quién emite el 129 en `awdl0`, cómo se construyen las 16 ranuras y qué método hay en la ranura `+0xB88` del objeto `+0x560` que consulta `interfaceStateChange` | Verificado en IDA (25G241); correspondencia entre el comando interno `0x81802869C8` y el 129, cliente de userspace que haga `RawSet` 129, secuencia con un par y flags 8 y `0xA` `?` |
+| [AWDL_SIN_ASOCIACION_INFRA.md](AWDL_SIN_ASOCIACION_INFRA.md) | Qué hace el peer manager con la interfaz primaria sin asociar: caminos que apagan AWDL, secuencia de canales sin canal de infraestructura, consultas sobre la primaria y qué hace `wifip2pd` en ese estado; consecuencias para el prototipo | Verificado en IDA (25G241); el método de `+0xB88` y el emisor del 129 sin infraestructura los responde [AWDL_SECUENCIA_129_EMISOR.md](AWDL_SECUENCIA_129_EMISOR.md); predicado auxiliar de `monitorAWDLState` y peticiones de `wifip2pd` sobre la primaria `?` |
+| [AWDL_SECUENCIA_CON_INFRA.md](AWDL_SECUENCIA_CON_INFRA.md) | La secuencia de 16 ranuras (ioctl 129) con infraestructura asociada, caso `en2` en 153 (80 MHz, centro 155): qué canal aprende el peer manager y de qué petición, cómo lo mezcla con los canales sociales, qué cambia con un par, bits de capacidad que alteran el resultado y qué debe hacer un driver de una sola radio | Verificado en IDA (25G241); corrige dos puntos de [AWDL_CHANNEL_SEQUENCE_CONTROL.md](AWDL_CHANNEL_SEQUENCE_CONTROL.md) y [AWDL_CHANNEL_STRATEGY.md](AWDL_CHANNEL_STRATEGY.md) (§11); efecto de `+0xB3F` (bit 6, 6E) y `+0xB47` (bit `0x20`), tipo del IOUC de `getDTIMInt` y servicios que registra `wifip2pd` `?` |
+| [AWDL_SECUENCIAS_OBSERVADAS.md](AWDL_SECUENCIAS_OBSERVADAS.md) | Explicación de las cuatro secuencias (tipo 129, 16 ranuras) registradas en hardware real al abrir la ventana de AirDrop en Finder: estado del peer manager, fila de `__ZL20_channelSeqSlotTypes`, transiciones entre S1–S4, obligaciones del driver por tipo de ranura y veredicto sobre S4 | Verificado en IDA (25G241), con las VA en §8; puntos abiertos en su §7 `?` |
+| [AWDL_SCAN_COEXISTENCIA.md](AWDL_SCAN_COEXISTENCIA.md) | Qué limita los escaneos de infraestructura de airportd/WCL con `awdl0` activo, qué recibe un controlador de terceros, campos que permiten volver al canal AWDL entre canales y recomendación para un driver USB de un solo canal | Verificado en IDA (25G241), con las direcciones comprobadas como inicio de función; ivars de modo real-time, filtro BSSID, *piggyback scan* por driver, canal de eventos 125/126 y uso del tipo 446 `?` |
+| [AWDL_CARD_CAPS_RESTANTES.md](AWDL_CARD_CAPS_RESTANTES.md) | El bloque de capacidades de tarjeta (`*(ctrl+0x120)+0xB34..+0xB4B`, GET 12): lector de cada byte y bit en el kernel collection de 25G241, puertas de userspace y qué falta en `RTLAirController::getCARD_CAPABILITIES` | Verificado en IDA (25G241); correcciones a documentos previos en §7; semántica de `isAirPlaySinkEnabled`, bits de `p[6]`/`p[8]`/`p[9]` sin lector y campo `+0xB50` `?` |
+| [AWDL_CAP29_DOBLE_BANDA_RIESGOS.md](AWDL_CAP29_DOBLE_BANDA_RIESGOS.md) | Capacidad 29 (doble banda, `p[7] \|= 0x20`): qué más la lee antes de activarla (kernel y userspace) y resultado en hardware con la build `3699d28e` | Verificado y medido en hardware (2026-10-31): el bit 29 era la puerta del social de 5 GHz y el riesgo de efectos laterales no se materializó en la infraestructura |
+| [AWDL_CAP78_CONCURRENCIA.md](AWDL_CAP78_CONCURRENCIA.md) | Capacidad 78 («Concurrency supported», `state+0xD066`): es SoftAP más AWDL, no infraestructura; la capa debe dejarla a cero también con `rtlawdl_mcc` | Verificado en IDA (25G241); `state+0x103A0`, `state+0x102F1` y `sub+0x6FC` `?` |
+
+### 3.3 Tiempo compartido y firmware del RTL8814A
+
+| Documento | Contenido | Estado |
+|---|---|---|
+| [AWDL_MCC_TIEMPO_COMPARTIDO.md](AWDL_MCC_TIEMPO_COMPARTIDO.md) | Compartir el radio entre una BSS de infraestructura fuera de los canales sociales y AWDL en el 149: mecanismo del vendor tree (back-op del scan enlazado), coste de la conmutación, riesgos, propuesta por slots (`rtlawdl_mcc`) y medidas con el par virtual (§8.1 permanencia adaptativa, §8.2 slots durante el back-op del escaneo, §8.3 ventanas de datos) | Análisis del fuente (§1–§7) y medidas con el par virtual (§8); con un par real, coste de un par que pierde tramas, velocidades sobre 12 Mb/s y secuencia que produce AirDrop `?` |
+| [AWDL_FW_8814A_MCC.md](AWDL_FW_8814A_MCC.md) | Los H2C de MCC en el firmware del RTL8814A (v33.6): ninguno de los siete (0x10, 0x15–0x1A) ni el C2H 0x17 existen, así que la vía de MCC de firmware queda descartada con este blob; qué ofrece el firmware que sí importa para AWDL | Cerrado por inspección estática del blob (sin hardware); responde el `?` de [AWDL_MCC_TIEMPO_COMPARTIDO.md](AWDL_MCC_TIEMPO_COMPARTIDO.md) §2 |
+| [AWDL_FW_8814A_CHSW_OFFLOAD.md](AWDL_FW_8814A_CHSW_OFFLOAD.md) | El offload de conmutación de canal del firmware (H2C `CHNL_SWITCH_OPER_OFFLOAD` 0x1C y 0x87 de WoWLAN): layout de argumentos, registros y RF que escriben, C2H 0x10, bucles de espera, comparación con `PHY_HandleSwChnlAndSetBW8814A` por USB, uso del 0x1C para mover el primario 153↔149 y qué medir | Verificado por inspección estática; cierra la línea abierta en [AWDL_FW_8814A_MCC.md](AWDL_FW_8814A_MCC.md) §8; latencia real sin medir `?` |
+
+## 4. Especificación, implementación y revisiones
+
+### 4.1 Etapa 1
 
 | Documento | Contenido | Estado |
 |---|---|---|
 | [AWDL_PROTOTYPE_DESIGN.md](AWDL_PROTOTYPE_DESIGN.md) | Plan por etapas (1–4) convertido de hipótesis a plan sobre hallazgos verificados | Cerrado como plan; los riesgos de §7 los cierran los documentos posteriores salvo los de etapas 2 y 3 (tabla §3 de este índice) |
-| [AWDL_STAGE1_IMPL_SPEC.md](AWDL_STAGE1_IMPL_SPEC.md) | Especificación de la etapa 1: gate de capacidad, override del 94, clase de `awdl0`, rollback y pruebas T1–T7 | Cerrada y actualizada con el delta; nada ejecutado aún en hardware |
+| [AWDL_STAGE1_IMPL_SPEC.md](AWDL_STAGE1_IMPL_SPEC.md) | Especificación de la etapa 1: gate de capacidad, override del 94, clase de `awdl0`, rollback y pruebas T1–T7 | Cerrada y actualizada con el delta; ejecutada después en hardware (`awdl0` creada y publicada, [AWDL_ESTADO_Y_BLOQUEO.md](AWDL_ESTADO_Y_BLOQUEO.md) §1) |
 | [AWDL_STAGE1_SPEC_DELTA.md](AWDL_STAGE1_SPEC_DELTA.md) | Revisión de consistencia de la spec contra diez documentos y el código; halla el defecto bloqueante de la acción nula | Cerrado y verificado; sus ediciones están aplicadas a la spec |
 | [AWDL_STAGE1_CODE_FIXES.md](AWDL_STAGE1_CODE_FIXES.md) | Antes/después de los seis defectos de la spec, verificados en el desensamblado | Cerrado y verificado; defectos 1, 2, 3 y 6 aplicados al código, 4 descartado como inocuo, 5 sin cambio |
 | [AWDL_STAGE1_CODE_REVIEW_IFACE.md](AWDL_STAGE1_CODE_REVIEW_IFACE.md) | Revisión línea a línea de `AWDLInterface.{h,cpp}` contra la spec y CODE_FIXES | Cerrado y verificado; los hallazgos quedaron aplicados, cerrados por [AWDL_STAGE1_PENDING_CHECKS.md](AWDL_STAGE1_PENDING_CHECKS.md) o descartados, y el orden de la vtable cerrado por volcado (0 discrepancias) |
@@ -114,7 +150,23 @@ Convención de estado:
 | [AWDL_STAGE1_REGINFO_AND_GATES.md](AWDL_STAGE1_REGINFO_AND_GATES.md) | Flag del 6 (bit `+0x52` del bloque `+0x128`), `RegInfo+0x10`/`+0x40` sin lectores y gate del 94 | Cerrado y verificado; el comportamiento de `registerService(2)` bajo el gate lo decide T2.2 |
 | [AWDL_STAGE1_REGINFO_BROADCOM.md](AWDL_STAGE1_REGINFO_BROADCOM.md) | Lado Broadcom de `+0x10`/`+0x40` y corrección del contenedor de `+0x118` | Cerrado y verificado |
 
-## 5. Pruebas y logs
+### 4.2 Etapas 2 a 4: datos, TX/RX y revisiones
+
+| Documento | Contenido | Estado |
+|---|---|---|
+| [AWDL_ETAPAS_2_A_4.md](AWDL_ETAPAS_2_A_4.md) | Plan de las etapas 2 a 4 tras la etapa 1: datapath real, descubrimiento de pares y eventos, companion `llw0` y baja latencia; grafo de dependencias e interrogantes que bloquean cada etapa | Plan derivado solo de documentos ya verificados; el orden de pasos lo detalla [AWDL_IMPLEMENTATION_PLAN.md](AWDL_IMPLEMENTATION_PLAN.md) y el interrogante E3 lo cierra [AWDL_AF_TO_DAEMON.md](AWDL_AF_TO_DAEMON.md) |
+| [AWDL_RTL8814_RAW_TX_PORT1.md](AWDL_RTL8814_RAW_TX_PORT1.md) | Transmisión de una trama de gestión cruda (action, categoría 127) con el radio asociado, programación directa del puerto 1 y gancho RX en `validate_recv_frame` (`Source/rtl8814au` y `Source/Driver`, solo fuentes) | Leído del código, sin desensamblado; resumen operativo en §4; implementado después (`AWDLTx.c`) |
+| [AWDL_TX_DATOS_SPEC.md](AWDL_TX_DATOS_SPEC.md) | Qué sustituye a `RTLAwdInterface::txNoop`: contrato de la acción de la `IOSkywalkTxSubmissionQueue`, conversión Ethernet→802.11 con la encapsulación AWDL, función nueva del ABI de radio, pasos de cambio en los dos kexts y pruebas sin par Apple | Verificado en IDA (25G241) con las direcciones en §9; implementada (§10); puntos abiertos en §8 `?` |
+| [AWDL_TX_HOOKS_POR_PAQUETE.md](AWDL_TX_HOOKS_POR_PAQUETE.md) | Qué actualiza `logSkywalkTxReqPacket` por paquete, qué hace `preQueuePacketCheckQuietMode`, si el gestor elimina o marca inactivo a un par sin TX hacia él y llamadas mínimas de un driver que transmite por su cuenta | Verificado en IDA (25G241); lector de `peer_ivars+184`, umbrales de `shouldRemovePeerFromNDP`, puerta exigida y exportación del símbolo `?` |
+| [AWDL_RX_DATA_TO_SKYWALK.md](AWDL_RX_DATA_TO_SKYWALK.md) | Entrega de una trama de datos AWDL recibida a la `RxCompletionQueue` de `awdl0`: formato en el aire, conversión 802.11→Ethernet de Broadcom, setters del paquete Skywalk, vías de encolado, símbolos enlazables y receta para el RTL8814AU | Verificado en IDA (25G241); DA especiales de `inputPacket`, entidad que llena la etiqueta RX y toda la prueba en hardware RTL8814 `?` |
+| [AWDL_RX_INPUTPACKET_HOOK.md](AWDL_RX_INPUTPACKET_HOOK.md) | El pre-hook `inputPacket` de `awdl0` (filtro de pares y retención PPP) antes de encajar en la `RxCompletionQueue`: filtro de pares del rol 6, destinos especiales, símbolo o vtable y código para `deliverData` | Verificado en volcados headless de 25G241, 24H232 y 23J631; cierra R4 de [AWDL_DATA_PATH_REVIEW.md](AWDL_DATA_PATH_REVIEW.md) y la receta §8.6 de [AWDL_RX_DATA_TO_SKYWALK.md](AWDL_RX_DATA_TO_SKYWALK.md); que `awdl0` lleve el rol 6 en hardware `?` |
+| [AWDL_TX_FRAME_REVIEW.md](AWDL_TX_FRAME_REVIEW.md) | Revisión byte a byte de los action frames TX (`buildAf`, `putChanSeq`, `txTick`, `alignClock`) contra owly, las notas del parser del kernel y el payload del evento 41 (hallazgos H1–H8) | Cerrado como revisión; H1, H2 y H7 corregidos, H3–H6 sin cambio, H8 cerrado por [AWDL_TLV18_OPCLASS_PARSER.md](AWDL_TLV18_OPCLASS_PARSER.md) |
+| [AWDL_DATA_PATH_REVIEW.md](AWDL_DATA_PATH_REVIEW.md) | Revisión de la ruta de datos (`deliverData`, `txData`/`queueData`/`sendData`/`flushRadioTx`/`txTick`, `AWDLTx.c`): hallazgos R1–R12 con escenario y arreglo | Cerrado como revisión; R4 diferido y cerrado después por [AWDL_RX_INPUTPACKET_HOOK.md](AWDL_RX_INPUTPACKET_HOOK.md), R1–R3 corregidos, R5 y R12 no son defecto, el resto sin cambio (§5) |
+| [AWDL_PARK_CHANNEL_REVIEW.md](AWDL_PARK_CHANNEL_REVIEW.md) | Revisión del anclaje de canal sin asociación (`rtlRadioSetChannel`, commits `07a41e8` y `ab11c69`) | Cerrado como revisión; H-A aplicado en `8726bd4`, H-B en `9dc71a6`, H-C a H-E sin cambio |
+
+## 5. Pruebas, par virtual y AirDrop
+
+### 5.1 Etapa 1: logs y guion
 
 | Documento | Contenido | Estado |
 |---|---|---|
@@ -123,18 +175,43 @@ Convención de estado:
 | [AWDL_STAGE1_RUNBOOK_REVIEW.md](AWDL_STAGE1_RUNBOOK_REVIEW.md) | Revisión del guion de pruebas de hardware T1–T7 (hallazgos H1–H17) | Cerrado y verificado; hallazgos aplicados al guion, que vive fuera del repo |
 | [AWDL_STAGE1_DEPLOY_REVIEW.md](AWDL_STAGE1_DEPLOY_REVIEW.md) | Revisión del despliegue y la construcción (incidencias 1–10) | Cerrado como revisión; incidencias 1, 2, 3 y 6 aplicadas, 4, 5, 7, 8, 9 y 10 sin aplicar (gravedad baja) |
 
+### 5.2 Par virtual, iPhone y AirDrop
+
+| Documento | Contenido | Estado |
+|---|---|---|
+| [AWDL_PAR_VIRTUAL.md](AWDL_PAR_VIRTUAL.md) | Par AWDL virtual en el mismo Mac (puerto `rtlawdl_sim=1` en el driver y nodo `Tools/awdlsim`): sincronización, elección, secuencia de canales, TLVs y datos sin segunda radio; disparo BLE de AirDrop sin iPhone, sincronía de la capa con el maestro, AirDrop de punta a punta con el puente `utun` (S7) y resultados | Medido en hardware (2026-11-03 y 2026-11-05, §9); lo que el par virtual no prueba, en §5; UMI y caché de pares en §9.6–§9.7 |
+| [AWDL_PRUEBA_CON_IPHONE.md](AWDL_PRUEBA_CON_IPHONE.md) | Guion de 15 a 20 minutos para la primera prueba con un par real (iPhone de visita, siempre en manos de su dueño): llega el iPhone al Mac, TX para que el iPhone vea el Mac, datos por `awdl0` y cómo leer el resultado | Guion ensayado sin par (`Tools/iphone_test.sh`); sin ejecutar con un iPhone `?`; límites conocidos en su cierre (coste de un par que pierde tramas, falta el evento 42, `awdl0_ip.pcap` depende de que BPF vea `awdl0`) |
+| [AWDL_RESULTADO_IPHONE_1.md](AWDL_RESULTADO_IPHONE_1.md) | Resultado de la prueba del 2026-11-08 con un iPhone: AirDrop iPhone → Mac funciona (foto y video a ~800 KB/s); tramas con envoltura de longitud y modo de presencia corregidos; vecino por `wifip2pd`; Mac → iPhone pendiente | iPhone → Mac medido; Mac → iPhone sin resolver, con hipótesis `?` |
+| [AWDL_RENDIMIENTO_1.md](AWDL_RENDIMIENTO_1.md) | Velocidad: la capa contesta el ADDBA del iPhone y reordena por (par, TID), presencia densa durante una transferencia, y escalera de tasas de TX de 6 a 54 Mb/s (MCS 7 opcional) con el reporte CCX por trama del 8814 | Compilado y probado fuera del kernel (2026-11-09); BlockAck del MAC, escalera y velocidad en el aire `?` |
+| [AWDL_A53_SNIFFER.md](AWDL_A53_SNIFFER.md) | El A53 como monitor en canal fijo y como par por el aire: montaje, TX del Mac vista desde fuera (franjas, rejilla de AW, reloj, cadencia) y comparación con iOS 26 | Medido el 2026-11-06, con las TLV 7 y 17 de la capa `EEEE65F6` comprobadas por el aire y el ensayo de la captura hecho; tramas dirigidas al Mac entregadas y confirmadas; cadencia en el 149 sin tiempo compartido: 8,80 PSF/s y 2,83 MIF/s; elección por el aire con métricas 525 y 60; ACK del T9UH confirmado por el estado de transmisión; datos multicast del Mac vistos por el aire; ACK de unicast a la MAC del puerto 1 reconocido por el chip, medido contra un router; defecto: la capa descarta los paquetes IP de 1429 a 1484 bytes, evitado con MTU 1428; riesgo: los datos salen en el borde de la franja; tramas reales de iPhone aceptadas; el A53 no emite datos, de modo que la recepción de datos por el aire sigue sin probar |
+| [AWDL_MODO_DATOS.md](AWDL_MODO_DATOS.md) | Por qué el Mac seguía en `Low Power` durante una transferencia: los contadores de paquetes que lee `monitorAWDLDataMode`, y el cambio en la capa | Medido y leído en IDA; cargado |
+| [AWDL_ESTADO_Y_PLAN.md](AWDL_ESTADO_Y_PLAN.md) | Punto de situación a 2026-11-06 y plan: lo que corre, lo medido y con qué, lo que solo responde un par real, y lo que sigue según cada resultado de la prueba | Vigente |
+| [AWDL_IOS_27_HOST.md](AWDL_IOS_27_HOST.md) | AWDL en iOS 27.2 (iPhone 11) leído del IPSW: el Wi-Fi es un dext, el gestor `IO80211AWDLPeerManager` es el mismo que en macOS, umbrales del modo datos iguales, condiciones de la UMI | Vigente |
+| [AWDL_AIRDROP_SIN_BLUETOOTH.md](AWDL_AIRDROP_SIN_BLUETOOTH.md) | AirDrop con el controlador Bluetooth ausente o apagado: puede el Mac recibir de un iPhone y descubrirlo; `sharingd`, `Sharing.framework` y `WirelessProximity.framework` de 25G241, cadenas de log, respuestas y prueba práctica de visita | Análisis estático (VAs de sharingd y del shared cache); necesidad del anuncio BLE del emisor para mantener AWDL y layout del payload de `startConnectionlessAWDLServiceAdvertisingWithData:` `?` (§9); su requisito de Bluetooth lo completa [AWDL_AIRDROP_BLE_CONTROLADOR.md](AWDL_AIRDROP_BLE_CONTROLADOR.md) |
+| [AWDL_AIRDROP_BLE_CONTROLADOR.md](AWDL_AIRDROP_BLE_CONTROLADOR.md) | AirDrop con controladores Bluetooth de terceros (BCM20702, Intel AX200/AX210, MT7925, CSR, RTL8761B vía BlueToolFixup): gates de `sharingd` y `bluetoothd`, cadena completa en orden, `wirelessproxd` dentro de `bluetoothd` y medición con un CSR8510 (TP-Link UB400) con su arreglo por preferencia | Análisis estático y medición con el UB400 (2026-11-05, §8); pendientes en su §6 `?` |
+
 ## 6. Compatibilidad entre versiones y herramientas
+
+Los portes a 14.8.9 (23J631) y 15.8.2 (24H232) de la capa y de los offsets son
+[AIRLAYER_PORT_14_15.md](AIRLAYER_PORT_14_15.md) y [AWDL_VERSION_SENSITIVE_OFFSETS_14_15.md](AWDL_VERSION_SENSITIVE_OFFSETS_14_15.md)
+(tabla 3.1); los de las áreas concretas y la comparación con 25G332 están en esta tabla.
 
 | Documento | Contenido | Estado |
 |---|---|---|
 | [AWDL_KEXT_LINKAGE.md](AWDL_KEXT_LINKAGE.md) | Qué símbolos AWDL exporta IO80211Family, por dónde enlaza un kext de terceros y qué fallbacks quedan | Cerrado y verificado para 25.6.0; re-verificar la tabla tras cada build; el fallback sin factorías de §3 queda sin explorar (etapa 2) |
-| [AWDL_COMPAT_DEPENDENCIES.md](AWDL_COMPAT_DEPENDENCIES.md) | Inventario de todo lo que el código AWDL presupone del OS, con la receta más barata de recomprobación por versión (14–26) | Cerrado como inventario; las verificaciones por versión quedan por ejecutar cuando haya kernelcaches de 14/15 |
-| [AWDL_KERNELCACHE_OBTENTION.md](AWDL_KERNELCACHE_OBTENTION.md) | Cómo conseguir el kernel collection x86_64 de macOS 14/15/26 sin instalar la versión y producir los volcados | Guía con pasos en `?` para 14/15 (rutas de instaladores; verificar al ejecutar) |
+| [AWDL_COMPAT_DEPENDENCIES.md](AWDL_COMPAT_DEPENDENCIES.md) | Inventario de todo lo que el código AWDL presupone del OS, con la receta más barata de recomprobación por versión (14–26) | Cerrado como inventario; las verificaciones por versión se ejecutaron después con los kernelcaches de 14/15 y 25G332 ([AWDL_CODIGO_VS_BUILDS.md](AWDL_CODIGO_VS_BUILDS.md) y los documentos `*_14_15`) |
+| [AWDL_KERNELCACHE_OBTENTION.md](AWDL_KERNELCACHE_OBTENTION.md) | Cómo conseguir el kernel collection x86_64 de macOS 14/15/26 sin instalar la versión y producir los volcados | Guía; las rutas de instaladores de 14/15 las cierra su §2.4 (23J631, 24H232 y 25G332, misma base `__HIB`; punto 22 del §8.4) |
 | [AWDL_BKE_ATTACH.md](AWDL_BKE_ATTACH.md) | Registro de la sesión de adjunto del adaptador al kernel collection y sus limitaciones operativas | Cerrado (registro histórico de sesión) |
+| [AWDL_CODIGO_VS_BUILDS.md](AWDL_CODIGO_VS_BUILDS.md) | Compatibilidad de `AWDLInterface.{h,cpp}` (validado en 25G241) con 25G332 (macOS 26.7.2), 24H232 y 23J631: símbolos, ranuras de vtable y desplazamientos con las herramientas de recheck, comprobaciones manuales y lista de cambios por build | Verificado con los volcados de cada kernel collection: 25G332 funciona tal cual; 24H232 y 23J631 requieren binario y cabecera propios; `25G332` por registrar en `Tools/airlayer_builds.txt`, tiempo compartido en 14/15 sin medir y pares NAN en 14 `?` |
+| [AWDL_CARD_CAPS_14_15.md](AWDL_CARD_CAPS_14_15.md) | Mapa de lectores del bloque de capacidades de tarjeta (GET 12) en 23J631 y 24H232, portado desde [AWDL_CARD_CAPS_RESTANTES.md](AWDL_CARD_CAPS_RESTANTES.md): sin buffer centralizado en 14, lectores sin contraparte y puertas cuyo mecanismo cambia | Verificado en los kernel collections de 14 y 15; alimentación de canales `InterfaceMonitor` en 15 y ramas internas de pro-mode `?` |
+| [AWDL_SECUENCIA_14_15.md](AWDL_SECUENCIA_14_15.md) | Puerto de la secuencia de canales a 23J631 y 24H232: tabla de tipos de ranura (56 filas en 25G241, 54 en 14 y 15), switch de estados, gates de doble banda e implicaciones para la capa | Verificado en el desensamblado; puntos abiertos en su §9 `?` (p. ej. `dynSdbForceChanSeq` en tarjetas sin SDB completo) |
+| [AWDL_EVENTOS_Y_AF_14_15.md](AWDL_EVENTOS_Y_AF_14_15.md) | Portabilidad de los eventos 41/42/43, la ruta `postMessage` y los action frames (evento 48), y la emisión de PSF/MIF a 23J631 y 24H232 | Verificado en los tres builds; compuerta `executeCommand` en caliente, TLV 17 inlined en 14 y consumo de los eventos 41/42/43 por otros daemons `?` |
+| [AWDL_DATA_PATH_PORT_14_15.md](AWDL_DATA_PATH_PORT_14_15.md) | Portabilidad a 14.8.9 y 15.8.2 del código de datos de `awdl0` (RX, reloj AW, TX, acotación por franja, códigos de rechazo del aparcamiento): accesores, ciclo de vida del paquete, gestor de pares y layouts de plantilla y de secuencia | Verificado con los symtabs y volcados de los tres kernelcaches; puerta de `interfaceStateChange` y acción nula de `initWithPool` en 14/15 `?` |
+| [AWDL_PRESENCE_OFFSETS_14_15.md](AWDL_PRESENCE_OFFSETS_14_15.md) | Offsets de presencia y PPP portados a 23J631 y 24H232 (ivars, ranuras de vtable, tabla de handlers, umbral; `Tools/awdl_presence_offsets.tsv`), qué no se movió, cambios de forma y orden de selección para el gate | Cada fila resuelta por símbolo y leída en el desensamblado de los tres builds; filas ausentes y puntos abiertos en su §10 `?` |
 
 ## 7. Orden de lectura para alguien nuevo
 
-1. `HANDOFF_AWDL.md` (raíz del repo, en inglés): estado, reglas y Artefactos vigentes.
+1. `README.md` (raíz del repo, en inglés): estado actual, construcción e instalación.
 2. [AWDL_PROTOTYPE_DESIGN.md](AWDL_PROTOTYPE_DESIGN.md): el plan por etapas que ordena todo lo demás.
 3. Lado daemon: [AWDL_WIFIP2PD_REQUESTS.md](AWDL_WIFIP2PD_REQUESTS.md) →
    [AWDL_WIFIP2PD_DISCOVERY.md](AWDL_WIFIP2PD_DISCOVERY.md) →
@@ -155,12 +232,32 @@ Convención de estado:
    [AWDL_REQUEST_ISSUERS.md](AWDL_REQUEST_ISSUERS.md).
 5. Protocolo y hardware: [AWDL_FRAME_WIRE_FORMAT.md](AWDL_FRAME_WIRE_FORMAT.md) →
    [AWDL_TLV_BODIES.md](AWDL_TLV_BODIES.md) →
+   [AWDL_TLV18_OPCLASS_PARSER.md](AWDL_TLV18_OPCLASS_PARSER.md) →
+   [AWDL_TLV5_ELECTION.md](AWDL_TLV5_ELECTION.md) →
    [AWDL_OPEN_QUESTIONS_1.md](AWDL_OPEN_QUESTIONS_1.md) →
    [AWDL_PEERMANAGER_SOFTWARE.md](AWDL_PEERMANAGER_SOFTWARE.md) →
    [AWDL_PEERMANAGER_DRIVER_ABI.md](AWDL_PEERMANAGER_DRIVER_ABI.md) →
    [AWDL_FIRMWARE_DUTIES.md](AWDL_FIRMWARE_DUTIES.md) →
    [AWDL_RTL8814_HW_SUPPORT.md](AWDL_RTL8814_HW_SUPPORT.md).
-6. Etapa 1: [AWDL_STAGE1_IMPL_SPEC.md](AWDL_STAGE1_IMPL_SPEC.md) primero, y después los cierres en
+6. Secuencia de canales, presencia y capacidades:
+   [AWDL_CHANNEL_SEQUENCE_CONTROL.md](AWDL_CHANNEL_SEQUENCE_CONTROL.md) →
+   [AWDL_CHANNEL_STRATEGY.md](AWDL_CHANNEL_STRATEGY.md) →
+   [AWDL_SECUENCIA_129_EMISOR.md](AWDL_SECUENCIA_129_EMISOR.md) →
+   [AWDL_SIN_ASOCIACION_INFRA.md](AWDL_SIN_ASOCIACION_INFRA.md) →
+   [AWDL_SECUENCIA_CON_INFRA.md](AWDL_SECUENCIA_CON_INFRA.md) →
+   [AWDL_SECUENCIAS_OBSERVADAS.md](AWDL_SECUENCIAS_OBSERVADAS.md) y
+   [AWDL_SCAN_COEXISTENCIA.md](AWDL_SCAN_COEXISTENCIA.md); presencia:
+   [AWDL_PEER_PRESENCE_PPP.md](AWDL_PEER_PRESENCE_PPP.md) →
+   [AWDL_WIFIP2PD_PRESENCE_TRIGGER.md](AWDL_WIFIP2PD_PRESENCE_TRIGGER.md) →
+   [AWDL_WIFIP2PD_PRESENCE_ONCE.md](AWDL_WIFIP2PD_PRESENCE_ONCE.md) →
+   [AWDL_PRESENCE_PREREQS.md](AWDL_PRESENCE_PREREQS.md) →
+   [AWDL_AF_TO_DAEMON.md](AWDL_AF_TO_DAEMON.md); ciclo de vida del manager:
+   [AWDL_PEERMANAGER_CREATION.md](AWDL_PEERMANAGER_CREATION.md) →
+   [AWDL_PEERMANAGER_TEARDOWN.md](AWDL_PEERMANAGER_TEARDOWN.md); capacidades de tarjeta:
+   [AWDL_CARD_CAPS_RESTANTES.md](AWDL_CARD_CAPS_RESTANTES.md) →
+   [AWDL_CAP29_DOBLE_BANDA_RIESGOS.md](AWDL_CAP29_DOBLE_BANDA_RIESGOS.md) y
+   [AWDL_CAP78_CONCURRENCIA.md](AWDL_CAP78_CONCURRENCIA.md).
+7. Etapa 1: [AWDL_STAGE1_IMPL_SPEC.md](AWDL_STAGE1_IMPL_SPEC.md) primero, y después los cierres en
    este orden: [AWDL_STAGE1_DISPATCH_PATH.md](AWDL_STAGE1_DISPATCH_PATH.md) e
    [AWDL_STAGE1_IFNET_TO_INTERFACE.md](AWDL_STAGE1_IFNET_TO_INTERFACE.md) (despacho),
    [AWDL_STAGE1_QUEUE_SHAPE.md](AWDL_STAGE1_QUEUE_SHAPE.md) y
@@ -180,17 +277,45 @@ Convención de estado:
    [AWDL_STAGE1_CODE_FIXES.md](AWDL_STAGE1_CODE_FIXES.md),
    [AWDL_STAGE1_CODE_REVIEW_IFACE.md](AWDL_STAGE1_CODE_REVIEW_IFACE.md) y
    [AWDL_STAGE1_CODE_REVIEW_HOOK.md](AWDL_STAGE1_CODE_REVIEW_HOOK.md).
-7. Pruebas: [AWDL_STAGE1_TEST_LOG_PATTERNS.md](AWDL_STAGE1_TEST_LOG_PATTERNS.md) →
+8. Pruebas de la etapa 1: [AWDL_STAGE1_TEST_LOG_PATTERNS.md](AWDL_STAGE1_TEST_LOG_PATTERNS.md) →
    [AWDL_STAGE1_LOG_STRINGS_AUDIT.md](AWDL_STAGE1_LOG_STRINGS_AUDIT.md) →
    [AWDL_STAGE1_RUNBOOK_REVIEW.md](AWDL_STAGE1_RUNBOOK_REVIEW.md) y
    [AWDL_STAGE1_DEPLOY_REVIEW.md](AWDL_STAGE1_DEPLOY_REVIEW.md).
-8. Compatibilidad: [AWDL_KEXT_LINKAGE.md](AWDL_KEXT_LINKAGE.md) →
-   [AWDL_COMPAT_DEPENDENCIES.md](AWDL_COMPAT_DEPENDENCIES.md) →
-   [AWDL_KERNELCACHE_OBTENTION.md](AWDL_KERNELCACHE_OBTENTION.md). `AWDL_BKE_ATTACH.md` es
-   un registro de sesión y se lee sólo como contexto histórico.
+9. Etapas 2 a 4, datos y TX/RX: [AWDL_ETAPAS_2_A_4.md](AWDL_ETAPAS_2_A_4.md) →
+   [AWDL_IMPLEMENTATION_PLAN.md](AWDL_IMPLEMENTATION_PLAN.md) →
+   [AWDL_RTL8814_RAW_TX_PORT1.md](AWDL_RTL8814_RAW_TX_PORT1.md) →
+   [AWDL_TX_DATOS_SPEC.md](AWDL_TX_DATOS_SPEC.md) con
+   [AWDL_TX_HOOKS_POR_PAQUETE.md](AWDL_TX_HOOKS_POR_PAQUETE.md) →
+   [AWDL_RX_DATA_TO_SKYWALK.md](AWDL_RX_DATA_TO_SKYWALK.md) →
+   [AWDL_RX_INPUTPACKET_HOOK.md](AWDL_RX_INPUTPACKET_HOOK.md), y las revisiones
+   [AWDL_TX_FRAME_REVIEW.md](AWDL_TX_FRAME_REVIEW.md),
+   [AWDL_DATA_PATH_REVIEW.md](AWDL_DATA_PATH_REVIEW.md) y
+   [AWDL_PARK_CHANNEL_REVIEW.md](AWDL_PARK_CHANNEL_REVIEW.md).
+10. Tiempo compartido y firmware del RTL8814A: [AWDL_MCC_TIEMPO_COMPARTIDO.md](AWDL_MCC_TIEMPO_COMPARTIDO.md) →
+    [AWDL_FW_8814A_MCC.md](AWDL_FW_8814A_MCC.md) →
+    [AWDL_FW_8814A_CHSW_OFFLOAD.md](AWDL_FW_8814A_CHSW_OFFLOAD.md).
+11. Pruebas con par: [AWDL_PAR_VIRTUAL.md](AWDL_PAR_VIRTUAL.md) →
+    [AWDL_PRUEBA_CON_IPHONE.md](AWDL_PRUEBA_CON_IPHONE.md), con
+    [AWDL_AIRDROP_SIN_BLUETOOTH.md](AWDL_AIRDROP_SIN_BLUETOOTH.md) y
+    [AWDL_AIRDROP_BLE_CONTROLADOR.md](AWDL_AIRDROP_BLE_CONTROLADOR.md) para el requisito de Bluetooth.
+12. Compatibilidad: [AWDL_KEXT_LINKAGE.md](AWDL_KEXT_LINKAGE.md) →
+    [AWDL_COMPAT_DEPENDENCIES.md](AWDL_COMPAT_DEPENDENCIES.md) →
+    [AWDL_KERNELCACHE_OBTENTION.md](AWDL_KERNELCACHE_OBTENTION.md) →
+    [AWDL_CODIGO_VS_BUILDS.md](AWDL_CODIGO_VS_BUILDS.md) y los portes a 14/15
+    ([AIRLAYER_PORT_14_15.md](AIRLAYER_PORT_14_15.md),
+    [AWDL_VERSION_SENSITIVE_OFFSETS_14_15.md](AWDL_VERSION_SENSITIVE_OFFSETS_14_15.md),
+    [AWDL_SECUENCIA_14_15.md](AWDL_SECUENCIA_14_15.md),
+    [AWDL_EVENTOS_Y_AF_14_15.md](AWDL_EVENTOS_Y_AF_14_15.md),
+    [AWDL_DATA_PATH_PORT_14_15.md](AWDL_DATA_PATH_PORT_14_15.md),
+    [AWDL_PRESENCE_OFFSETS_14_15.md](AWDL_PRESENCE_OFFSETS_14_15.md),
+    [AWDL_CARD_CAPS_14_15.md](AWDL_CARD_CAPS_14_15.md)). `AWDL_BKE_ATTACH.md` es
+    un registro de sesión y se lee sólo como contexto histórico.
 
 Los inventarios intermedios (`AWDL_APPLE80211_STRUCTS.md`, `AWDL_VTABLE_SLOTS.md`) y las revisiones
-ya absorbidas se pueden saltar en la primera lectura y consultar sólo como referencia.
+ya absorbidas se pueden saltar en la primera lectura y consultar sólo como referencia. Las notas de
+proyectos externos y la comparación con capturas de iOS (`AWDL_REFERENCIAS_EXTERNAS.md`,
+`AWDL_REF_SIMPLEBCM.md`, `AWDL_AF_VS_IPHONE.md`) son material de contraste y no hace falta leerlas
+antes de implementar.
 
 ## 8. Interrogantes (`?`) que siguen abiertos en todos los documentos
 
@@ -204,7 +329,7 @@ a la sección 4 de `HANDOFF_AWDL.md`, de la que corrige dos puntos ya cerrados (
 
 | # | Punto abierto | Documento | Cierre |
 |---:|---|---|---|
-| 1 | Comportamiento de `registerService(kIOServiceSynchronous)` bajo el gate del work loop del 94: posible interbloqueo (hallazgo A6) | `AWDL_STAGE1_IMPL_SPEC.md` §15.1; `AWDL_STAGE1_SPEC_DELTA.md` (#90); `AWDL_STAGE1_REGINFO_AND_GATES.md` §5; `AWDL_STAGE1_CODE_REVIEW_HOOK.md` A6 | Prueba T2.2 (medir el retorno del 94) |
+| 1 | Comportamiento de `registerService(kIOServiceSynchronous)` bajo el gate del work loop del 94: posible interbloqueo (hallazgo A6) | `AWDL_STAGE1_IMPL_SPEC.md` §15.1; `AWDL_STAGE1_SPEC_DELTA.md` (#90); `AWDL_STAGE1_REGINFO_AND_GATES.md` §5; `AWDL_STAGE1_CODE_REVIEW_HOOK.md` A6 | Prueba T2.2 (medir el retorno del 94). En hardware `awdl0` se crea y publica y `wifip2pd` la usa ([AWDL_ESTADO_Y_BLOQUEO.md](AWDL_ESTADO_Y_BLOQUEO.md) §1), de modo que la ruta con éxito no se cuelga; la medición del retorno del 94 no consta en ningún documento |
 | 2 | Rollback cuando el registro triunfó pero falta el nombre BSD; si `terminate()` sobre un arranque fallido retira las colas (hallazgo A7, #68) | `AWDL_STAGE1_CODE_REVIEW_HOOK.md` A7; `AWDL_STAGE1_SPEC_DELTA.md` §7 | Pruebas T3 y T7.3 |
 | 3 | Fatalidad real del registro del monitoreo de eventos en wifip2pd (#62) | `AWDL_STAGE1_SPEC_DELTA.md` §6; `AWDL_STAGE1_IMPL_SPEC.md` T7.1 | Prueba T7.1 |
 | 4 | Propiedades finales en el IORegistry: `classNameOverride` de la subclase y `IOSkywalkNexusUUID` | `AWDL_STAGE1_SPEC_DELTA.md` §7 | Prueba T3.1 (`ioreg`) |
@@ -220,11 +345,11 @@ a la sección 4 de `HANDOFF_AWDL.md`, de la que corrige dos puntos ya cerrados (
 | 9 | Puntos finos del ciclo de vida: cero-inicial del asignador tipado, limpieza de `registerInterestedDriver` si falla la rama 5 de `init`, propietario del cerrojo `ivars+0x30`, campo del `ifnet` que consume `clienteBSD+0x13C`, enlace de `r15` en `AppleBCMWLANSkywalkInterface::start`, intención del parámetro `uint` de `deregisterEthernetInterface` | `AWDL_STAGE1_PENDING_CHECKS.md` §«Puntos que quedan abiertos» | Chequeos dirigidos en el KC, uno por punto (parcial: #4 `ifnet+0x58C`, #5 `r15 = rdx` y #7 parámetro muerto, cerrados por [AWDL_STAGE1_LIFECYCLE_CHECKS.md](AWDL_STAGE1_LIFECYCLE_CHECKS.md)) |
 | 10 | Camino de TX: errno que ve la pila al descartarse el paquete (mapeo de `0xE00002D8` en `errnoFromReturn`), consumidor de `state+113`/`if_link_state` en wifip2pd, llamada del `ifclassq` a `tx_push`, vía de alta del `netif_llink` en el camino del kext | `AWDL_STAGE1_IFUP_PATH.md` §8; `AWDL_STAGE1_QSET_STATE.md` §10; errno 16 (`EBUSY`) y búsquedas en wifip2pd cerrados en `AWDL_STAGE1_ERRNO_TXPATH.md` §1-§6 | Recorrer la cadena keypath de wifip2pd y el llenado de la tabla del `ifclassq` (`dlil_ifclassq_setup`); alta del `netif_llink` |
 | 11 | ~~Orden entre `setInterface` y la creación del `ifnet` en `bsd_start`; quién consume el retorno 22 del rechazo por `num_txqs == 0`~~ | `AWDL_STAGE1_QUEUE_SHAPE.md` §11 | Cerrado por [AWDL_STAGE1_BSDSTART_ORDER.md](AWDL_STAGE1_BSDSTART_ORDER.md): `setInterface` en `0xffffff8002b0a38d` (dentro del registro, antes del `registerService`); el `ifnet` en `0xffffff8002affbb5` (dentro del `start` del cliente BSD); el 22 del núcleo lo consume el alloc del proveedor y el de la vía DriverKit se convierte en `0xE00002BC` |
-| 12 | Qué getters de los 63 slots consulta el daemon fuera de la secuencia post-create (p. ej. al abrir AirDrop) | `AWDL_STAGE1_STUB_VALUES.md` §3/§5 | Leer el switch maestro de eventos/requests del daemon; confirmado con un par Apple real en hardware |
-| 13 | Constructores de TLV sin nombre (datapath state, ranging, real-time group, version, NAN sync, pref chan) y contenido exacto del tirón de TX | `AWDL_PEERMANAGER_DRIVER_ABI.md` §3.11 y §4 | Identificar y decompilar los constructores (etapa 2) |
+| 12 | Qué getters de los 63 slots consulta el daemon fuera de la secuencia post-create (p. ej. al abrir AirDrop) | `AWDL_STAGE1_STUB_VALUES.md` §3/§5 | Leer el switch maestro de eventos/requests del daemon; confirmado con un par Apple real en hardware (el par virtual ya ejercita el camino de AirDrop de `wifip2pd`, [AWDL_PAR_VIRTUAL.md](AWDL_PAR_VIRTUAL.md) §8, sin listar los getters consultados) |
+| 13 | Constructores de TLV sin nombre (datapath state, ranging, real-time group, version, NAN sync, pref chan) y contenido exacto del tirón de TX | `AWDL_PEERMANAGER_DRIVER_ABI.md` §3.11 y §4 | Identificar y decompilar los constructores (etapa 2). Parcial: el TLV 5 lo cierra [AWDL_TLV5_ELECTION.md](AWDL_TLV5_ELECTION.md) y el TX de datos por paquete, [AWDL_TX_DATOS_SPEC.md](AWDL_TX_DATOS_SPEC.md) y [AWDL_TX_HOOKS_POR_PAQUETE.md](AWDL_TX_HOOKS_POR_PAQUETE.md); los demás constructores siguen sin nombre |
 | 14 | ~~Vínculo del `IO80211AWDLPeerManager` del kernel con la interfaz de un driver externo (ivars `+0x120`/`+0x28`)~~ | `AWDL_APPLE80211_DISPATCH.md` §8.3; `AWDL_PROTOTYPE_DESIGN.md` §7 | Cerrado por [AWDL_PEERMANAGER_CREATION.md](AWDL_PEERMANAGER_CREATION.md): la factoría heredada de `0xB08` crea el manager en el `start` de la vif y lo publica en `ivars+0x28`; el controlador debe sobrescribir `createVirtualInterface` para el rol 6 |
 | 15 | ~~Qué objetos AWDL puede instanciar un kext externo y qué ocurre si la instanciación se rechaza; el fallback de vtable no cubre la creación sin factorías exportadas~~ | `AWDL_KEXT_LINKAGE.md` §3 | Cerrado por [AWDL_PEERMANAGER_CREATION.md](AWDL_PEERMANAGER_CREATION.md): la factoría heredada de `0xB08` crea el manager en el `start` de la vif y lo publica en `ivars+0x28`; el controlador debe sobrescribir `createVirtualInterface` para el rol 6 |
-| 16 | Vía de TX de action frames en la etapa 3: ruta interna (tipo 120 u otros) o mecanismo propio del kext | `AWDL_PROTOTYPE_DESIGN.md` §5 y §7 | Seguir el emisor del evento 48 hacia atrás hasta el driver (etapa 3) |
+| 16 | ~~Vía de TX de action frames en la etapa 3: ruta interna (tipo 120 u otros) o mecanismo propio del kext~~ | `AWDL_PROTOTYPE_DESIGN.md` §5 y §7 | Seguir el emisor del evento 48 hacia atrás hasta el driver (etapa 3). Cerrado: la capa transmite con un mecanismo propio, el ABI de radio `rtlRadioTx80211` (TX crudo y puerto 1 en [AWDL_RTL8814_RAW_TX_PORT1.md](AWDL_RTL8814_RAW_TX_PORT1.md)), y el evento 48 sale del camino RX, no del TX ([AWDL_AF_TO_DAEMON.md](AWDL_AF_TO_DAEMON.md)); PSF y MIF salen sin fallos de TX en hardware ([AWDL_PAR_VIRTUAL.md](AWDL_PAR_VIRTUAL.md) §9) |
 | 17 | ~~Semántica del u32 `@+8` del evento 47 (`PEER_PRESENCE`)~~ | `AWDL_PROTOTYPE_DESIGN.md` §5 | Cerrado por [AWDL_PEER_PRESENCE_PPP.md](AWDL_PEER_PRESENCE_PPP.md) §1: `1` = ausencia (log `postPeerAbsence`), único valor que escribe el kernel |
 | 18 | Valor del campo `code` (payload+0) del tipo 293 en el camino AWDL y su semántica (el kernel no lo lee) | `AWDL_LLW_COMPANION.md` §1.1 y §5; `AWDL_STRUCTS.md` §3.4 | Trazar el quinto argumento del creador por rol en `sub_100047660` |
 
@@ -232,12 +357,24 @@ a la sección 4 de `HANDOFF_AWDL.md`, de la que corrige dos puntos ya cerrados (
 
 | # | Punto abierto | Documento | Cierre |
 |---:|---|---|---|
-| 19 | Unidad real del guard time (factor ×10 observado sin confirmación), precisión de los timers software del host frente a la cadencia AWDL y viabilidad de `GTINT3`/`GTINT4` como timer hardware en USB | `AWDL_FIRMWARE_DUTIES.md` §7; `AWDL_RTL8814_HW_SUPPORT.md` §7 (filas b1/b3a/b3b) | Medición sobre el 8814AU |
-| 20 | Valor vivo por defecto de `RXFLTMAP0`, confirmación de TX (C2H/`CONFIG_XMIT_ACK`), operación del puerto 1 en el path USB y punto de integración de la entrega de action frames hacia AirLayer/BPF | `AWDL_RTL8814_HW_SUPPORT.md` §6.2–§6.4 y §8 | Registro en vivo y prueba de RX/TX de action frames |
-| 21 | Toda la clasificación feasible/parcial/missing de `AWDL_RTL8814_HW_SUPPORT.md` §7 | `AWDL_RTL8814_HW_SUPPORT.md` §7 | Las etapas 2–4 del plan, en hardware |
+| 19 | Unidad real del guard time (factor ×10 observado sin confirmación), precisión de los timers software del host frente a la cadencia AWDL y viabilidad de `GTINT3`/`GTINT4` como timer hardware en USB | `AWDL_FIRMWARE_DUTIES.md` §7; `AWDL_RTL8814_HW_SUPPORT.md` §7 (filas b1/b3a/b3b) | Medición sobre el 8814AU. Parcial: la precisión de los timers del host se midió con el par virtual (desfase máximo 1 TU durante minutos, [AWDL_PAR_VIRTUAL.md](AWDL_PAR_VIRTUAL.md) §9.2) y la conmutación por ranura del driver en 4357 y 4355 µs de ida ([AWDL_CAP29_DOBLE_BANDA_RIESGOS.md](AWDL_CAP29_DOBLE_BANDA_RIESGOS.md) §4); la unidad del guard time y `GTINT3`/`GTINT4` siguen abiertos |
+| 20 | Valor vivo por defecto de `RXFLTMAP0`, confirmación de TX (C2H/`CONFIG_XMIT_ACK`), operación del puerto 1 en el path USB y punto de integración de la entrega de action frames hacia AirLayer/BPF | `AWDL_RTL8814_HW_SUPPORT.md` §6.2–§6.4 y §8 | Registro en vivo y prueba de RX/TX de action frames. Parcial: el RX y el TX de action frames funcionan en hardware con el par virtual (miles de tramas por sentido sin fallos de TX, [AWDL_PAR_VIRTUAL.md](AWDL_PAR_VIRTUAL.md) §9) y el RX de PSF de un A53 por el aire llegó al Mac; siguen abiertos el valor vivo de `RXFLTMAP0` y la confirmación de TX por C2H |
+| 21 | Toda la clasificación feasible/parcial/missing de `AWDL_RTL8814_HW_SUPPORT.md` §7 | `AWDL_RTL8814_HW_SUPPORT.md` §7 | Las etapas 2–4 del plan, en hardware. En curso: medido con el par virtual (elección, sincronía, datos IPv6 y tiempo compartido); falta un par real ([AWDL_PRUEBA_CON_IPHONE.md](AWDL_PRUEBA_CON_IPHONE.md)) |
 
 ### 8.4 Los que cierra la propia ejecución de la guía (compatibilidad)
 
 | # | Punto abierto | Documento | Cierre |
 |---:|---|---|---|
 | 22 | ~~Rutas de instaladores Intel de macOS 14/15 y derivación de la base del KC en otra versión~~; quedan el volumen sellado en Apple silicon (fuera de alcance) y la igualdad del KC de instalador con el de un sistema instalado | `AWDL_KERNELCACHE_OBTENTION.md` §1, §2 y §6 | Instaladores y base cerrados por `AWDL_KERNELCACHE_OBTENTION.md` §2.4 (23J631, 24H232, 25G332, misma base `__HIB`); la igualdad se comprueba con el md5 de 25G332 tras actualizar |
+
+### 8.5 Los que han surgido de los documentos posteriores a 2026-10-29
+
+| # | Punto abierto | Documento | Cierre |
+|---:|---|---|---|
+| 23 | Comportamiento con un par real (iPhone o Mac): aceptación de PSF y MIF, datos por `awdl0`, TX visible para el iPhone; nunca probado | `AWDL_PRUEBA_CON_IPHONE.md` §5–§7; `AWDL_PAR_VIRTUAL.md` §5 | Ejecutar el guion de la visita con un iPhone |
+| 24 | Tiempo compartido por el aire: coste de un par que pierde tramas, velocidades sobre 12 Mb/s, qué secuencia produce AirDrop con un par real | `AWDL_MCC_TIEMPO_COMPARTIDO.md` §8 | Prueba con un par real |
+| 25 | Latencia real del offload de conmutación de canal del firmware (H2C 0x1C/0x87) para mover el primario 153↔149 | `AWDL_FW_8814A_CHSW_OFFLOAD.md` §11 | Medición sobre el 8814AU |
+| 26 | Comportamiento en ejecución en 14.8.9 y 15.8.2 (compuerta de `postMessage`, tiempo compartido, offsets internos); la capa necesita binario y cabecera propios por build y 25G332 sin registrar en `Tools/airlayer_builds.txt` | `AWDL_CODIGO_VS_BUILDS.md` §5; `AWDL_EVENTOS_Y_AF_14_15.md` §7; `AWDL_DATA_PATH_PORT_14_15.md` §7; `AWDL_CARD_CAPS_14_15.md` §7 | Prueba en un equipo con 14 o 15; registrar 25G332 en la tabla de builds |
+| 27 | Si iOS exige el anuncio BLE del emisor para subir y mantener AWDL durante un envío, y layout exacto del payload de `startConnectionlessAWDLServiceAdvertisingWithData:` | `AWDL_AIRDROP_SIN_BLUETOOTH.md` §9; `AWDL_AIRDROP_BLE_CONTROLADOR.md` §6 | Captura de referencia con un iPhone |
+| 28 | Alineación de franjas con un iPhone, `held` real, ACK y Block Ack a los datos del Mac | `AWDL_MODO_DATOS.md` §9; `AWDL_A53_SNIFFER.md` §13 | Prueba con un iPhone |
+| 29 | Presupuesto de aire sin contar reintentos; tramas sueltas fuera de las franjas anunciadas; cómo encaja la cadencia de 1,05 s con `ivars+16064` | `AWDL_MODO_DATOS.md` §5 y §9 | Medición con un par real, e IDA |

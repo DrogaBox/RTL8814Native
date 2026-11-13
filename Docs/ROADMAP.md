@@ -41,7 +41,7 @@ Goal: firmware runs on the chip, registers respond, EFUSE factory MAC is publish
 - [x] **1. osdep variant & 0 undefined vendor symbols:** Implemented `Source/Compat/Compat.c` and `Source/Compat/VendorOsDep.c` bridging 74 Realtek HAL/Core/PhyDM C files to XNU.
 - [x] **2. dvobj + adapter init + Multi-Pipe USB Discovery:** Implemented `rtl8814native_vendor_probe()` in [VendorProbe.c](../Source/Driver/VendorProbe.c) (`g_dvobj->chip_type = RTL8814A`, `g_dvobj->interface_type = RTW_USB`, `rtw_clr_drv_stopped`) and multi-Bulk-OUT pipe discovery (`0x05`, `0x06`, `0x08`) in [RTLUsbDevice.cpp](../Source/Driver/RTLUsbDevice.cpp).
 - [x] **3. Register I/O + EFUSE MAC + 68KB Firmware Download:** Implemented synchronous Bulk OUT `usb_write_port` + `ffaddr2pipehdl` in [VendorOsDep.c](../Source/Compat/VendorOsDep.c) for 8814A Beacon RSVD page firmware download (`HalROMDownloadFWRSVDPage8814A` -> `IDDMADownLoadFW_3081`), plus `RTLUserClient` Selector 6 (`kRTLUC_GetRadioInfo`) and [Tools/test_uc.c](../Tools/test_uc.c).
-- [x] **4. Live Hardware Verification:** Verified after reboot: `REG_SYS_CFG = 0x044411B5`, `CHIP_8814A`, permanent EFUSE MAC `7C:C2:C6:03:EA:84` on `en2`, `HAL Init = 1 (_SUCCESS)`, and `Firmware Ready = 1 (YES!)`.
+- [x] **4. Live Hardware Verification:** Verified after reboot: `REG_SYS_CFG = 0x044411B5`, `CHIP_8814A`, permanent EFUSE MAC `7C:C2:C6:xx:xx:xx` on `en2`, `HAL Init = 1 (_SUCCESS)`, and `Firmware Ready = 1 (YES!)`.
 
 ---
 

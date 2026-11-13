@@ -104,9 +104,10 @@ TLV 17 no se emite.
 | `IO80211PeerManager::getVHtCapabilityIE` | `0xffffff8002252c88` | GET interno `0xC02869C9` tipo 214 (`VHT_CAPABILITY`), respuesta de 20 B; guarda `a2+4..+17` (qword→`+0x961`, dword→`+0x969`, word→`+0x96D`) y pone `sub+0x620 = 1` |
 | `IO80211PeerManager::setVHtCapabilityIE` | `0xffffff8002252e66` | SET interno `0x802869C8` tipo 214 (sólo llega desde el handler `setVHT_CAPABILITY` `0xffffff8002289b4b`); mismo store y mismo flag |
 
-La respuesta tipo 214 que se cachea son 14 bytes: VHT Capability Info (4 B), mapa MCS RX (2 B),
-RX Highest (2 B), mapa MCS TX (2 B), TX Highest (2 B) y 2 B finales del struct `?` (la partición
-exacta de los últimos 2 bytes no se verificó; el orden de los stores sí).
+La respuesta tipo 214 que se cachea son 14 bytes y es el elemento entero: identificador y longitud
+(`bf 0c`), VHT Capability Info (4 B), mapa MCS RX (2 B), RX Highest (2 B), mapa MCS TX (2 B) y TX
+Highest (2 B). El TLV 17 de un iPhone (§10) tiene esa forma. El cache HT empieza igual, con `2d 1a`,
+y por eso el TLV 7 copia desde su byte 2.
 
 ### 3.2 HE: cache presente, sin salida
 
@@ -165,24 +166,25 @@ El TLV 12 no lleva capacidades PHY: nada de ancho de canal, GI, LDPC ni cadenas.
 
 | Fuente | Ruta hacia la capa | Respuesta actual |
 |---|---|---|
-| GET 154 (`HT_CAPABILITY`) | `do_ioctl` del PM → interfaz primaria (`en2`) → slot 479 de `RTLAirInterface` | stub heredado `kIOReturnUnsupported` (`Source/IO80211/IO80211_25_6_0_infra_stubs.inc:13`; sin override en `Source/AirLayer/RTLAirLayer.cpp`) |
+| GET 154 (`HT_CAPABILITY`) | `do_ioctl` del PM → interfaz primaria (`en2`) → slot 479 de `RTLAirInterface` | desde el 2026-11-05, los valores del §10 (`RTLAirInterface::getHT_CAPABILITY`); antes, stub `kIOReturnUnsupported` |
 | SET 154 | igual, slot 557 | stub `kIOReturnUnsupported` (`infra_stubs.inc:91`) |
-| GET/SET 214 (`VHT_CAPABILITY`) | igual, slots 482/561 | stubs `kIOReturnUnsupported` (`infra_stubs.inc:16`, `:95`) |
+| GET 214 (`VHT_CAPABILITY`) | igual, slot 482 | desde el 2026-11-05, los valores del §10 (`RTLAirInterface::getVHT_CAPABILITY`); antes, stub `kIOReturnUnsupported` |
+| SET 214 | igual, slot 561 | stub `kIOReturnUnsupported` (`infra_stubs.inc:95`) |
 | GET 570 (`HE_CAPABILITY`) | igual, slot 541 | stub `kIOReturnUnsupported` (`infra_stubs.inc:75`); SET 570 no existe en la tabla |
 | GET/SET 154/214/570 dirigidos a `awdl0` | puente con cast a `IO80211InfraProtocol` | `RTLAwdInterface` no es `IO80211InfraProtocol` (`Source/AirLayer/AWDLInterface.h:297`): el puente responde `0xE082280E` sin llegar a la capa |
 | ioctl interno 151 (plantilla de sync frame) | puente → slot `+0x1118` de `awdl0` | `RTLAwdInterface::setAWDL_SYNC_FRAME_TEMPLATE` responde `kIOReturnSuccess` sin guardar la plantilla (`Source/AirLayer/AWDLInterface.cpp:341-358`, macro `AWDL_ACK`) |
 | eventos 41/42 (canal/flags infra del TLV 12) | `reportDataPathEvents` | la capa no los emite (ventanas diferidas, [AWDL_STAGE3_CONFIGURE_RESULTS.md](AWDL_STAGE3_CONFIGURE_RESULTS.md)) |
 | `getBSSID` (BSSID infra del TLV 12) | `getBSSIDData` → glue/puente | sin override en la capa; comportamiento heredado sin verificar en runtime `?` |
 
-Resultado: con la capa actual, `_htCapabilityLength` queda a 0 y `sub+0x620` a 0, de modo que
-**el PM no emite ni el TLV 7 ni el TLV 17**; el TLV 21 sale siempre (`0xA0`, clase 1) y el TLV 12
-sale con canal de infraestructura 0, BSSID 0 (verificado sólo el mecanismo, no en el aire `?`) y
-las flags derivadas de ivares internos. Los pares ven un nodo sin HT ni VHT anunciados.
+Resultado hasta el 2026-11-05: `_htCapabilityLength` quedaba a 0 y `sub+0x620` a 0, de modo que **el PM
+no emitía ni el TLV 7 ni el TLV 17**. Medido ese día en 25G241: en un arranque, 879 líneas `Invalid
+_htCapabilityLength 0, skipping buildEnhDataRateTlv` y 3 `getVHtCapabilityIE Unable to get vht capabilities
+ret e00002c7`, y ninguna de las 529 tramas capturadas en la radio llevaba esos TLV. Los pares veían un nodo sin
+HT ni VHT anunciados. El TLV 21 sale siempre (`0xA0`, clase 1).
 
 ## 7. Campos por los que un driver podría anunciar más de lo que la radio recibe
 
-Hoy el riesgo es cero porque los TLV 7 y 17 se omiten. Si la capa llegara a implementar GET/SET
-154/214 (o un glue WCL respondiera por ella), el contenido de la respuesta sale al aire casi
+Con la capa respondiendo GET 154/214, el contenido de la respuesta sale al aire casi
 verbatim — el kernel sólo limpia el bit HT-Greenfield en el camino GET. Los campos mentirosos
 serían:
 
@@ -204,9 +206,12 @@ lo esté, el bit 0 del HT Capability Info debe quedar a 0.
 
 ## 8. Cómo mantener los valores honestos
 
-1. **Omisión como estado válido**: no implementar GET 154/214/570 deja los TLV 7/17 fuera del
-   aire; los pares usan tasas legacy. Es interoperable y seguro; el coste es tasa en las ventanas
-   AW.
+1. **La omisión no es un estado válido.** Una versión anterior de esta nota la daba por interoperable.
+   Las pruebas del par virtual mostraron después lo contrario en macOS: sin HT ni VHT,
+   `IO80211AWDLPeer::hasHTorVHTCaps` es falso, `addPeerToFWCache` no cachea el par y `preQueuePacket`
+   descarta todo lo dirigido a él ([AWDL_PAR_VIRTUAL.md](AWDL_PAR_VIRTUAL.md) §9.4). Que iOS haga lo mismo es
+   `?`: `parseHTCapTLV` copia 26 B y no marca HT con un TLV más corto, y owly, que manda un TLV 7 de 8 B y
+   ningún TLV 17, funciona con un iPhone.
 2. **Si se implementa GET 154** (respuesta de 40 B, 28 B de payload): ancho a 20 MHz (bits 1-2 =
    0), SGI sólo si el driver lo aplica de verdad en TX/RX a 20 MHz, LDPC a 0, máscara MCS limitada
    a las cadenas que la radio recibe en `awdl0` (la misma cifra que `getNSS` ya responde desde el
@@ -237,6 +242,24 @@ lo esté, el bit 0 del HT Capability Info debe quedar a 0.
 - Escritores de `state+0x429C`, `state+0x9160/0x9166`, `state+0xD064`, `state+0x917B`,
   `state+0x3EF8` (campos del TLV 12) `?`.
 - Comportamiento real de `getBSSIDData` contra la capa (sin override de `getBSSID`) `?`.
-- Partición exacta de los 2 bytes finales del cache VHT (14 B) `?`.
-- Los slots virtuales `+0x210/218/220` del PM (getters HT/VHT/HE) no tienen llamador localizado
-  en 25.6.0: los caches VHT/HE sólo se llenarían por el camino SET de usuario `?`.
+- `IO80211AWDLPeerManager::doEnable`, `configure` y `reportDataPathEvents` llaman al slot `+0x210` (getter
+  HT). Las 3 líneas de `getVHtCapabilityIE` del §6 prueban que el getter VHT también corre, pero su punto de
+  llamada no se localizó `?`.
+- Si un iPhone manda a tasas HT o VHT que esta radio reciba bien a 20 MHz, y si pide una ADDBA que la capa no
+  contesta ([AWDL_BLOCK_ACK.md](AWDL_BLOCK_ACK.md)), es `?` hasta probar con uno.
+
+## 10. Lo que responde la capa
+
+Describen `awdl0`, no el enlace con la red: 20 MHz, un flujo, sin LDPC ni beamforming, A-MPDU de hasta 64 KB.
+`getHtCapabilityIE` limpia el bit de greenfield y calcula la longitud del TLV 7 (§2.2).
+
+| | Bytes de la respuesta tras la versión | En el aire |
+|---|---|---|
+| HT | `2d 1a 2c 00 1f ff`, y ceros hasta 28 B | TLV 7: `00 00 2c 00 1f ff 00 00` |
+| VHT | `bf 0c 00 00 80 01 fd ff 00 00 fd ff 00 00` | TLV 17: los mismos 14 B |
+| iPhone, para comparar | | TLV 7: `00 00 6f 00 1f ff ff 00 00`; TLV 17: `bf 0c 32 00 80 03 fa ff 00 00 fa ff 00 00` |
+| owly, para comparar | | TLV 7: `00 00 ce 11 1b ff 00 00`; sin TLV 17 |
+
+`updateHTandVHTCapsForRSDB` reescribe los dos mapas VHT solo si el byte de RSDB del PM está puesto
+(`0xffffff80021cdcfa`). La columna «En el aire» se comprobó el 2026-11-06 con una captura desde otro equipo ([AWDL_A53_SNIFFER.md](AWDL_A53_SNIFFER.md) §6). Las mismas
+respuestas las recibiría quien pregunte por `en2`; que algo de la red infraestructura las use es `?`.

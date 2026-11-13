@@ -17,6 +17,8 @@
 #include <IOKit/IOLib.h>
 #include <IOKit/IOWorkLoop.h>
 #include <net/ethernet.h>
+#include <net/kpi_interface.h>
+#include <libkern/OSAtomic.h>
 #include <pexpert/pexpert.h>
 #include <kern/clock.h>
 
@@ -107,6 +109,21 @@ void rtl_vif_bpfTapInput(void *self, mbuf_t m, uint32_t dlt, void *hdr, size_t h
 void *rtl_sky_getPeerManager(void *iface) __asm("__ZN23IO80211SkywalkInterface14getPeerManagerEv");
 void rtl_pm_preQueueQuietMode(void *pm, const void *eth)
 	__asm("__ZN22IO80211AWDLPeerManager28preQueuePacketCheckQuietModeEP12ether_header");
+/* IO80211PeerManager's ivars at +0x18 (25G241): the unicast packet counts that
+ * skywalkLogTxPacket and skywalkInputPacket keep. monitorAWDLDataMode reads them
+ * to leave Low Power and widen the channel sequence; this path calls neither
+ * function, so they would stay at 0 (Docs/AWDL_MODO_DATOS.md). */
+#define AWDL_PM_IVARS         0x18
+#define AWDL_PM_TX_UNICAST    1968
+#define AWDL_PM_TX_BYTES      1988
+#define AWDL_PM_RX_UNICAST    1948
+#define AWDL_PM_RX_BYTES      1992
+static inline void pmCount(void *pm, uint32_t countOff, uint32_t bytesOff, uint32_t bytes)
+{
+	uint8_t *iv = *(uint8_t **)((uint8_t *)pm + AWDL_PM_IVARS);
+	OSIncrementAtomic((SInt32 *)(iv + countOff));
+	OSAddAtomic((SInt32)bytes, (SInt32 *)(iv + bytesOff));
+}
 uint64_t rtl_pkt_base(void *pkt) __asm("__ZNK15IOSkywalkPacket21getDataVirtualAddressEv");
 uint16_t rtl_pkt_off(void *pkt) __asm("__ZNK15IOSkywalkPacket13getDataOffsetEv");
 uint32_t rtl_pkt_len(void *pkt) __asm("__ZNK15IOSkywalkPacket13getDataLengthEv");
@@ -152,8 +169,13 @@ struct rtl_awdl_pool_options {
 #define AWDL_REGINFO_MTU        0x48    /* u32 MTU and u32 max MTU (0x594)   */
 #define AWDL_REGINFO_MAC        0x108   /* 6 bytes, the MAC of the request   */
 
-#define AWDL_TX_RING            32      /* AWDL data frames waiting for a window */
-#define AWDL_TX_PER_TICK        4       /* data frames per AW tick: ~8 ms of air at 12 Mb/s */
+#define AWDL_TX_RING            256     /* AWDL data frames waiting for a window */
+#define AWDL_TX_AGG_FRAME_US    40      /* one MPDU's share of an A-MPDU's preamble, BlockAck and backoff */
+#define AWDL_PUMP_RETRY_US      1000    /* the radio was full: the pump tries again this much later */
+#define AWDL_TX_AIR_US          12000   /* data air time per AW tick, of the AW's 16.4 ms (rtlawdl_air) */
+#define AWDL_DATA_GUARD_TU      3       /* no data this far into a slot */
+#define AWDL_TX_FRAME_US        160     /* preamble, SIFS, ACK and backoff of one data frame */
+#define AWDL_TX_LAST_SLACK_US   3000    /* rtlawdl_lastaw: data ends this long before the slot */
 #define AWDL_TX_AGE_US          1200000 /* past one 16-slot period a queued data frame is dropped */
 #define AWDL_IFACE_ID           2       /* Broadcom: interface id 2 for AWDL */
 #define AWDL_ROLE               6       /* IO80211VirtualInterfaceRole AirLink */
@@ -187,7 +209,11 @@ bool RTLAwdInterface::initWithController(RTLAirController *ctrl, const uint8_t m
 	_rxAllowed = rx != 0;
 	_rxLock = IOLockAlloc();
 	_rxDrain = thread_call_allocate(&RTLAwdInterface::rxDrainEntry, this);
-	if (!_rxLock || !_rxDrain) {
+	uint32_t ba = 1;
+	PE_parse_boot_argn("rtlawdl_ba", &ba, sizeof(ba));
+	_baAllowed = ba != 0;
+	_baLock = IOLockAlloc();
+	if (!_rxLock || !_rxDrain || !_baLock) {
 		LOG("awdl: rx alloc failed");
 		return false;
 	}
@@ -197,16 +223,56 @@ bool RTLAwdInterface::initWithController(RTLAirController *ctrl, const uint8_t m
 	uint32_t park = 149;
 	PE_parse_boot_argn("rtlawdl_ch", &park, sizeof(park));
 	_parkCh = park == 6 || park == 44 || park == 149 ? (uint8_t)park : 0;
-	/* Same radio the controller drives (RTLAirController::start). */
-	IOService *nub = ctrl->getProvider();
-	_radioSvc = nub ? nub->getProvider() : nullptr;
-	if (_radioSvc)
-		_radioSvc->retain();
-	_symTx80211 = OSSymbol::withCString(RTL_RADIO_FN_TX_80211);
+	_mccMode = 0;
+	PE_parse_boot_argn("rtlawdl_mcc", &_mccMode, sizeof(_mccMode));
+	_mccAw = 0;
+	if (PE_parse_boot_argn("rtlawdl_mccaw", &_mccAw, sizeof(_mccAw)) &&
+	    (_mccAw < 1 || _mccAw > 4))     /* AWDL_PM: the whole slot */
+		_mccAw = 4;
+	_mccDwell = _mccAw ? _mccAw : 1;
+	_mccRun = 3;
+	PE_parse_boot_argn("rtlawdl_mccrun", &_mccRun, sizeof(_mccRun));
+	if (_mccRun > AWDL_SHARE_SLOTS - 1)
+		_mccRun = AWDL_SHARE_SLOTS - 1;
+	uint32_t dense = 1;
+	PE_parse_boot_argn("rtlawdl_dense", &dense, sizeof(dense));
+	_denseAllowed = dense != 0;
+	uint32_t air = AWDL_TX_AIR_US, lastAw = 0;
+	PE_parse_boot_argn("rtlawdl_air", &air, sizeof(air));
+	PE_parse_boot_argn("rtlawdl_lastaw", &lastAw, sizeof(lastAw));
+	_txAirUs = air < 4000 ? 4000 : air > 15000 ? 15000 : air;
+	_txLastAw = lastAw != 0;
+	if (_txAirUs != AWDL_TX_AIR_US || _txLastAw)
+		LOG("awdl: data air %u us per AW%s", _txAirUs, _txLastAw ? ", also in the slot's last AW" : "");
+	uint32_t rate = 1, rateMax = 5;
+	PE_parse_boot_argn("rtlawdl_rate", &rate, sizeof(rate));
+	PE_parse_boot_argn("rtlawdl_ratemax", &rateMax, sizeof(rateMax));
+	_rateOff = rate == 0;
+	_rateMax = (uint8_t)(rateMax < 1 ? 1 : rateMax > 6 ? 6 : rateMax);
+	_rateIdx = 1;
+	_mccLock = IOLockAlloc();
 	_txLock = IOLockAlloc();
 	_txTick = thread_call_allocate(&RTLAwdInterface::txTickEntry, this);
+	_txPump = thread_call_allocate(&RTLAwdInterface::pumpEntry, this);
 	_txRing = (AwdlTxFrame *)IOMallocZero(sizeof(AwdlTxFrame) * AWDL_TX_RING);
-	if (!_symTx80211 || !_txLock || !_txTick || !_txRing) {
+	uint32_t pump = 1, agg = 1, aggWd = 1, aggMax = 31, aggDen = 6, aggBw = 80;
+	PE_parse_boot_argn("rtlawdl_pump", &pump, sizeof(pump));
+	PE_parse_boot_argn("rtlawdl_agg", &agg, sizeof(agg));
+	PE_parse_boot_argn("rtlawdl_aggwd", &aggWd, sizeof(aggWd));
+	PE_parse_boot_argn("rtlawdl_aggmax", &aggMax, sizeof(aggMax));
+	PE_parse_boot_argn("rtlawdl_aggden", &aggDen, sizeof(aggDen));
+	PE_parse_boot_argn("rtlawdl_aggbw", &aggBw, sizeof(aggBw));
+	_pumpAllowed = pump != 0;
+	_aggAllowed = agg != 0;
+	bzero(&_bao, sizeof(_bao));
+	_bao.watchOff = aggWd == 0;
+	_aggMax = aggMax < 1 ? 1 : aggMax > 31 ? 31 : aggMax;
+	_aggDensity = aggDen > 7 ? 7 : aggDen;
+	_aggBwMax = aggBw >= 80 ? RTL_RADIO_BW_80 : aggBw >= 40 ? RTL_RADIO_BW_40 : RTL_RADIO_BW_20;
+	if (!_pumpAllowed || !_aggAllowed || _bao.watchOff)
+		LOG("awdl: data pump %s, A-MPDU %s%s", _pumpAllowed ? "on" : "off", _aggAllowed ? "on" : "off",
+		    _bao.watchOff ? ", sessions never closed for silence" : "");
+	if (!_txLock || !_txTick || !_txPump || !_txRing || !_mccLock) {
 		LOG("awdl: tx alloc failed");
 		return false;
 	}
@@ -378,6 +444,8 @@ IOReturn RTLAwdInterface::txData(OSObject *owner, void *, void *const *pkts,
 		void *pm = me->_txOn && len >= 14 ? rtl_sky_getPeerManager(me) : nullptr;
 		if (pm)
 			rtl_pm_preQueueQuietMode(pm, eth);
+		if (pm && !(eth[0] & 1))
+			pmCount(pm, AWDL_PM_TX_UNICAST, AWDL_PM_TX_BYTES, len);
 		me->queueData(eth, len);
 	}
 	/* enqueuePackets requires count < queue capacity (128). */
@@ -388,6 +456,31 @@ IOReturn RTLAwdInterface::txData(OSObject *owner, void *, void *const *pkts,
 				rtl_pool_free(me->_txPool, pkts[done + i]);
 	}
 	return (IOReturn)count;
+}
+
+/*
+ * The peer manager's multicast stash, from handleMulticastTimer (25G241
+ * 0xffffff80021c38c4, the branch without card capability p[21] bit 6): the
+ * return value is the number of packets taken, and it frees the rest with
+ * freeMulticastPacket. AppleBCMWLANPCIeSkywalkTxSubmissionQueue::p2pMulticastTx
+ * runs them through its TX submission action; txData is ours, so every packet
+ * is taken and completed there.
+ */
+uintptr_t RTLAwdInterface::p2pMulticastTx(IO80211NetworkPacket **pkts, unsigned int count)
+{
+	if (!pkts || !count)
+		return 0;
+	if (_txMcast++ == 0)
+		LOG("awdl: first multicast batch from the peer manager, %u packets", count);
+	return (uintptr_t)txData(this, nullptr, (void *const *)pkts, count, nullptr);
+}
+
+/* As the Broadcom PCIe queue: the packet goes back to the pool it came from. */
+uintptr_t RTLAwdInterface::freeMulticastPacket(IO80211NetworkPacket *pkt)
+{
+	if (pkt && _txPool)
+		rtl_pool_free(_txPool, pkt);
+	return 1;
 }
 
 void RTLAwdInterface::teardownDatapath()
@@ -409,6 +502,8 @@ void RTLAwdInterface::stop(IOService *provider)
 	 * the queues are gone. A cancelled pending call drops its reference. */
 	if (_txTick && thread_call_cancel_wait(_txTick))
 		release();
+	if (_txPump && thread_call_cancel_wait(_txPump))
+		release();
 	if (_rxDrain && thread_call_cancel_wait(_rxDrain))
 		release();
 	teardownDatapath();
@@ -429,6 +524,11 @@ void RTLAwdInterface::free()
 		_rxDrain = nullptr;
 	}
 	flushRadioRx();
+	baFlushAll(false);
+	if (_baLock) {
+		IOLockFree(_baLock);
+		_baLock = nullptr;
+	}
 	if (_rxLock) {
 		IOLockFree(_rxLock);
 		_rxLock = nullptr;
@@ -438,16 +538,22 @@ void RTLAwdInterface::free()
 		thread_call_free(_txTick);
 		_txTick = nullptr;
 	}
+	if (_txPump) {
+		thread_call_free(_txPump);
+		_txPump = nullptr;
+	}
 	if (_txLock) {
 		IOLockFree(_txLock);
 		_txLock = nullptr;
+	}
+	if (_mccLock) {
+		IOLockFree(_mccLock);
+		_mccLock = nullptr;
 	}
 	if (_txRing) {
 		IOFree(_txRing, sizeof(AwdlTxFrame) * AWDL_TX_RING);
 		_txRing = nullptr;
 	}
-	OSSafeReleaseNULL(_symTx80211);
-	OSSafeReleaseNULL(_radioSvc);
 	OSSafeReleaseNULL(*(OSObject **)&_txSubQ);
 	OSSafeReleaseNULL(*(OSObject **)&_txCompQ);
 	OSSafeReleaseNULL(*(OSObject **)&_rxCompQ);
@@ -513,7 +619,10 @@ uintptr_t RTLAwdInterface::disable(unsigned int opts)
  * become Ethernet II packets on awdl0's RX completion queue (deliverData).
  * Boot-arg rtlawdl_rx=0 leaves the hook detached.
  */
-#define AWDL_RX_META          4       /* rssi (s8), channel, 2 spare bytes */
+#define AWDL_RX_META          12      /* rssi (s8), channel, 2 spare, u64 arrival (us) */
+#define AWDL_RX_META_TIME     4
+
+static uint64_t awdlNowUs();
 #define AWDL_RX_QUEUE_MAX     64
 #define AWDL_RX_FRAME_MAX     2048    /* management frame pool buffer size */
 #define AWDL_WLAN_HDR         24
@@ -543,11 +652,52 @@ void RTLAwdInterface::setRadioRx(bool on)
 		_rxHooked = on;
 		IOLockUnlock(_rxLock);
 	}
-	if (!on)
+	if (!on) {
 		flushRadioRx();
+		baFlushAll(false);
+	}
 	LOG("awdl: rx %s, af %llu data %llu (up %llu bad %llu not us %llu) other %llu dropped %llu",
 	    on ? "attached" : "detached", _rxAf, _rxData, _rxDataUp, _rxDataBad, _rxDataNotUs,
 	    _rxOther, _rxDropped);
+}
+
+/* The old radio is terminating: unhook it but remember what was on. */
+void RTLAwdInterface::radioGone()
+{
+	if (_rxHooked)
+		_ctrl->radio(RTL_RADIO_FN_AWDL_HOOK, nullptr, nullptr);
+	if (_mccLock) {
+		IOLockLock(_mccLock);
+		_mccCur = 0;            /* a new radio starts on its own channel */
+		_mccOff = false;
+		IOLockUnlock(_mccLock);
+	}
+	LOG("awdl: radio leaving, rx %u port1 %u", _rxHooked, _port1On);
+}
+
+void RTLAwdInterface::radioBack()
+{
+	if (_rxHooked) {
+		IOReturn r = _ctrl->radio(RTL_RADIO_FN_AWDL_HOOK, (void *)&RTLAwdInterface::radioRxHook, this);
+		if (r != kIOReturnSuccess)
+			LOG("awdl: rx hook refused by the new radio 0x%x", r);
+	}
+	if (_port1On) {
+		IOReturn r = _ctrl->radio(RTL_RADIO_FN_AWDL_PORT, _mac);
+		_port1On = r == kIOReturnSuccess;
+		if (!_port1On)
+			LOG("awdl: port 1 refused by the new radio 0x%x", r);
+	}
+	_rateSet = false;           /* a new radio starts at its fixed rate */
+	/* and without an A-MPDU rate: the sessions start over, since frames sent
+	 * through it before the rate is set again would get the radio's numbers */
+	_aggSet = false;
+	if (_txLock) {
+		IOLockLock(_txLock);
+		bzero(_bao.peer, sizeof(_bao.peer));
+		IOLockUnlock(_txLock);
+	}
+	LOG("awdl: radio back, rx %u port1 %u", _rxHooked, _port1On);
 }
 
 void RTLAwdInterface::flushRadioRx()
@@ -576,7 +726,11 @@ void RTLAwdInterface::radioRxHook(void *ctx, const uint8_t *frame, uint32_t len,
 		me->_rxDropped++;
 		return;
 	}
+	/* Arrival time on the radio's RX thread: alignClock works from it, not
+	 * from when the thread call drains the queue. */
 	uint8_t meta[AWDL_RX_META] = { (uint8_t)rssi, channel, 0, 0 };
+	uint64_t rxUs = awdlNowUs();
+	memcpy(meta + AWDL_RX_META_TIME, &rxUs, sizeof(rxUs));
 	if (mbuf_copyback(m, 0, AWDL_RX_META, meta, MBUF_DONTWAIT) != 0 ||
 	    mbuf_copyback(m, AWDL_RX_META, len, frame, MBUF_DONTWAIT) != 0) {
 		mbuf_freem(m);
@@ -624,6 +778,8 @@ void RTLAwdInterface::rxDrainEntry(thread_call_param_t p0, thread_call_param_t)
 		else
 			mbuf_freem(m);
 	}
+	/* Gaps that waited too long, also when no frame came (txTick kicks). */
+	me->baExpire(awdlNowUs());
 	me->release();
 }
 
@@ -661,7 +817,19 @@ void RTLAwdInterface::injectFrame(mbuf_t m)
 	if (!af) {
 		if (type == 2) {
 			_rxData++;
-			deliverData(m);
+			if (_aggAllowed && len >= AWDL_RX_META + AWDL_WLAN_HDR) {
+				IOLockLock(_txLock);
+				awdlBaoHeard(&_bao, f + 10);
+				IOLockUnlock(_txLock);
+			}
+			rxReorder(m);
+			return;
+		}
+		/* Block Ack action frames (category 3): ADDBA request, DELBA. */
+		if (type == 0 && subtype == 13 && len >= AWDL_RX_META + AWDL_WLAN_HDR + 2 &&
+		    body[0] == 3) {
+			_rxOther++;
+			handleBlockAck(m);
 			return;
 		}
 		_rxOther++;
@@ -669,20 +837,54 @@ void RTLAwdInterface::injectFrame(mbuf_t m)
 		return;
 	}
 	_rxAf++;
-	if ((_rxAf & 0xFF) == 0)
-		LOG("awdl: rx af %llu data %llu other %llu dropped %llu", _rxAf, _rxData, _rxOther,
-		    _rxDropped);
+	baExpire(awdlNowUs());
+	uint64_t rxUs;
+	memcpy(&rxUs, h + AWDL_RX_META_TIME, sizeof(rxUs));
+	uint64_t lag = awdlNowUs() - rxUs;
+	if (lag > _rxLagMax)
+		_rxLagMax = lag;
+	if ((_rxAf & 0xFF) == 0) {
+		LOG("awdl: rx af %llu data %llu (up %llu bad %llu wrapped %llu) other %llu dropped %llu, "
+		    "drain lag max %llu us", _rxAf, _rxData, _rxDataUp, _rxDataBad, _rxDataWrapped,
+		    _rxOther, _rxDropped, _rxLagMax);
+		if (_baReq)
+			LOG("awdl: ba req %llu accept %llu decline %llu delba %llu, total held %llu "
+			    "gaps skipped %llu old %llu dup %llu%s", _baReq, _baAccept, _baDecline, _baDelba, _baHeld,
+			    _baTimeout, _baOld, _baDup, _baRefuse ? " (refusing)" : "");
+		_rxLagMax = 0;
+	}
 
-	if (_txOn)
+	if (_txOn) {
 		alignClock(m, f + 10);
+		notePeerSeq(m, f + 10);
+	}
+	if (memcmp(f + 10, _mac, 6)) {
+		uint64_t at = awdlNowUs();
+		IOLockLock(_txLock);
+		_mccPeerUs = at;
+		/* the signal rateByRssi goes by; starts over after 5 s of silence */
+		int32_t r16 = (int32_t)rssi * 16;
+		_peerRssi16 = _peerRssiUs && at - _peerRssiUs < 5000000 ? _peerRssi16 + (r16 - _peerRssi16) / 8
+		                                                        : r16;
+		_peerRssiUs = at;
+		IOLockUnlock(_txLock);
+	}
 
-	/* Source MAC, channel and RSSI: the manager reads +0x00 and +0x2c; the
-	 * channel only travels to the BPF tap (ABI §1.3). */
+	/* Source MAC, channel and RSSI: the manager reads +0x00 and +0x2c, and
+	 * IO80211Peer::reportRssi keeps the peer's 5 GHz or 2.4 GHz RSSI average
+	 * only when the channel flags carry the band bit (0x10 or 0x08); that
+	 * average decides isPeerRoutable. wifip2pd maps the band from the same
+	 * flags. Broadcom fills them from ChanSpecConvToApple80211Channel: band,
+	 * 20 MHz (0x02) and DFS (0x100) for channels 52 to 144. */
 	uint8_t hdr[AWDL_AF_HDR_LEN];
 	bzero(hdr, sizeof(hdr));
 	memcpy(hdr, f + 10, 6);
+	uint32_t cflags = (channel > 14 ? 0x10u : 0x08u) | 0x02u;
+	if (channel >= 52 && channel <= 144)
+		cflags |= 0x100u;
 	*(uint32_t *)(hdr + AWDL_AF_HDR_CHANNEL) = 1;
 	*(uint32_t *)(hdr + AWDL_AF_HDR_CHANNEL + 4) = channel;
+	*(uint32_t *)(hdr + AWDL_AF_HDR_CHANNEL + 8) = cflags;
 	*(int32_t *)(hdr + AWDL_AF_HDR_RSSI) = rssi;
 
 	/* The buffer starts at the category byte. */
@@ -708,6 +910,7 @@ void RTLAwdInterface::injectFrame(mbuf_t m)
 void RTLAwdInterface::deliverData(mbuf_t m)
 {
 	static const uint8_t kSnap[8] = { 0xAA, 0xAA, 0x03, 0x00, 0x17, 0xF2, 0x08, 0x00 };
+	static const uint8_t kRfc1042[6] = { 0xAA, 0xAA, 0x03, 0x00, 0x00, 0x00 };
 	uint8_t f[AWDL_RX_FRAME_MAX];
 	size_t len = mbuf_pkthdr_len(m);
 	if (len <= AWDL_RX_META || len - AWDL_RX_META > sizeof(f) ||
@@ -751,6 +954,18 @@ void RTLAwdInterface::deliverData(mbuf_t m)
 	for (uint32_t i = 0; i < ns; i++) {
 		const uint8_t *s = sub[i].msdu;
 		size_t sl = sub[i].len;
+		/* iOS 27 wraps its larger frames (MCS 0/1 QoS data, A-MSDU bit clear)
+		 * in an RFC 1042 header whose type field is the length of the AWDL
+		 * MSDU that follows: AA AA 03 00 00 00 LL LL. Measured 2026-11-08 over
+		 * the air: 620 of 1370 iPhone data frames to the Mac, none up before. */
+		if (sl >= 8 + AWDL_DATA_HDR && !memcmp(s, kRfc1042, sizeof(kRfc1042))) {
+			size_t wl = ((size_t)s[6] << 8) | s[7];
+			if (wl >= AWDL_DATA_HDR && wl <= sl - 8) {
+				s += 8;
+				sl = wl;
+				_rxDataWrapped++;
+			}
+		}
 		if (sl < AWDL_DATA_HDR || memcmp(s, kSnap, sizeof(kSnap)) || s[8] != 0x03 ||
 		    s[9] != 0x04) {
 			_rxDataBad++;
@@ -806,6 +1021,10 @@ void RTLAwdInterface::deliverData(mbuf_t m)
 		    sub[0].sa[0], sub[0].sa[1], sub[0].sa[2], sub[0].sa[3], sub[0].sa[4], sub[0].sa[5],
 		    sub[0].msdu[14], sub[0].msdu[15]);
 	_rxDataUp += n;
+	void *pm = rtl_sky_getPeerManager(this);
+	for (uint32_t i = 0; pm && i < ns; i++)
+		if (!(sub[i].da[0] & 1))
+			pmCount(pm, AWDL_PM_RX_UNICAST, AWDL_PM_RX_BYTES, (uint32_t)sub[i].len);
 }
 
 /*
@@ -824,12 +1043,14 @@ void RTLAwdInterface::deliverData(mbuf_t m)
  * its own master: then the slot boundary and the AW count of its TLV 4 are
  * taken (AWDL-7). Timing values follow owly's node: AW 16 TU, 4 AWs per slot,
  * 16 slots, PSF every 110 TU, MIF in the middle of each slot. The MIF carries
- * no ARPA (16) TLV: the host name is not available here (?).
+ * the manager's MI template, whose ARPA (16) TLV the kernel adds while an
+ * ARPA service is registered (Docs/AWDL_PSF_MIF_EMISSION.md, section 3.2).
  */
 #define AWDL_TU_US            1024
 #define AWDL_AW_TU            16
 #define AWDL_PM               4       /* AWs per slot (presence mode) */
 #define AWDL_SLOT_TU          (AWDL_AW_TU * AWDL_PM)
+#define AWDL_MCC_PEER_HOLD_US 30000000 /* whole served slots this long after a peer's frame */
 #define AWDL_SLOTS            16
 #define AWDL_PSF_TU           110
 #define AWDL_AF_PSF           0
@@ -843,6 +1064,7 @@ void RTLAwdInterface::deliverData(mbuf_t m)
 #define AWDL_CHANSEQ_LEN      (6 + 2 * AWDL_SLOTS)
 #define AWDL_EV_AW_START      41      /* APPLE80211_M_AWDL_AVAILABILITY_WINDOW_START */
 #define AWDL_EV_AW_END        43      /* ..._AVAILABILITY_WINDOW_EXTENSIONS_END */
+#define AWDL_EV_PEER_CACHE    51      /* reportDataPathEvents, handleCacheControlMessages */
 
 static const uint8_t kAwdlBssid[6] = { 0x00, 0x25, 0x00, 0xFF, 0x94, 0x73 };
 
@@ -856,6 +1078,400 @@ static uint64_t awdlNowUs()
 static void putLe16(uint8_t *p, uint16_t v) { p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); }
 static void putLe32(uint8_t *p, uint32_t v) { putLe16(p, (uint16_t)v); putLe16(p + 2, (uint16_t)(v >> 16)); }
 static uint16_t getLe16(const uint8_t *p) { return (uint16_t)(p[0] | p[1] << 8); }
+static uint32_t getLe32(const uint8_t *p) { return getLe16(p) | (uint32_t)getLe16(p + 2) << 16; }
+
+/* The TX rate ladder's rungs: descriptor rate index and Mb/s (updateRate). */
+static const uint8_t kAwdlRate[7] = { 0x04, 0x06, 0x08, 0x09, 0x0a, 0x0b, 0x13 };
+static const uint8_t kAwdlRateMbps[7] = { 6, 12, 24, 36, 48, 54, 65 };
+
+/*
+ * Block Ack recipient (Docs/AWDL_BLOCK_ACK.md §6). The family never answers an
+ * ADDBA (§1), and before this the layer dropped every one, so the iPhone sent
+ * one MPDU per access. The RTL8814AU MAC sends the BlockAck frames itself: the
+ * vendor driver programs no recipient session even for its own AP, and still
+ * receives A-MPDUs there. What is left to the host is the ADDBA response, the
+ * peer's DELBA and the order: a window per (peer, TID) holds frames that came
+ * ahead of a gap until the gap is filled, slides past it, or waits too long.
+ */
+#define AWDL_BA_HOLD_US       100000  /* a gap older than this is skipped (Linux: HZ/10) */
+#define AWDL_BA_OUT           66
+#define AWDL_BA_DELBA_RUN     4       /* DELBAs in AWDL_BA_DELBA_US turn the answer to 37 */
+#define AWDL_BA_DELBA_US      10000000
+#define AWDL_BA_REFUSE_US     60000000 /* how long a DELBA storm turns the answer to 37 */
+
+/* Queues an 802.11 management frame for the destination's next window, ahead
+ * of the data already waiting. */
+bool RTLAwdInterface::queueMgmt(const uint8_t *frame, uint16_t len)
+{
+	IOLockLock(_txLock);
+	if (!_txOn || !_txRing || len < AWDL_WLAN_HDR || len > sizeof(_txRing->frame)) {
+		IOLockUnlock(_txLock);
+		return false;
+	}
+	/* At the head: an answer waiting behind a ring of data could age out
+	 * there (AWDL_TX_AGE_US), and the peer only retries every 2 s. A full ring
+	 * gives up its newest data frame. */
+	if (_txRingCount == AWDL_TX_RING) {
+		_txRingCount--;
+		_txDataDropFull++;
+	}
+	_txRingHead = (_txRingHead + AWDL_TX_RING - 1) % AWDL_TX_RING;
+	AwdlTxFrame *t = &_txRing[_txRingHead];
+	memcpy(t->frame, frame, len);
+	t->len = len;
+	t->tsUs = (uint32_t)awdlNowUs();
+	_txRingCount++;
+	IOLockUnlock(_txLock);
+	return true;
+}
+
+/* Moves the frames waiting at the head of the window to out[], in order, and
+ * advances the window past them. With skipHoles it also steps over the gaps,
+ * until nothing waits. Under _baLock. */
+uint32_t RTLAwdInterface::baRelease(AwdlBaSession *s, mbuf_t *out, uint32_t cap, bool skipHoles)
+{
+	uint32_t n = 0;
+	for (uint32_t i = 0; s->held && n < cap && i < 64; i++) {
+		mbuf_t *sl = &s->slot[s->ws & 63];
+		if (*sl) {
+			out[n++] = *sl;
+			*sl = nullptr;
+			s->held--;
+		} else if (!skipHoles) {
+			break;
+		}
+		s->ws = (uint16_t)((s->ws + 1) & 0xFFF);
+	}
+	if (!s->held)
+		s->heldUs = 0;
+	return n;
+}
+
+/* Ends a session: what it held goes to out[] (or is freed past cap). Under
+ * _baLock. */
+void RTLAwdInterface::baClose(AwdlBaSession *s, mbuf_t *out, uint32_t *n, uint32_t cap)
+{
+	for (uint32_t i = 0; i < 64; i++) {
+		uint16_t q = (uint16_t)((s->ws + i) & 63);
+		if (!s->slot[q])
+			continue;
+		if (*n < cap)
+			out[(*n)++] = s->slot[q];
+		else
+			mbuf_freem(s->slot[q]);
+		s->slot[q] = nullptr;
+	}
+	s->held = 0;
+	s->heldUs = 0;
+	s->on = false;
+}
+
+/* Skips the gaps that have waited too long. A session is never closed for
+ * being idle: the peer still holds the agreement and would go on sending
+ * A-MPDUs, which would then go up unordered (seen 2026-11-09 with the virtual
+ * peer after 30 s without data). It ends with the peer's DELBA, a new ADDBA
+ * or when the least recently used of the eight makes room. Runs on the RX
+ * drain with each action frame and when txTick kicks it. */
+void RTLAwdInterface::baExpire(uint64_t now)
+{
+	if (!_baLock)
+		return;
+	mbuf_t out[AWDL_BA_OUT];
+	uint32_t n = 0;
+	IOLockLock(_baLock);
+	for (uint32_t i = 0; i < kBaSessions; i++) {
+		AwdlBaSession *s = &_ba[i];
+		if (!s->on)
+			continue;
+		if (s->held && now - s->heldUs > AWDL_BA_HOLD_US) {
+			n += baRelease(s, out + n, AWDL_BA_OUT - n, true);
+			_baTimeout++;
+		}
+	}
+	IOLockUnlock(_baLock);
+	for (uint32_t i = 0; i < n; i++)
+		deliverData(out[i]);
+}
+
+/* A session holds a frame past its timeout. */
+bool RTLAwdInterface::baExpireDue(uint64_t now)
+{
+	if (!_baLock)
+		return false;
+	bool due = false;
+	IOLockLock(_baLock);
+	for (uint32_t i = 0; i < kBaSessions && !due; i++) {
+		AwdlBaSession *s = &_ba[i];
+		due = s->on && s->held && now - s->heldUs > AWDL_BA_HOLD_US;
+	}
+	IOLockUnlock(_baLock);
+	return due;
+}
+
+/* Closes every session; their frames go up when deliver is set. */
+void RTLAwdInterface::baFlushAll(bool deliver)
+{
+	if (!_baLock)
+		return;
+	mbuf_t out[AWDL_BA_OUT];
+	for (uint32_t i = 0; i < kBaSessions; i++) {
+		uint32_t n = 0;
+		IOLockLock(_baLock);
+		baClose(&_ba[i], out, &n, AWDL_BA_OUT);
+		_ba[i].lastUs = 0;
+		IOLockUnlock(_baLock);
+		for (uint32_t j = 0; j < n; j++) {
+			if (deliver)
+				deliverData(out[j]);
+			else
+				mbuf_freem(out[j]);
+		}
+	}
+}
+
+/*
+ * A Block Ack action frame from a peer (IEEE 802.11-2020 9.6.4). ADDBA request:
+ * category 3, action 0, token, parameter set (A-MSDU bit 0, immediate policy
+ * bit 1, TID bits 2-5, buffer size bits 6-15), timeout, starting sequence
+ * control. The answer echoes the token, the A-MSDU bit (deliverData splits
+ * A-MSDU), the policy and the TID, with a window of at most 64 and the
+ * timeout as asked. Delayed Block Ack, a TID above 7 or no port 1 (the MAC
+ * would not acknowledge on awdl0's address) get status 37. DELBA: the peer
+ * as initiator (bit 11) ends our recipient session for its TID (bits 12-15).
+ * Consumes m.
+ */
+void RTLAwdInterface::handleBlockAck(mbuf_t m)
+{
+	uint8_t f[AWDL_WLAN_HDR + 9];
+	size_t len = mbuf_pkthdr_len(m) - AWDL_RX_META;
+	size_t fl = len < sizeof(f) ? len : sizeof(f);
+	bool ok = mbuf_copydata(m, AWDL_RX_META, fl, f) == 0;
+	mbuf_freem(m);
+	if (!ok || fl < AWDL_WLAN_HDR + 2 || memcmp(f + 4, _mac, 6) || (f[10] & 1))
+		return;
+	const uint8_t *b = f + AWDL_WLAN_HDR;
+	uint64_t now = awdlNowUs();
+	mbuf_t out[AWDL_BA_OUT];
+	uint32_t n = 0;
+	if (b[1] == 0 && fl >= AWDL_WLAN_HDR + 9) {
+		uint16_t params = getLe16(b + 3), ssc = getLe16(b + 7);
+		uint8_t tid = (params >> 2) & 0xF;
+		uint16_t win = params >> 6;
+		if (win > 64)
+			win = 64;
+		if (_baRefuse && now - _baRefuseUs > AWDL_BA_REFUSE_US) {
+			_baRefuse = false;
+			_baDelbaUs = 0;
+			LOG("awdl: accepting ADDBA again");
+		}
+		/* A buffer size of 0 is malformed: an accepted session needs 1 or more. */
+		bool accept = _baAllowed && !_baRefuse && _port1On && tid < 8 && (params & 2) && win;
+		_baReq++;
+		if (accept) {
+			IOLockLock(_baLock);
+			AwdlBaSession *s = nullptr, *idle = nullptr, *oldest = &_ba[0];
+			for (uint32_t i = 0; i < kBaSessions && !s; i++) {
+				AwdlBaSession *c = &_ba[i];
+				if (c->lastUs && c->tid == tid && !memcmp(c->peer, f + 10, 6))
+					s = c;
+				else if (!c->lastUs && !idle)
+					idle = c;
+				else if (c->lastUs < oldest->lastUs)
+					oldest = c;
+			}
+			/* The same request again (our answer was lost or late): the
+			 * session and its window stay, or frames it holds would go up
+			 * ahead of the one the peer is about to resend. Only a starting
+			 * sequence outside the window starts it over. */
+			uint16_t ssn = (uint16_t)(ssc >> 4);
+			bool keep = s && s->on &&
+			            (((ssn - s->ws) & 0xFFF) < s->win || ((s->ws - ssn) & 0xFFF) < s->win);
+			if (!s)
+				s = idle ? idle : oldest;
+			if (!keep) {
+				baClose(s, out, &n, AWDL_BA_OUT);
+				memcpy(s->peer, f + 10, 6);
+				s->tid = tid;
+				s->ws = ssn;
+				s->win = win;
+				s->oldRun = 0;
+				s->on = true;
+			} else {
+				/* The answer must not offer more than this request asks:
+				 * the window follows it. Frames held past a smaller one are
+				 * still released in order as it slides. */
+				s->win = win;
+			}
+			s->lastUs = now;
+			IOLockUnlock(_baLock);
+		}
+		uint16_t status = accept ? 0 : 37;
+		uint8_t r[AWDL_WLAN_HDR + 9];
+		bzero(r, sizeof(r));
+		r[0] = 0xD0;
+		memcpy(r + 4, f + 10, 6);
+		memcpy(r + 10, _mac, 6);
+		memcpy(r + 16, kAwdlBssid, 6);
+		uint8_t *p = r + AWDL_WLAN_HDR;
+		p[0] = 3;
+		p[1] = 1;
+		p[2] = b[2];
+		putLe16(p + 3, status);
+		putLe16(p + 5, accept ? (uint16_t)((params & 0x3F) | (win << 6)) : params);
+		p[7] = b[5];
+		p[8] = b[6];
+		bool queued = queueMgmt(r, sizeof(r));
+		if (accept)
+			_baAccept++;
+		else
+			_baDecline++;
+		if (_baReq <= AWDL_RX_LOG_FIRST)
+			LOG("awdl: ADDBA from %02x:%02x:%02x:%02x:%02x:%02x tid %u win %u ssn %u amsdu %u -> "
+			    "status %u%s", f[10], f[11], f[12], f[13], f[14], f[15], tid, params >> 6,
+			    ssc >> 4, params & 1, status, queued ? "" : " (not queued: tx off)");
+	} else if (b[1] == 1 && fl >= AWDL_WLAN_HDR + 7) {
+		/* The answer to a request of ours (AWDLBaOrig.h). */
+		uint16_t status = getLe16(b + 3), params = getLe16(b + 5);
+		IOLockLock(_txLock);
+		bool on = awdlBaoResponse(&_bao, f + 10, b[2], status, params, now);
+		uint64_t count = _bao.accepted + _bao.refused;
+		IOLockUnlock(_txLock);
+		if (count <= AWDL_RX_LOG_FIRST)
+			LOG("awdl: ADDBA response from %02x:%02x:%02x:%02x:%02x:%02x token %u status %u tid %u "
+			    "win %u: %s", f[10], f[11], f[12], f[13], f[14], f[15], b[2], status,
+			    (params >> 2) & 0xF, params >> 6, on ? "A-MPDU on" : "no session");
+	} else if (b[1] == 2 && fl >= AWDL_WLAN_HDR + 6) {
+		uint16_t params = getLe16(b + 2);
+		uint8_t tid = (uint8_t)(params >> 12);
+		_baDelba++;
+		if (!(params & 0x0800)) {
+			/* The peer closes a session of ours. */
+			IOLockLock(_txLock);
+			awdlBaoDelba(&_bao, f + 10, tid, now);
+			IOLockUnlock(_txLock);
+		}
+		if (params & 0x0800) {
+			IOLockLock(_baLock);
+			for (uint32_t i = 0; i < kBaSessions; i++) {
+				AwdlBaSession *s = &_ba[i];
+				if (s->on && s->tid == tid && !memcmp(s->peer, f + 10, 6)) {
+					baClose(s, out, &n, AWDL_BA_OUT);
+					s->lastUs = 0;
+				}
+			}
+			/* Sessions torn down again and again mean the peer gets no
+			 * BlockAck: back to single MPDUs, as before. */
+			if (!_baDelbaUs || now - _baDelbaUs > AWDL_BA_DELBA_US) {
+				_baDelbaUs = now;
+				_baDelbaRun = 0;
+			}
+			if (++_baDelbaRun >= AWDL_BA_DELBA_RUN && !_baRefuse) {
+				_baRefuse = true;
+				_baRefuseUs = now;
+				LOG("awdl: %u DELBAs in %u s: declining ADDBA for %u s", _baDelbaRun,
+				    AWDL_BA_DELBA_US / 1000000, AWDL_BA_REFUSE_US / 1000000);
+			}
+			IOLockUnlock(_baLock);
+		}
+		if (_baDelba <= AWDL_RX_LOG_FIRST)
+			LOG("awdl: DELBA from %02x:%02x:%02x:%02x:%02x:%02x tid %u initiator %u reason %u",
+			    f[10], f[11], f[12], f[13], f[14], f[15], tid, (params >> 11) & 1, getLe16(b + 4));
+	}
+	for (uint32_t i = 0; i < n; i++)
+		deliverData(out[i]);
+}
+
+/*
+ * A data frame into its session's window, or straight up: group frames,
+ * frames without QoS and frames of a (peer, TID) with no session go to
+ * deliverData as they come. Sequence numbers are 12 bits; a frame behind the
+ * window is a retry already delivered or skipped, and a run of 64 of them
+ * means the peer started over without a new ADDBA. Consumes m.
+ */
+void RTLAwdInterface::rxReorder(mbuf_t m)
+{
+	uint8_t f[AWDL_WLAN_HDR + 2];
+	size_t len = mbuf_pkthdr_len(m);
+	if (!_baLock || len < AWDL_RX_META + sizeof(f) ||
+	    mbuf_copydata(m, AWDL_RX_META, sizeof(f), f) != 0 || f[0] != 0x88 ||
+	    memcmp(f + 4, _mac, 6)) {
+		deliverData(m);
+		return;
+	}
+	uint8_t tid = f[AWDL_WLAN_HDR] & 0x0F;
+	uint16_t seq = getLe16(f + 22) >> 4;
+	uint64_t now = awdlNowUs();
+	mbuf_t out[AWDL_BA_OUT];
+	uint32_t n = 0;
+	bool direct = true, drop = false;
+	IOLockLock(_baLock);
+	AwdlBaSession *s = nullptr;
+	for (uint32_t i = 0; i < kBaSessions && !s; i++)
+		if (_ba[i].on && _ba[i].tid == tid && !memcmp(_ba[i].peer, f + 10, 6))
+			s = &_ba[i];
+	if (s) {
+		direct = false;
+		s->lastUs = now;
+		uint16_t d = (uint16_t)((seq - s->ws) & 0xFFF);
+		if (d >= 2048) {
+			_baOld++;
+			if (++s->oldRun < 64) {
+				drop = true;
+			} else {
+				n = baRelease(s, out, AWDL_BA_OUT - 2, true);
+				s->ws = seq;
+				d = 0;
+			}
+		}
+		if (!drop) {
+			s->oldRun = 0;
+			if (d >= s->win) {
+				/* Beyond the window: slide it so this frame is its last. */
+				uint16_t nws = (uint16_t)((seq - s->win + 1) & 0xFFF);
+				while (s->held && s->ws != nws) {
+					mbuf_t *sl = &s->slot[s->ws & 63];
+					if (*sl) {
+						out[n++] = *sl;
+						*sl = nullptr;
+						s->held--;
+					}
+					s->ws = (uint16_t)((s->ws + 1) & 0xFFF);
+				}
+				s->ws = nws;
+				if (!s->held)
+					s->heldUs = 0;
+				d = (uint16_t)(s->win - 1);
+			}
+			mbuf_t *sl = &s->slot[seq & 63];
+			if (d == 0) {
+				out[n++] = m;
+				s->ws = (uint16_t)((s->ws + 1) & 0xFFF);
+				n += baRelease(s, out + n, AWDL_BA_OUT - n, false);
+			} else if (*sl) {
+				_baDup++;
+				drop = true;
+			} else {
+				*sl = m;
+				if (!s->held++)
+					s->heldUs = now;
+				_baHeld++;
+			}
+			if (s->held && now - s->heldUs > AWDL_BA_HOLD_US) {
+				n += baRelease(s, out + n, AWDL_BA_OUT - n, true);
+				_baTimeout++;
+			}
+		}
+	}
+	IOLockUnlock(_baLock);
+	if (direct) {
+		deliverData(m);
+		return;
+	}
+	if (drop)
+		mbuf_freem(m);
+	for (uint32_t i = 0; i < n; i++)
+		deliverData(out[i]);
+}
 
 /* Operating class of a 20 MHz slot as owly announces it: 81 on 2.4 GHz, 128 on 5 GHz. */
 static uint8_t awdlOpClass(uint8_t ch) { return ch <= 14 ? 81 : 128; }
@@ -966,19 +1582,28 @@ IOReturn RTLAwdInterface::setAWDL_OOB_REQUEST(apple80211_awdl_oob_request *arg)
 	if (!p || !_txLock)
 		return kIOReturnSuccess;
 	const uint8_t *dst = p + 0x04;
+	uint16_t len = getLe16(p + 0x28);
+	const uint8_t *tpl = *(const uint8_t *const *)(p + 0x30);
 	bool queued = true;
 	IOLockLock(_txLock);
-	copyMiTemplate(p);
 	if (!memcmp(dst, bcast, 6)) {
+		copyMiTemplate(p);
 		_mifNow = true;
 	} else {
+		/* A unicast 149's template lacks the service TLVs and carries the UMI's
+		 * options: it serves that frame only, not the broadcast MIFs. */
 		uint8_t i = 0;
-		while (i < _umiCount && memcmp(_umiDst[i], dst, 6))
+		while (i < _umiCount && memcmp(_umi[i].dst, dst, 6))
 			i++;
-		if (i == _umiCount && _umiCount < 4)
-			memcpy(_umiDst[_umiCount++], dst, 6);
-		else if (i == _umiCount)
+		if ((i == _umiCount && _umiCount == 4) || !tpl || !len || len > sizeof(_umi[i].tpl)) {
 			queued = false;
+		} else {
+			memcpy(_umi[i].dst, dst, 6);
+			memcpy(_umi[i].tpl, tpl, len);
+			_umi[i].len = len;
+			if (i == _umiCount)
+				_umiCount++;
+		}
 	}
 	IOLockUnlock(_txLock);
 	if (!queued)
@@ -1010,6 +1635,7 @@ IOReturn RTLAwdInterface::setAWDL_SYNCHRONIZATION_CHANNEL_SEQUENCE(
 		s[i] = i < n ? (uint8_t)*(const uint32_t *)(e + 4) : 0;
 		changed |= s[i] != _seq[i];
 		_seq[i] = s[i];
+		_seqVer[i] = i < n ? *(const uint32_t *)e : 0;
 		_seqFlags[i] = i < n ? *(const uint32_t *)(e + 8) : 0;
 	}
 	_seqValid = n != 0;
@@ -1028,7 +1654,7 @@ IOReturn RTLAwdInterface::setAWDL_SYNCHRONIZATION_CHANNEL_SEQUENCE(
 
 void RTLAwdInterface::setRadioTx(bool on)
 {
-	if (on && (!_txAllowed || !_radioSvc))
+	if (on && (!_txAllowed || !_ctrl || !_ctrl->hasRadio()))
 		return;
 	if (!_txLock || !_txTick)
 		return;
@@ -1069,9 +1695,15 @@ void RTLAwdInterface::setRadioTx(bool on)
 		IOLockLock(_txLock);
 		if (!_txOn && thread_call_cancel(_txTick))
 			release();
+		_pumpOk = false;
+		if (!_txOn && _txPump && thread_call_cancel(_txPump))
+			release();
 		IOLockUnlock(_txLock);
 		_ctrl->radio(RTL_RADIO_FN_AWDL_PORT, nullptr);
 		_port1On = false;
+		/* After _txOn went false: a tick that switches later sees it under
+		 * _mccLock and stays on the BSS */
+		mccSwitch(0);
 	}
 	if (!on)
 		flushRadioTx();
@@ -1108,7 +1740,8 @@ static bool awdlSocial(uint8_t ch)
  * Runs at each AW boundary of the clock. At a slot start it closes the open
  * window (event 43, which also lets the manager run its election) and, when
  * the slot is served, opens the next one (event 41). A PSF goes out every
- * 110 TU and a MIF in the third AW of each served slot.
+ * 110 TU and a MIF in the third AW of each served slot, or with time sharing
+ * in the last AW the radio is sure to stay for (mccChannel).
  */
 void RTLAwdInterface::txTick()
 {
@@ -1124,12 +1757,74 @@ void RTLAwdInterface::txTick()
 
 	struct rtl_radio_status st;
 	uint8_t ch = 0;
-	if (_ctrl && _ctrl->radioStatus(&st) == kIOReturnSuccess && !st.scanning) {
-		if (st.state == RTL_RADIO_S_LINKED)
+	bool linked = false, mcc = false, shared = false;
+	if (_ctrl && _ctrl->radioStatus(&st) == kIOReturnSuccess) {
+		linked = st.state == RTL_RADIO_S_LINKED;
+		/* the radio belongs to a BSS on another channel, also during its scans */
+		shared = linked && !awdlSocial(st.channel);
+		/* A scan can last longer than the family keeps a silent peer, so while
+		 * one is around the served slots go on in the scan's back-ops. A slot
+		 * started there always gets its return: the scan waits for it. */
+		bool backop = st.scanning == RTL_RADIO_SCAN_BACKOP && linked && !awdlSocial(st.channel);
+		if (backop && !_mccCur) {
+			uint64_t at = awdlNowUs();
+			IOLockLock(_txLock);
+			backop = _mccPeerUs && at < _mccPeerUs + AWDL_MCC_PEER_HOLD_US;
+			IOLockUnlock(_txLock);
+		}
+		/* Without an association the driver brings a scan back to the parked
+		 * channel between groups of channels while a peer is around, and
+		 * refuses AWDL frames outside those returns: the windows go on there. */
+		if (st.scanning == RTL_RADIO_SCAN_BACKOP && st.state == RTL_RADIO_S_SCAN) {
+			ch = parkRadio(st.idle_channel, awdlNowUs(), true);
+		} else if (st.scanning && !backop) {
+			/* The scan's own back-op brings the radio home at its end. In a
+			 * back-op it is home already, or waits for the return below. */
+			if (_mccLock && st.scanning != RTL_RADIO_SCAN_BACKOP) {
+				IOLockLock(_mccLock);
+				_mccCur = 0;
+				IOLockUnlock(_mccLock);
+			}
+		} else if (linked) {
 			ch = st.channel;
-		else if (st.state == RTL_RADIO_S_IDLE)
-			ch = parkRadio(st.idle_channel, awdlNowUs());
+			if (!awdlSocial(ch) && _mccMode && !_mccOff) {
+				mcc = true;
+				/* A tick armed ahead of a served slot decides as at its start,
+				 * so the radio is already there when the peers' frames come. */
+				uint64_t at = awdlNowUs();
+				IOLockLock(_txLock);
+				if (_mccPreUs) {
+					if (at < _mccPreUs)
+						at = _mccPreUs;
+					_mccPreUs = 0;
+				}
+				IOLockUnlock(_txLock);
+				ch = mccChannel(ch, at);
+			}
+		} else if (st.state == RTL_RADIO_S_IDLE) {
+			ch = parkRadio(st.idle_channel, awdlNowUs(), _ctrl->infraBusy());
+		}
 	}
+	if (!linked && _mccCur)
+		mccSwitch(0);
+	updateRate();
+	aggRate(awdlNowUs());
+	/* Held frames get their timeout from the RX drain, which only runs when
+	 * frames arrive: a quiet peer gets it from here. */
+	if (baExpireDue(awdlNowUs()) && _rxDrain) {
+		retain();
+		if (thread_call_enter(_rxDrain))
+			release();
+	}
+	IOLockLock(_txLock);
+	_mccActive = mcc;
+	/* dense presence needs windows: none on a BSS's channel without time sharing */
+	bool denseChanged = updateDense(awdlNowUs(), shared && !(mcc && _mccRun));
+	bool denseNow = _dense;
+	IOLockUnlock(_txLock);
+	if (denseChanged && _denseChanges <= 64)
+		LOG("awdl: dense presence %s%s (rx data %llu, tx data %llu)", denseNow ? "on" : "off",
+		    mcc ? ", radio shared with the BSS" : "", _rxData, _txDataSent);
 	if (ch && !awdlSocial(ch)) {
 		if (ch != _offSocialCh) {
 			_offSocialCh = ch;
@@ -1159,14 +1854,20 @@ void RTLAwdInterface::txTick()
 	if (aw != _lastTickAw) {
 		_lastTickAw = aw;
 		if (aw % AWDL_PM == 0 || !ch) {
-			close = _awOpen;
+			close = _awOpen && _awPosted;
 			_awOpen = false;
 		}
 		if (aw % AWDL_PM == 0 && served) {
-			open = true;
+			/* A slot only dense presence serves is a window of ours, which the
+			 * peers see in TLV 18, but not the family's: its sequence has 0
+			 * there, so events 41 and 43 are left out. */
+			_awPosted = !_seqValid || _seq[slot] == ch;
+			open = _awPosted;
 			_awOpen = true;
 		}
-		if (served && aw % AWDL_PM == AWDL_PM / 2 && aw / AWDL_PM != _lastMifSlot) {
+		/* in the middle of the slot, or in the last AW the time sharing stays for */
+		uint32_t mifAw = mcc && _mccDwell <= AWDL_PM / 2 ? _mccDwell - 1 : AWDL_PM / 2;
+		if (served && aw % AWDL_PM == mifAw && aw / AWDL_PM != _lastMifSlot) {
 			mif = true;
 			_lastMifSlot = aw / AWDL_PM;
 		}
@@ -1179,7 +1880,9 @@ void RTLAwdInterface::txTick()
 	if (open) {
 		/* Event 41 (Docs/AWDL_WINDOW_TIMER.md §5.1): AW number, sync state,
 		 * master and top master of the template's election v2, slot start in
-		 * µs big-endian, channel flags and channel. */
+		 * µs big-endian, and the window's apple80211_channel: version, channel,
+		 * flags. The manager checks the flags against the sequence's, and
+		 * handleUmiTimer against the peer's before it sends a UMI. */
 		const uint8_t *e2 = findTlv(_tpl, _tplLen, AWDL_TLV_ELECTION_V2, 28);
 		const uint8_t *top = e2 ? e2 + 3 : _mac;
 		const uint8_t *sync = e2 ? e2 + 3 + 6 : _mac;
@@ -1189,31 +1892,69 @@ void RTLAwdInterface::txTick()
 		memcpy(ev41 + 0x08, sync, 6);
 		memcpy(ev41 + 0x0e, top, 6);
 		*(uint32_t *)(ev41 + 0x14) = OSSwapHostToBigInt32((uint32_t)awStart);
-		*(uint32_t *)(ev41 + 0x18) = _seqValid && _seqFlags[slot] ? _seqFlags[slot]
-		                                                           : (ch <= 14 ? 0x8 : 0x10);
+		*(uint32_t *)(ev41 + 0x18) = _seqValid && _seqVer[slot] ? _seqVer[slot] : 1;
 		*(uint32_t *)(ev41 + 0x1c) = ch;
+		*(uint32_t *)(ev41 + 0x20) = _seqValid && _seqFlags[slot] ? _seqFlags[slot]
+		                                                           : (ch <= 14 ? 0x8 : 0x10);
 	}
 	uint64_t next = _clkBaseUs + (awIdx + 1) * AWDL_AW_TU * AWDL_TU_US;
 	/* Data goes only inside a served slot's window, a peer listens on this
 	 * channel only in the slots it shares with us, and not in its last AW,
 	 * so the MGNT queue does not spill past the slot and delay the next
-	 * sync frames. */
-	bool dataWindow = ch && served && _awOpen && _txRingCount && aw % AWDL_PM != AWDL_PM - 1;
+	 * sync frames. Nor in the slot's first TUs, where a peer may still be
+	 * arriving from another channel (Docs/AWDL_A53_SNIFFER.md §16): the frames
+	 * wait for a tick armed at the end of the guard. */
+	uint64_t guardEnd = awStart + AWDL_DATA_GUARD_TU * AWDL_TU_US;
+	bool inGuard = aw % AWDL_PM == 0 && now + 500 < guardEnd;
+	bool lastAw = aw % AWDL_PM == AWDL_PM - 1;
+	bool dataWindow = ch && served && _awOpen && _txRingCount && (!lastAw || _txLastAw) &&
+	                  !inGuard;
+	/* rtlawdl_lastaw: in the last AW the batch ends AWDL_TX_LAST_SLACK_US
+	 * before the slot does, so the queue is empty when the next slot's sync
+	 * frames are due. */
+	uint32_t airUs = _txAirUs;
+	if (lastAw) {
+		uint64_t slotEnd = awStart + AWDL_AW_TU * AWDL_TU_US;
+		uint64_t left = slotEnd > now + AWDL_TX_LAST_SLACK_US ? slotEnd - now - AWDL_TX_LAST_SLACK_US : 0;
+		if (left < airUs)
+			airUs = (uint32_t)left;
+		if (!airUs)
+			dataWindow = false;
+	}
+	bool guardWait = ch && served && _awOpen && _txRingCount && inGuard;
+	/* What the pump may do in this AW. The air budget starts over with each
+	 * AW and when a window opens; a tick that runs again inside one (the end
+	 * of the guard, an early wake for a switch) leaves what is left. */
+	bool pumpOk = ch && served && _awOpen && (!lastAw || _txLastAw) && !inGuard && airUs;
+	if (pumpOk && (!_pumpOk || aw != _pumpAw || _pumpAir > airUs))
+		_pumpAir = airUs;
+	_pumpOk = pumpOk;
+	_pumpStall = false;
+	_pumpAw = aw;
+	_pumpSlot = slot;
+	_pumpCh = ch;
+	_pumpEndUs = lastAw ? awStart + AWDL_AW_TU * AWDL_TU_US - AWDL_TX_LAST_SLACK_US : next;
 	/* The 149s go out in a window of ours, where peers listen. */
-	uint8_t umi[4][6];
-	uint8_t nUmi = 0;
+	bool umiNow = false;
 	bool mifNow = false;
 	if (ch && served && _awOpen) {
-		nUmi = _umiCount;
-		memcpy(umi, _umiDst, sizeof(umi));
-		_umiCount = 0;
+		umiNow = _umiCount != 0;
 		mifNow = _mifNow;
 		_mifNow = false;
+	}
+	uint8_t pccDst[8][6], pccOp[8];
+	uint8_t nPcc = _pccCount;
+	if (nPcc) {
+		memcpy(pccDst, _pccDst, sizeof(pccDst));
+		memcpy(pccOp, _pccOp, sizeof(pccOp));
+		_pccCount = 0;
 	}
 	IOLockUnlock(_txLock);
 
 	/* Events 43 then 41, outside the lock: postMessage takes the controller's
 	 * gate (Docs/AWDL_STAGE3_EVENT_EMITTERS.md §3.1). */
+	for (uint8_t i = 0; i < nPcc; i++)
+		postPeerCache(pccOp[i], pccDst[i]);
 	if (close) {
 		bzero(ev43, sizeof(ev43));
 		postMessage(AWDL_EV_AW_END, ev43, sizeof(ev43), false);
@@ -1229,23 +1970,57 @@ void RTLAwdInterface::txTick()
 			_txPsf++;
 		if ((mif || mifNow) && sendAf(AWDL_AF_MIF, ch, mask))
 			_txMif++;
-		for (uint8_t i = 0; i < nUmi; i++)
-			if (sendAf(AWDL_AF_MIF, ch, mask, umi[i]))
-				_txUmi++;
+		for (uint8_t i = 0; umiNow && i < 4 && sendAf(AWDL_AF_MIF, ch, mask, true); i++)
+			_txUmi++;
 		if (psf && (_txPsf & 0x3FF) == 0)
 			LOG("awdl: tx psf %llu mif %llu fail %llu windows %llu ch %u, data queued %llu "
-			    "sent %llu dropped full %llu old %llu bad %llu fail %llu",
+			    "sent %llu dropped full %llu old %llu bad %llu fail %llu held %llu busy %llu, mcc %llu fail %llu "
+			    "max %llu us avg %llu us early %llu dwell %u, mcast batches %llu",
 			    _txPsf, _txMif, _txFail, _ev41, ch, _txDataQueued, _txDataSent,
-			    _txDataDropFull, _txDataDropOld, _txDataDropBad, _txDataFail);
+			    _txDataDropFull, _txDataDropOld, _txDataDropBad, _txDataFail, _txDataHeld, _txDataBusy,
+			    _mccSwitches, _mccFail, _mccUsMax, _mccSwitches ? _mccUsSum / _mccSwitches : 0,
+			    _mccEarly, _mccDwell, _txMcast);
+		/* The ladder's view: with frames sent and no reports the radio is
+		 * not reporting, and the rate stays where it is. */
+		if (psf && (_txPsf & 0x3FF) == 0 && !_rateOff)
+			LOG("awdl: tx rate %u Mb/s%s%s, reports %u (clean %u retried %u/%u lost %u), changes %llu, "
+			    "dense %u (%llu changes)", kAwdlRateMbps[_rateIdx], _rateSet ? "" : " (not set)",
+			    _rateByRssi ? " by signal" : "",
+			    _rateLastReports, _rateLast[0], _rateLast[1], _rateLast[2], _rateLast[3],
+			    _rateChanges, _dense, _denseChanges);
+		if (psf && (_txPsf & 0x3FF) == 0 && _aggAllowed && !_aggOff)
+			LOG("awdl: A-MPDU frames %llu at %u Mb/s, sessions asked %llu on %llu refused %llu "
+			    "unanswered %llu closed by peer %llu broken %llu idle %llu, pump runs %llu",
+			    _txDataAgg, _aggMbps, _bao.requests, _bao.accepted, _bao.refused, _bao.noAnswer,
+			    _bao.delbaIn, _bao.broken, _bao.idle, _txPumpRuns);
 	}
 	if (dataWindow)
-		sendData();
+		pumpData();
 
 	IOLockLock(_txLock);
 	_tickBusy = false;
 	if (_txOn) {
 		uint64_t t = awdlNowUs();
-		uint64_t wait = next > t ? next - t : 1000;
+		/* The switch to a served slot takes milliseconds (rtlRadioAwdlOffch
+		 * runs synchronously); started at the boundary it lands after the
+		 * frames peers send at the start of the window. When the next AW opens
+		 * a served slot the radio is not on, wake that much earlier. */
+		uint64_t wake = guardWait ? guardEnd : next;
+		uint16_t nextAw = (uint16_t)(_clkBaseAw + awIdx + 1);
+		if (mcc && _mccTarget && _mccCur != _mccTarget && nextAw % AWDL_PM == 0 &&
+		    (_mccServe >> ((nextAw / AWDL_PM) % AWDL_SLOTS)) & 1) {
+			uint64_t lead = _mccUsMax + 1500;
+			if (lead < 3000)
+				lead = 3000;
+			if (lead > 8000)
+				lead = 8000;
+			if (next > t + lead) {
+				wake = next - lead;
+				_mccPreUs = next;
+				_mccEarly++;
+			}
+		}
+		uint64_t wait = wake > t ? wake - t : 1000;
 		uint64_t deadline;
 		clock_interval_to_deadline((uint32_t)wait, kMicrosecondScale, &deadline);
 		armTick(deadline);
@@ -1260,9 +2035,12 @@ void RTLAwdInterface::txTick()
  * sequence is channel 6 in slots 0 and 8, Docs/AWDL_SIN_ASOCIACION_INFRA.md
  * §3). Returns the channel to serve, or 0 until the radio sits there. A
  * disconnect leaves it on the old BSS channel, so the request is repeated, at
- * most once a second. Called from txTick only.
+ * most once a second. While infrastructure is busy no request goes out, since
+ * an association may follow, but a radio already there keeps serving: otherwise
+ * each scan silences AWDL for 3 s more than it lasts
+ * (Docs/AWDL_A53_SNIFFER.md §17). Called from txTick only.
  */
-uint8_t RTLAwdInterface::parkRadio(uint8_t idleCh, uint64_t nowUs)
+uint8_t RTLAwdInterface::parkRadio(uint8_t idleCh, uint64_t nowUs, bool infraBusy)
 {
 	if (!_parkCh)
 		return 0;
@@ -1284,7 +2062,7 @@ uint8_t RTLAwdInterface::parkRadio(uint8_t idleCh, uint64_t nowUs)
 	IOLockUnlock(_txLock);
 	if (idleCh == target)
 		return idleCh;
-	if (_parkReqUs && nowUs - _parkReqUs < 1000000)
+	if (infraBusy || (_parkReqUs && nowUs - _parkReqUs < 1000000))
 		return 0;
 	_parkReqUs = nowUs;
 	uint32_t want = target;
@@ -1309,26 +2087,445 @@ uint16_t RTLAwdInterface::servedMask(uint8_t ch) const
 		return 0;
 	if (!_seqValid)
 		return 0xFFFF;
-	uint16_t mask = 0;
-	for (int i = 0; i < AWDL_SLOTS; i++)
+	uint16_t mask = 0, idle = 0;
+	for (int i = 0; i < AWDL_SLOTS; i++) {
 		if (_seq[i] == ch)
 			mask |= (uint16_t)(1u << i);
-	return mask;
+		else if (!_seq[i])
+			idle |= (uint16_t)(1u << i);
+	}
+	/* shared with a BSS, _mccServe holds the idle slots a transfer takes */
+	if (_dense)
+		mask |= idle;
+	return _mccActive ? mask & _mccServe : mask;
+}
+/* Tells the radio the rung's rate; a radio without RTL_RADIO_FN_AWDL_RATE
+ * turns the ladder off and data stays at its fixed 12 Mb/s. */
+bool RTLAwdInterface::setRate(uint8_t idx)
+{
+	uint32_t r = kAwdlRate[idx];
+	IOReturn e = _ctrl ? _ctrl->radio(RTL_RADIO_FN_AWDL_RATE, &r) : kIOReturnNotReady;
+	if (e == kIOReturnUnsupported) {
+		_rateOff = true;
+		LOG("awdl: the radio has no AWDL data rate control: fixed 12 Mb/s");
+		return false;
+	}
+	if (e != kIOReturnSuccess)
+		return false;
+	_rateIdx = idx;
+	_rateSet = true;
+	return true;
+}
+void RTLAwdInterface::updateRate()
+{
+	if (_rateOff || !_ctrl)
+		return;
+	struct rtl_radio_awdl_txstat st;
+	if (!_rateSet) {
+		/* A new radio (or the first tick): its counters are the new base. */
+		if (setRate(_rateIdx) && _ctrl->radio(RTL_RADIO_FN_AWDL_TXSTAT, &st) == kIOReturnSuccess) {
+			uint32_t base[4] = { st.clean, st.retried, st.retried2, st.lost };
+			memcpy(_rateLast, base, sizeof(base));
+			_rateLastReports = st.reports;
+		}
+		return;
+	}
+	if (_rateByRssi)
+		rateByRssi(awdlNowUs());
+	/* Reports come after their frames: poll while frames go out and for a
+	 * few ticks after, so the last ones of a burst still count. */
+	uint64_t sent = _txDataSent - _rateSentAt;
+	if (sent) {
+		_rateSentAt = _txDataSent;
+		_ratePollLeft = 8;
+	} else if (!_ratePollLeft) {
+		return;
+	} else {
+		_ratePollLeft--;
+	}
+	if (_ctrl->radio(RTL_RADIO_FN_AWDL_TXSTAT, &st) != kIOReturnSuccess)
+		return;
+	if (st.reports == _rateLastReports) {
+		/* A radio that reports nothing leaves the ladder blind. */
+		if (!st.reports && !_rateByRssi && (_rateNoRpt += (uint32_t)sent) >= 64) {
+			_rateByRssi = true;
+			LOG("awdl: no TX report from the radio for %u data frames: rate by the peers' signal",
+			    _rateNoRpt);
+		}
+		return;
+	}
+	if (_rateByRssi) {
+		_rateByRssi = false;
+		LOG("awdl: TX reports arriving (%u): rate by the ladder", st.reports);
+	}
+	uint32_t now[4] = { st.clean, st.retried, st.retried2, st.lost };
+	bool back = st.reports < _rateLastReports;
+	for (int i = 0; i < 4; i++)
+		back |= now[i] < _rateLast[i];
+	_rateLastReports = st.reports;
+	if (back) {
+		/* The radio's counters went back to 0 (a reloaded RTL8814Native): a
+		 * new base, no decision on a difference that is not one. */
+		memcpy(_rateLast, now, sizeof(now));
+		return;
+	}
+	uint32_t d[4];
+	for (int i = 0; i < 4; i++) {
+		d[i] = now[i] - _rateLast[i];
+		_rateLast[i] = now[i];
+	}
+	uint32_t clean = d[0];
+	/* One retry is usually the peer still off channel; two retries, a lost
+	 * frame or several single retries in one tick are the rate. */
+	bool fail = d[2] || d[3] || d[1] >= 2;
+	if (clean)
+		_rateEverClean = true;
+	_rateHold = _rateHold > clean ? _rateHold - clean : 0;
+	uint8_t idx = _rateIdx;
+	/* Before any frame was acknowledged (a peer that never ACKs, like the
+	 * virtual one) the ladder stays at 12 Mb/s or above. */
+	uint8_t floor = _rateEverClean ? 0 : 1;
+	if (fail) {
+		_rateCleanRun = 0;
+		if (_rateProbe) {
+			idx = idx > floor ? idx - 1 : idx;
+			_rateHold = 256u << _rateBackoff;
+			if (_rateBackoff < 4)
+				_rateBackoff++;
+			_rateProbe = false;
+			_rateFailed = false;
+		} else if (_rateFailed) {
+			idx = idx > floor ? idx - 1 : idx;
+			_rateHold = 256;
+			_rateFailed = false;
+		} else {
+			_rateFailed = true;
+		}
+		_rateOk = 0;
+	} else {
+		_rateOk += clean;
+		_rateCleanRun += clean;
+		if (_rateFailed && _rateCleanRun >= 128)
+			_rateFailed = false;
+		if (_rateProbe && _rateOk >= 32) {
+			/* Confirmed. The next climb needs another 32 clean frames here,
+			 * so a failure in between counts as a strike, not a probe. */
+			_rateProbe = false;
+			_rateOk = 0;
+			if (_rateBackoff)
+				_rateBackoff--;
+		}
+		if (!_rateProbe && !_rateFailed && _rateOk >= 32 && !_rateHold && idx < _rateMax) {
+			idx++;
+			_rateProbe = true;
+			_rateOk = 0;
+		}
+	}
+	if (idx == _rateIdx)
+		return;
+	uint8_t was = _rateIdx;
+	if (setRate(idx) && _rateChanges++ < 64)
+		LOG("awdl: tx rate %u -> %u Mb/s (reports clean %u retried %u/%u lost %u, last final "
+		    "rate code 0x%x)", kAwdlRateMbps[was], kAwdlRateMbps[idx], st.clean, st.retried,
+		    st.retried2, st.lost, st.rate);
+}
+/*
+ * The rate from the peers' signal, for a radio that sends no TX reports. Each
+ * rung has the weakest smoothed RSSI it is used at, about 10 dB over the
+ * sensitivity of an OFDM receiver at that rate; going up takes 3 dB more and
+ * at most one change per second, going down is immediate. The hardware's rate
+ * fallback on retries covers a frame the rung was too fast for. With no peer
+ * heard for 5 s the rate is 12 Mb/s. From txTick only.
+ */
+void RTLAwdInterface::rateByRssi(uint64_t now)
+{
+	static const int8_t kMin[7] = { -128, -128, -70, -65, -60, -55, -50 };
+	IOLockLock(_txLock);
+	bool fresh = _peerRssiUs && now - _peerRssiUs < 5000000;
+	int rssi = _peerRssi16 / 16;
+	IOLockUnlock(_txLock);
+	uint8_t up = 1, down = 1;
+	for (uint8_t i = 2; fresh && i <= _rateMax; i++) {
+		if (rssi >= kMin[i])
+			down = i;
+		if (rssi >= kMin[i] + 3)
+			up = i;
+	}
+	uint8_t idx = _rateIdx;
+	if (down < idx)
+		idx = down;
+	else if (up > idx && now - _rateRssiUs >= 1000000)
+		idx = up;
+	if (idx == _rateIdx)
+		return;
+	uint8_t was = _rateIdx;
+	_rateRssiUs = now;
+	if (setRate(idx) && _rateChanges++ < 64)
+		LOG("awdl: tx rate %u -> %u Mb/s by signal (peers at %d dBm%s)", kAwdlRateMbps[was],
+		    kAwdlRateMbps[idx], rssi, fresh ? "" : ", none heard");
+}
+/*
+ * The rate of the Block Ack sessions' A-MPDUs, VHT with two streams: its TX
+ * descriptor index, Mb/s at 20 and at 80 MHz with the long guard interval, and
+ * the weakest smoothed RSSI it is used at on 20 MHz. A wider channel takes 3 dB
+ * more per doubling. The floors sit a few dB over a receiver's sensitivity at
+ * each rate, since the radio reports nothing to correct them by; its own
+ * fallback on retries covers a frame the rate was too fast for.
+ */
+static const struct {
+	uint8_t desc;
+	uint16_t mbps20, mbps80;
+	int8_t min20;
+} kAwdlAgg[8] = {
+	{ 0x36, 13, 58, -128 },  { 0x37, 26, 117, -76 },  { 0x38, 39, 175, -73 },  { 0x39, 52, 234, -70 },
+	{ 0x3A, 78, 351, -66 },  { 0x3B, 104, 468, -62 }, { 0x3D, 130, 585, -58 }, { 0x3E, 156, 702, -54 },
+};
+
+/*
+ * Keeps the radio's A-MPDU rate current and watches the sessions. The rate
+ * follows the peers' signal as rateByRssi does: down at once, up with 3 dB to
+ * spare, and it is given to the radio again every second, whose answer tells
+ * the width the radio is tuned to (the park width may change under it). With
+ * no peer heard for 5 s it is the slowest. A session that carried data out
+ * while nothing came back is closed with a DELBA. From txTick only.
+ */
+void RTLAwdInterface::aggRate(uint64_t now)
+{
+	if (!_aggAllowed || _aggOff || !_ctrl)
+		return;
+	if (now - _aggWatchUs >= 250000) {
+		_aggWatchUs = now;
+		uint8_t mac[6];
+		IOLockLock(_txLock);
+		int act = awdlBaoWatch(&_bao, now, mac);
+		IOLockUnlock(_txLock);
+		if (act == AWDL_BAO_DO_DELBA) {
+			uint8_t d[AWDL_BAO_DELBA_LEN];
+			awdlBaoBuildDelba(d, mac, _mac, kAwdlBssid, 39);
+			queueMgmt(d, sizeof(d));
+			LOG("awdl: Block Ack session to %02x:%02x:%02x:%02x:%02x:%02x carried data and nothing "
+			    "came back: closed, single frames for %u s", mac[0], mac[1], mac[2], mac[3], mac[4],
+			    mac[5], (unsigned)(AWDL_BAO_BACKOFF_US / 1000000));
+		}
+	}
+	if (_aggSet && now - _aggUs < 1000000)
+		return;
+	IOLockLock(_txLock);
+	bool fresh = _peerRssiUs && now - _peerRssiUs < 5000000;
+	int rssi = _peerRssi16 / 16;
+	IOLockUnlock(_txLock);
+	int wide = _aggBw == RTL_RADIO_BW_80 ? 6 : _aggBw == RTL_RADIO_BW_40 ? 3 : 0;
+	uint8_t up = 0, down = 0;
+	for (uint8_t i = 1; fresh && i < 8; i++) {
+		if (rssi >= kAwdlAgg[i].min20 + wide)
+			down = i;
+		if (rssi >= kAwdlAgg[i].min20 + wide + 3)
+			up = i;
+	}
+	uint8_t idx = _aggSet ? _aggIdx : down;
+	if (down < idx)
+		idx = down;
+	else if (up > idx)
+		idx = up;
+	struct rtl_radio_awdl_agg c;
+	bzero(&c, sizeof(c));
+	c.rate = kAwdlAgg[idx].desc;
+	c.bw = _aggBwMax;
+	c.max_agg = _aggMax;
+	c.density = _aggDensity;
+	IOReturn e = _ctrl->radio(RTL_RADIO_FN_AWDL_AGG, &c);
+	if (e == kIOReturnUnsupported) {
+		_aggOff = true;
+		LOG("awdl: the radio has no A-MPDU for AWDL data: single frames only");
+		return;
+	}
+	if (e != kIOReturnSuccess)
+		return;
+	uint8_t bw = c.radio_bw < _aggBwMax ? (uint8_t)c.radio_bw : (uint8_t)_aggBwMax;
+	/* 40 MHz carries 27/13 of 20 MHz */
+	uint32_t mbps = bw == RTL_RADIO_BW_80 ? kAwdlAgg[idx].mbps80
+	                : bw == RTL_RADIO_BW_40 ? kAwdlAgg[idx].mbps20 * 27u / 13u : kAwdlAgg[idx].mbps20;
+	bool changed = !_aggSet || idx != _aggIdx || bw != _aggBw;
+	IOLockLock(_txLock);
+	_aggMbps = mbps;
+	IOLockUnlock(_txLock);
+	_aggIdx = idx;
+	_aggBw = bw;
+	_aggUs = now;
+	_aggSet = true;
+	if (changed && _aggChanges++ < 64)
+		LOG("awdl: A-MPDU rate VHT 2SS MCS %u, %u Mb/s at %u MHz (peers at %d dBm%s)",
+		    kAwdlAgg[idx].desc - 0x36, mbps, bw == RTL_RADIO_BW_80 ? 80 : bw == RTL_RADIO_BW_40 ? 40 : 20,
+		    rssi, fresh ? "" : ", none heard");
 }
 
-bool RTLAwdInterface::sendAf(uint8_t subtype, uint8_t channel, uint16_t mask, const uint8_t *da)
+/* Samples the data frames every 250 ms; 10 or more in a sample is busy. Two
+ * busy samples among the last four (1 s) are a transfer and turn dense
+ * presence on; once on, every busy sample keeps it, until 2 s after the last
+ * one. A single burst, such as a TLS retry of a few frames (2026-11-09: about
+ * 16 frames every few seconds toggled it 595 times in 20 minutes), does not
+ * turn it on. Not two in a row: with dense presence off, data moves only in
+ * the served slots, 2 and 10 of the 129, 524 ms apart, so the busy samples
+ * of a transfer come every second sample or so (2026-11-09: a UDP stream at
+ * 200 frames/s never turned it on). _denseRun holds one bit per sample, the
+ * newest in bit 0. True when it turned on or off. Under _txLock, from txTick. */
+bool RTLAwdInterface::updateDense(uint64_t now, bool off)
 {
-	size_t len = buildAf(_afBuf, sizeof(_afBuf), subtype, channel, mask, da);
+	if (!_denseAllowed)
+		return false;
+	uint64_t frames = _rxData + _txDataSent;
+	if (now - _denseSampleUs >= 250000) {
+		bool busy = frames - _denseFrames >= 10;
+		_denseRun = (uint8_t)(((_denseRun << 1) | busy) & 0xF);
+		uint8_t n = (_denseRun & 1) + (_denseRun >> 1 & 1) + (_denseRun >> 2 & 1) + (_denseRun >> 3 & 1);
+		if (busy && (_dense || n >= 2))
+			_denseBusyUs = now;
+		_denseFrames = frames;
+		_denseSampleUs = now;
+	}
+	bool want = !off && _denseBusyUs && now - _denseBusyUs < 2000000;
+	if (want == _dense)
+		return false;
+	_dense = want;
+	_denseChanges++;
+	return true;
+}
+
+/*
+ * While associated on a non-social channel (Docs/AWDL_MCC_TIEMPO_COMPARTIDO.md
+ * §7): the social channel of the BSS's band that the 129 puts in most slots is
+ * served in the first slot of each of its runs (rtlawdl_mcc=1) or in all of
+ * them (2), and the
+ * radio goes there for those slots with rtlRadioAwdlOffch; in the others it
+ * stays on the BSS and AWDL is idle. With no data, UMI or MIF waiting and no
+ * peer heard for AWDL_MCC_PEER_HOLD_US it comes back after the slot's first AW,
+ * where peers are sure to listen; otherwise it stays the whole slot, because
+ * the 16 TU of one AW miss a peer's frames for long enough that the family
+ * drops it (6 s without an action frame, shouldRemovePeerFromNDP). A whole slot
+ * is 65.5 ms off the BSS, the latency the infra link sees in each served slot
+ * (Docs/AWDL_MCC_TIEMPO_COMPARTIDO.md). rtlawdl_mccaw fixes the AWs instead.
+ * Returns the channel the radio sits on for AWDL now, or 0. Called from txTick
+ * only.
+ */
+uint8_t RTLAwdInterface::mccChannel(uint8_t home, uint64_t nowUs)
+{
+	static const uint8_t social[3] = { 6, 44, 149 };
+	IOLockLock(_txLock);
+	uint8_t target = 0;
+	uint16_t serve = 0;
+	if (_seqValid) {
+		int best = 0;
+		for (int c = 0; c < 3; c++) {
+			int n = 0;
+			for (int i = 0; i < AWDL_SLOTS; i++)
+				n += _seq[i] == social[c];
+			/* only the BSS's band: a band switch is a full retune, not measured */
+			if ((social[c] > 14) == (home > 14) && n > best) {
+				best = n;
+				target = social[c];
+			}
+		}
+		for (int i = 0; target && i < AWDL_SLOTS; i++)
+			if (_seq[i] == target &&
+			    (_mccMode >= 2 || _seq[(i + AWDL_SLOTS - 1) % AWDL_SLOTS] != target))
+				serve |= (uint16_t)(1u << i);
+		/* A transfer (dense presence) takes the channel's slots and the idle
+		 * ones in runs of _mccRun, a slot for the BSS after each (AWDLShare.h). */
+		if (target && _dense && _mccRun) {
+			uint16_t more = awdlShareServe(_seq, target, _mccRun);
+			serve = _mccMode >= 2 ? serve | more : more;
+		}
+	}
+	/* the slot txTick is about to run, with the same slack */
+	uint64_t awIdx = (nowUs - _clkBaseUs + 500) / (AWDL_AW_TU * AWDL_TU_US);
+	uint16_t aw = (uint16_t)(_clkBaseAw + awIdx);
+	uint32_t slot = (aw / AWDL_PM) % AWDL_SLOTS;
+	/* only while still there: a frame queued after the return waits for the next slot */
+	_mccDwell = _mccAw ? _mccAw :
+	            _mccPeerUs && nowUs < _mccPeerUs + AWDL_MCC_PEER_HOLD_US ? AWDL_PM : 1;
+	bool stay = aw % AWDL_PM < _mccDwell ||
+	            (_mccCur == target && (_txRingCount || _umiCount || _mifNow));
+	_mccServe = serve;
+	_mccTarget = target;
+	IOLockUnlock(_txLock);
+	uint8_t want = (serve >> slot) & 1 && stay ? target : 0;
+	if (!mccSwitch(want))
+		return 0;
+	return want;
+}
+
+/*
+ * Moves the radio to want, or back to the BSS with 0, unless it is there
+ * already. A leave is refused once tx is off: setRadioTx(false) switches back
+ * under the same lock after clearing _txOn. Returns whether the radio is
+ * where asked.
+ */
+bool RTLAwdInterface::mccSwitch(uint8_t want)
+{
+	if (!_mccLock)
+		return false;
+	IOLockLock(_mccLock);
+	IOLockLock(_txLock);
+	bool on = _txOn;
+	IOLockUnlock(_txLock);
+	bool ok = want == _mccCur;
+	if (!ok && (on || !want) && !_mccOff) {
+		uint32_t c = want;
+		uint64_t t0 = awdlNowUs();
+		IOReturn r = _ctrl->radio(RTL_RADIO_FN_AWDL_OFFCH, &c);
+		uint64_t dt = awdlNowUs() - t0;
+		if (r == kIOReturnSuccess) {
+			_mccCur = want;
+			ok = true;
+			if (_mccSwitches++ < 4)
+				LOG("awdl: radio to channel %u (0 = the BSS) took %llu us", want, dt);
+			_mccUsSum += dt;
+			if (dt > _mccUsMax)
+				_mccUsMax = dt;
+		} else if (r == kIOReturnUnsupported) {
+			_mccOff = true;
+			LOG("awdl: the radio has no rtlRadioAwdlOffch: no AWDL while associated off the "
+			    "social channels");
+		} else {
+			if (_mccFail++ < 4)
+				LOG("awdl: rtlRadioAwdlOffch %u refused 0x%x", want, r);
+			/* a refused return leaves nothing to undo on our side */
+			if (!want)
+				_mccCur = 0;
+		}
+	}
+	IOLockUnlock(_mccLock);
+	return ok && want;
+}
+
+bool RTLAwdInterface::sendAf(uint8_t subtype, uint8_t channel, uint16_t mask, bool umi)
+{
+	size_t len = buildAf(_afBuf, sizeof(_afBuf), subtype, channel, mask, umi);
 	if (!len)
 		return false;
 	uint32_t l = (uint32_t)len;
-	IOReturn r = _radioSvc->callPlatformFunction(_symTx80211, false, _afBuf, &l, nullptr, nullptr);
+	IOReturn r = _ctrl->radioTx80211(_afBuf, &l);
 	if (r != kIOReturnSuccess) {
 		if (_txFail++ < AWDL_RX_LOG_FIRST)
-			LOG("awdl: tx %s -> 0x%x", da ? "umi" : subtype == AWDL_AF_MIF ? "mif" : "psf", r);
+			LOG("awdl: tx %s -> 0x%x", umi ? "umi" : subtype == AWDL_AF_MIF ? "mif" : "psf", r);
 		return false;
 	}
 	return true;
+}
+
+/*
+ * The family's peerToPeerConfigureIfnet, run inside this call, sets the ifnet's
+ * MTU to 1500 on a Broadcom controller and to 1484 on any other, over the value
+ * in the RegInfo. A larger packet than the TX ring holds would vanish in
+ * queueData with no error to the stack (Docs/AWDL_A53_SNIFFER.md §14).
+ */
+uintptr_t RTLAwdInterface::prepareBSDInterface(__ifnet *ifp, unsigned int unit)
+{
+	uintptr_t r = IO80211VirtualInterface::prepareBSDInterface(ifp, unit);
+	u_int32_t mtu = (u_int32_t)(sizeof(((AwdlTxFrame *)nullptr)->frame) - AWDL_WLAN_HDR - 16);
+	errno_t e = ifnet_set_mtu((ifnet_t)ifp, mtu);
+	LOG("awdl: prepareBSDInterface 0x%lx, MTU %u -> %d", (unsigned long)r, mtu, e);
+	return r;
 }
 
 /*
@@ -1354,8 +2551,7 @@ void RTLAwdInterface::queueData(const uint8_t *eth, uint32_t len)
 		return;
 	}
 	/* Unicast needs port 1: it acknowledges the peer's frames, and the MAC
-	 * is assumed (not yet measured) to match the ACKs to ours against it
-	 * (Docs/AWDL_RTL8814_RX_ACK.md). */
+	 * matches the ACKs to ours against it (Docs/AWDL_A53_SNIFFER.md §13). */
 	if (!(eth[0] & 1) && !_port1On) {
 		IOLockUnlock(_txLock);
 		_txDataDropBad++;
@@ -1381,6 +2577,15 @@ void RTLAwdInterface::queueData(const uint8_t *eth, uint32_t len)
 	e->lastUs = now;
 
 	if (_txRingCount == AWDL_TX_RING) {
+		/* The oldest data frame makes room. A management frame at the head
+		 * (queueMgmt) stays and the new frame is the one lost: under a flood
+		 * every packet evicted the ADDBA request before the pump took it
+		 * (2026-11-11: three requests, none reached the peer). */
+		if ((_txRing[_txRingHead].frame[0] & 0x0C) != 0x08) {
+			_txDataDropFull++;
+			IOLockUnlock(_txLock);
+			return;
+		}
 		_txRingHead = (_txRingHead + 1) % AWDL_TX_RING;
 		_txRingCount--;
 		_txDataDropFull++;
@@ -1405,52 +2610,142 @@ void RTLAwdInterface::queueData(const uint8_t *eth, uint32_t len)
 	f->tsUs = (uint32_t)now;
 	_txRingCount++;
 	_txDataQueued++;
+	/* A run of unicast data to one peer asks it for a Block Ack session. */
+	uint8_t req[AWDL_BAO_REQUEST_LEN];
+	AwdlBaoPeer *bp = nullptr;
+	bool ask = _aggAllowed && _aggSet && !(eth[0] & 1) &&
+	           awdlBaoQueued(&_bao, eth, now, &bp) == AWDL_BAO_DO_REQUEST;
+	uint64_t asked = _bao.requests;
+	if (ask)
+		awdlBaoBuildRequest(req, bp, _mac, kAwdlBssid);
+	/* Inside a window the frame need not wait for the next AW's tick. */
+	if (_pumpOk && !_sendBusy && !_pumpStall)
+		armPump(0);
 	IOLockUnlock(_txLock);
+	if (ask) {
+		bool queued = queueMgmt(req, sizeof(req));
+		if (asked <= AWDL_RX_LOG_FIRST)
+			LOG("awdl: ADDBA request to %02x:%02x:%02x:%02x:%02x:%02x token %u ssn %u%s", eth[0],
+			    eth[1], eth[2], eth[3], eth[4], eth[5], req[AWDL_BAO_HDR + 2],
+			    getLe16(req + AWDL_BAO_HDR + 7) >> 4, queued ? "" : " (not queued)");
+	}
+}
+
+void RTLAwdInterface::pumpEntry(thread_call_param_t p0, thread_call_param_t)
+{
+	RTLAwdInterface *me = (RTLAwdInterface *)p0;
+	me->pumpData();
+	/* the reference armPump took for this call */
+	me->release();
+}
+
+/* With _txLock held. The pending call owns a reference until pumpEntry ends. */
+void RTLAwdInterface::armPump(uint64_t deadline)
+{
+	if (!_txPump || !_pumpAllowed)
+		return;
+	retain();
+	if (deadline ? thread_call_enter_delayed(_txPump, deadline) : thread_call_enter(_txPump))
+		release();
 }
 
 /*
- * Sends queued data frames while the window of a served slot is open, one at
- * a time with _txLock dropped around the radio call. A transient refusal puts
- * the frame back at the head and ends the batch; kIOReturnBadArgument means a
- * driver without AWDL data TX, which turns data TX off. Called from txTick.
+ * Sends queued frames while the window txTick described is open (_pumpOk, to
+ * _pumpEndUs), one at a time with _txLock dropped around the radio call. The AW
+ * has a budget of air time rather than of frames: a TCP ACK costs a fraction
+ * of a full frame, and counting them alike limited the far end's throughput as
+ * well. A frame of a Block Ack session goes as QoS data with the session's
+ * next sequence number, taken only once the radio has the frame, and costs the
+ * air of its share of an A-MPDU at the session rate. A transient refusal puts
+ * the frame back at the head and the pump tries again shortly;
+ * kIOReturnBadArgument means a driver without AWDL data TX, which turns data TX
+ * off. A frame whose peer announced another channel for this slot ends the run
+ * and stays at the head: with no ACK it would use all its tries, 7 times the
+ * air the budget counts (Docs/AWDL_MODO_DATOS.md §9). From txTick and from the
+ * pump's thread call; a second caller leaves at once.
  */
-void RTLAwdInterface::sendData()
+void RTLAwdInterface::pumpData()
 {
 	AwdlTxFrame f;
-	for (uint32_t n = 0; n < AWDL_TX_PER_TICK; n++) {
-		IOLockLock(_txLock);
-		if (!_txOn || !_txRingCount || !_txRing) {
-			IOLockUnlock(_txLock);
-			return;
+	IOLockLock(_txLock);
+	if (_sendBusy || !_pumpOk || !_txOn) {
+		IOLockUnlock(_txLock);
+		return;
+	}
+	_sendBusy = true;
+	uint32_t slot = _pumpSlot;
+	uint8_t ch = _pumpCh;
+	uint64_t end = _pumpEndUs;
+	_txPumpRuns++;
+	bool again = false, off = false;
+	/* The lock is held at the top of each pass and when the loop ends. */
+	for (;;) {
+		uint64_t now = awdlNowUs();
+		if (!_txOn || !_txRingCount || !_txRing || !_pumpOk || _pumpEndUs != end || now >= end)
+			break;
+		AwdlTxFrame *h = &_txRing[_txRingHead];
+		if (!peerOnChannel(h->frame + 4, slot, ch, now)) {
+			_txDataHeld++;
+			_pumpStall = true;
+			break;
 		}
-		memcpy(&f, &_txRing[_txRingHead], offsetof(AwdlTxFrame, frame) + _txRing[_txRingHead].len);
+		bool data = (h->frame[0] & 0x0C) == 0x08 && !(h->frame[4] & 1);
+		AwdlBaoPeer *bp = data && _aggSet ? awdlBaoSend(&_bao, h->frame + 4) : nullptr;
+		/* air time at the session rate, or the ladder's (12 Mb/s without it) */
+		uint32_t mbps = bp && _aggMbps ? _aggMbps : _rateOff || !_rateSet ? 12 : kAwdlRateMbps[_rateIdx];
+		uint32_t cost = (bp ? AWDL_TX_AGG_FRAME_US : AWDL_TX_FRAME_US) + h->len * 8 / mbps;
+		if (cost > _pumpAir) {
+			_pumpStall = true;
+			break;
+		}
+		memcpy(&f, h, offsetof(AwdlTxFrame, frame) + h->len);
 		_txRingHead = (_txRingHead + 1) % AWDL_TX_RING;
 		_txRingCount--;
+		_pumpAir -= cost;
+		uint16_t seq = bp ? bp->seq : 0;
 		IOLockUnlock(_txLock);
 		if ((uint32_t)awdlNowUs() - f.tsUs > AWDL_TX_AGE_US) {
 			_txDataDropOld++;
+			IOLockLock(_txLock);
+			_pumpAir += cost;
 			continue;
 		}
+		const uint8_t *out = f.frame;
 		uint32_t l = f.len;
-		IOReturn r = _radioSvc->callPlatformFunction(_symTx80211, false, f.frame, &l, nullptr,
-		                                             nullptr);
+		if (bp) {
+			size_t n = awdlBaoQos(f.frame, f.len, seq, _txQos, sizeof(_txQos));
+			if (n) {
+				out = _txQos;
+				l = (uint32_t)n;
+			} else {
+				bp = nullptr;
+			}
+		}
+		IOReturn r = _ctrl->radioTx80211(out, &l);
 		if (r == kIOReturnSuccess) {
 			if (_txDataSent++ == 0)
 				LOG("awdl: first data frame to %02x:%02x:%02x:%02x:%02x:%02x ethertype %02x%02x len %u",
 				    f.frame[4], f.frame[5], f.frame[6], f.frame[7], f.frame[8], f.frame[9],
 				    f.frame[AWDL_WLAN_HDR + 14], f.frame[AWDL_WLAN_HDR + 15], f.len);
+			IOLockLock(_txLock);
+			/* The number is used up only if the session is still the one it came from. */
+			if (bp) {
+				if (bp->state == AWDL_BAO_ACTIVE && bp->seq == seq && !memcmp(bp->mac, f.frame + 4, 6))
+					awdlBaoSent(bp, now);
+				_txDataAgg++;
+			}
 			continue;
 		}
 		if (r == kIOReturnBadArgument) {
 			LOG("awdl: radio refused a data frame: AWDL data TX off (driver without it?)");
 			IOLockLock(_txLock);
 			_txDataOff = true;
-			IOLockUnlock(_txLock);
-			flushRadioTx();
-			return;
+			off = true;
+			break;
 		}
+		IOLockLock(_txLock);
+		_pumpAir += cost;
 		if (r == kIOReturnBusy || r == kIOReturnNoResources || r == kIOReturnNotReady) {
-			IOLockLock(_txLock);
 			if (_txOn && _txRingCount < AWDL_TX_RING) {
 				_txRingHead = (_txRingHead + AWDL_TX_RING - 1) % AWDL_TX_RING;
 				memcpy(&_txRing[_txRingHead], &f, offsetof(AwdlTxFrame, frame) + f.len);
@@ -1458,12 +2753,28 @@ void RTLAwdInterface::sendData()
 			} else {
 				_txDataDropFull++;
 			}
-			IOLockUnlock(_txLock);
-			return;
+			_txDataBusy++;
+			again = true;
+			break;
 		}
 		if (_txDataFail++ < AWDL_RX_LOG_FIRST)
 			LOG("awdl: tx data -> 0x%x", r);
 	}
+	_sendBusy = false;
+	if (_txOn && _txRingCount && _pumpOk && !off) {
+		uint64_t now = awdlNowUs();
+		if (_pumpEndUs != end) {
+			/* txTick opened the next AW while this run was sending */
+			armPump(0);
+		} else if (again && now + AWDL_PUMP_RETRY_US < end) {
+			uint64_t deadline;
+			clock_interval_to_deadline(AWDL_PUMP_RETRY_US, kMicrosecondScale, &deadline);
+			armPump(deadline);
+		}
+	}
+	IOLockUnlock(_txLock);
+	if (off)
+		flushRadioTx();
 }
 
 void RTLAwdInterface::flushRadioTx()
@@ -1477,17 +2788,25 @@ void RTLAwdInterface::flushRadioTx()
 }
 
 size_t RTLAwdInterface::buildAf(uint8_t *out, size_t cap, uint8_t subtype, uint8_t channel,
-                                uint16_t mask, const uint8_t *da)
+                                uint16_t mask, bool umi)
 {
 	IOLockLock(_txLock);
 	/* Read under the lock: alignClock may have moved _clkBaseUs past an
 	 * earlier sample, and nowUs - _clkBaseUs would wrap. */
 	uint64_t nowUs = awdlNowUs();
-	/* A MIF or UMI carries the MI template once the manager sent one: it
-	 * holds the ARPA and service TLVs the sync template lacks. */
+	/* A UMI takes the next one waiting, whose slot stays intact until the lock
+	 * drops. A MIF carries the MI template once the manager sent one: it holds
+	 * the ARPA and service TLVs the sync template lacks. */
+	if (umi && !_umiCount) {
+		IOLockUnlock(_txLock);
+		return 0;
+	}
+	const uint8_t *da = umi ? _umi[_umiCount - 1].dst : nullptr;
 	bool mi = subtype == AWDL_AF_MIF && _miTplLen;
-	const uint8_t *tpl = mi ? _miTpl : _tpl;
-	uint32_t tplLen = mi ? _miTplLen : _tplLen;
+	const uint8_t *tpl = umi ? _umi[_umiCount - 1].tpl : mi ? _miTpl : _tpl;
+	uint32_t tplLen = umi ? _umi[_umiCount - 1].len : mi ? _miTplLen : _tplLen;
+	if (umi)
+		_umiCount--;
 	size_t need = AWDL_WLAN_HDR + 16 + (3 + AWDL_SYNC_LEN + AWDL_CHANSEQ_LEN + 2) + (3 + 21) +
 	              (3 + AWDL_CHANSEQ_LEN + 3) + tplLen;
 	if (!tplLen || need > cap) {
@@ -1503,7 +2822,7 @@ size_t RTLAwdInterface::buildAf(uint8_t *out, size_t cap, uint8_t subtype, uint8
 	uint16_t awLeft = inSlot < AWDL_AW_TU ? (uint16_t)(AWDL_AW_TU - inSlot) : 0;
 
 	/* Election v2 of the template: top master, distance and metrics. */
-	const uint8_t *e2 = findTlv(_tpl, tplLen, AWDL_TLV_ELECTION_V2, 28);
+	const uint8_t *e2 = findTlv(_tpl, _tplLen, AWDL_TLV_ELECTION_V2, 28);
 	const uint8_t *master = e2 ? e2 + 3 : _mac;
 
 	uint8_t *p = out;
@@ -1607,6 +2926,18 @@ void RTLAwdInterface::alignClock(mbuf_t m, const uint8_t *src)
 	if (!toSlot || toSlot > AWDL_SLOT_TU)
 		return;
 	uint64_t now = awdlNowUs();
+	/* The master computed toSlot when it built the frame (target TX time,
+	 * +12) and queued it later (PHY TX time, +8): the next slot starts
+	 * toSlot TU after arrival minus that delay (Stute et al. 2018, eq. 1;
+	 * the kernel keeps the same difference as sync_contention). */
+	uint64_t rxUs;
+	if (mbuf_copydata(m, AWDL_RX_META_TIME, sizeof(rxUs), &rxUs) != 0 || rxUs > now)
+		rxUs = now;
+	uint32_t phyUs = getLe32(b + 8), targetUs = getLe32(b + 12);
+	uint32_t delay = phyUs - targetUs;
+	if (phyUs <= targetUs || delay >= AWDL_AW_TU * AWDL_TU_US)
+		delay = 0;
+	uint64_t at = rxUs - delay;
 	IOLockLock(_txLock);
 	const uint8_t *e2 = findTlv(_tpl, _tplLen, AWDL_TLV_ELECTION_V2, 28);
 	const uint8_t *elected = e2 && memcmp(e2 + 3 + 6, _mac, 6) ? e2 + 3 + 6 : nullptr;
@@ -1620,13 +2951,110 @@ void RTLAwdInterface::alignClock(mbuf_t m, const uint8_t *src)
 	/* The slot now running started SLOT_TU - toSlot TU ago; aw is the AW
 	 * now, so that slot began (SLOT_TU - toSlot) / AW_TU AWs earlier. */
 	uint32_t into = AWDL_SLOT_TU - toSlot;
-	_clkBaseUs = now - (uint64_t)into * AWDL_TU_US;
+	_clkBaseUs = at - (uint64_t)into * AWDL_TU_US;
 	_clkBaseAw = (uint16_t)(aw - into / AWDL_AW_TU);
 	_clkAligned++;
 	IOLockUnlock(_txLock);
 	if (_clkAligned <= 4)
-		LOG("awdl: clock follows %02x:%02x:%02x:%02x:%02x:%02x aw %u next slot %u TU", src[0],
-		    src[1], src[2], src[3], src[4], src[5], aw, toSlot);
+		LOG("awdl: clock follows %02x:%02x:%02x:%02x:%02x:%02x aw %u next slot %u TU, "
+		    "drain %llu us, sender delay %u us", src[0], src[1], src[2], src[3], src[4],
+		    src[5], aw, toSlot, now - rxUs, delay);
+}
+
+/*
+ * Keeps the channel sequence (TLV 18) a peer announces in its action frames.
+ * Only when the AW number in its TLV 4 lands on our slot, give or take one,
+ * since otherwise its slot numbers say nothing about ours. Encodings: 0 is the
+ * channel alone, 1 is flags then channel, 3 is channel then operating class.
+ * m holds the RX prefix, the 802.11 header and the action frame.
+ */
+void RTLAwdInterface::notePeerSeq(mbuf_t m, const uint8_t *src)
+{
+	if (!memcmp(src, _mac, 6))
+		return;
+	uint8_t seq[AWDL_CHANSEQ_LEN], sync[AWDL_SYNC_LEN];
+	bool haveSeq = false, haveSync = false;
+	size_t len = mbuf_pkthdr_len(m);
+	size_t off = AWDL_RX_META + AWDL_WLAN_HDR + 16;
+	while (off + 3 <= len && !(haveSeq && haveSync)) {
+		uint8_t h[3];
+		if (mbuf_copydata(m, off, sizeof(h), h) != 0)
+			return;
+		uint16_t l = getLe16(h + 1);
+		if (off + 3 + l > len)
+			return;
+		if (h[0] == AWDL_TLV_CHANSEQ && l >= 6 + AWDL_SLOTS) {
+			bzero(seq, sizeof(seq));
+			if (mbuf_copydata(m, off + 3, l < sizeof(seq) ? l : sizeof(seq), seq) != 0)
+				return;
+			haveSeq = true;
+		} else if (h[0] == AWDL_TLV_SYNC && l >= AWDL_SYNC_LEN) {
+			if (mbuf_copydata(m, off + 3, sizeof(sync), sync) != 0)
+				return;
+			haveSync = true;
+		}
+		off += 3 + (size_t)l;
+	}
+	if (!haveSeq || !haveSync || seq[0] != AWDL_SLOTS - 1)
+		return;
+	uint8_t ch[AWDL_SLOTS];
+	for (int i = 0; i < AWDL_SLOTS; i++) {
+		switch (seq[1]) {
+		case 0: ch[i] = seq[6 + i]; break;
+		case 1: ch[i] = seq[7 + 2 * i]; break;
+		case 3: ch[i] = seq[6 + 2 * i]; break;
+		default: return;
+		}
+	}
+	uint32_t theirs = ((uint32_t)getLe16(sync + 29) / AWDL_PM) % AWDL_SLOTS;
+	uint64_t now = awdlNowUs();
+	IOLockLock(_txLock);
+	uint32_t ours = (((uint32_t)(uint16_t)(_clkBaseAw + (now - _clkBaseUs) /
+	    (AWDL_AW_TU * AWDL_TU_US))) / AWDL_PM) % AWDL_SLOTS;
+	uint32_t diff = (theirs + AWDL_SLOTS - ours) % AWDL_SLOTS;
+	AwdlPeerSeq *e = nullptr, *lru = &_peerSeq[0];
+	for (uint32_t i = 0; i < 8 && !e; i++) {
+		if (_peerSeq[i].lastUs && !memcmp(_peerSeq[i].mac, src, 6))
+			e = &_peerSeq[i];
+		else if (_peerSeq[i].lastUs < lru->lastUs)
+			lru = &_peerSeq[i];
+	}
+	if (!e) {
+		e = lru;
+		memcpy(e->mac, src, 6);
+	}
+	memcpy(e->ch, ch, sizeof(e->ch));
+	e->lastUs = diff <= 1 || diff == AWDL_SLOTS - 1 ? now : 0;
+	IOLockUnlock(_txLock);
+}
+
+/*
+ * Whether data to da can go in this slot on ch. A group address asks about every
+ * peer. With nothing recent from the peer, or no slot of its on ch, or no slot
+ * common to them all, the answer is yes: not knowing never stops the data. With
+ * _txLock held.
+ */
+#define AWDL_PEER_SEQ_HOLD_US 3000000
+bool RTLAwdInterface::peerOnChannel(const uint8_t *da, uint32_t slot, uint8_t ch, uint64_t now) const
+{
+	uint16_t common = 0xFFFF;
+	bool any = false;
+	for (uint32_t i = 0; i < 8; i++) {
+		const AwdlPeerSeq *e = &_peerSeq[i];
+		if (!e->lastUs || now - e->lastUs > AWDL_PEER_SEQ_HOLD_US)
+			continue;
+		if (!(da[0] & 1) && memcmp(e->mac, da, 6))
+			continue;
+		uint16_t mask = 0;
+		for (int s = 0; s < AWDL_SLOTS; s++)
+			if (e->ch[s] == ch)
+				mask |= (uint16_t)(1u << s);
+		if (mask) {
+			common &= mask;
+			any = true;
+		}
+	}
+	return !any || !common || ((common >> slot) & 1);
 }
 
 /* Stage 3: see the AWDL_ACK block of AWDLInterface.h. */
@@ -1652,7 +3080,113 @@ AWDL_ACK(setAWDL_AWDL_ADVERTISERS, awdl_peer_advert_add)
 AWDL_ACK(setAWDL_ELECTION_METRIC, apple80211_awdl_election_metric)
 AWDL_ACK(setAWDL_EXTENSION_STATE_MACHINE_PARAMETERS, apple80211_awdl_extension_state_machine_parameter)
 AWDL_ACK(setPSF_DWELL, apple80211_awdl_psf_dwell_params)
+AWDL_ACK(setAWDL_PEER_TRAFFIC_REGISTRATION, apple80211_awdl_peer_traffic_registration)
 #undef AWDL_ACK
+
+/*
+ * Presence mode (ioctl 200): IO80211AWDLPeerManager::setPresenceMode stores
+ * the mode at +17032 only when the driver accepts it, and configure() resets
+ * that byte to 0 first. actionFrameProcessInput counts a sync error for every
+ * frame whose AW sequence is past window + mode, where window is the AW of
+ * the last event 41 (one per slot). With the old answer the mode stayed 0, so
+ * an iPhone's frames from the second AW of each slot on were sync errors and
+ * the family never posted it as routable (2026-11-08: SyncErrors climbing,
+ * isRTG=No, no neighbour entry, its AirDrop service never reached wifip2pd).
+ */
+IOReturn RTLAwdInterface::setAWDL_PRESENCE_MODE(apple80211_awdl_presence_mode *p)
+{
+	uint32_t mode = p ? ((const uint32_t *)(const void *)p)[1] : 0;
+	LOG("awdl: setAWDL_PRESENCE_MODE %u acked (slots here are %u AWs)", mode, AWDL_PM);
+	return kIOReturnSuccess;
+}
+
+/*
+ * apple80211_peer_cache_control as IO80211P2PDataPathManager::sendIoctlToCachePeer
+ * (25G241 0xffffff800229e458) fills it: u32 version, u32 operation (0 add,
+ * 2 delete; AppleBCMWLANProximityInterface::setPEER_CACHE_CONTROL also takes
+ * 6), the peer's MAC at +8.
+ */
+#define AWDL_PCC_OP     4
+#define AWDL_PCC_MAC    8
+#define AWDL_PCC_LEN    464     /* the buffer addPeerToFWCache and Broadcom allocate */
+#define AWDL_PCC_ADDED  1
+#define AWDL_PCC_DELETED 3
+
+/* AppleBCMWLANCore::completePeerCacheControl (25G241 0xffffff800165b8b6): opcode
+ * at +4, MAC at +8. handlePeerAddIndication marks the peer cached on it; until
+ * then handleUmiTimer sends it no UMI. */
+void RTLAwdInterface::postPeerCache(uint8_t op, const uint8_t *mac)
+{
+	uint8_t ev[AWDL_PCC_LEN];
+	bzero(ev, sizeof(ev));
+	*(uint32_t *)(ev + AWDL_PCC_OP) = op;
+	memcpy(ev + AWDL_PCC_MAC, mac, 6);
+	postMessage(AWDL_EV_PEER_CACHE, ev, sizeof(ev), false);
+}
+
+IOReturn RTLAwdInterface::setPEER_CACHE_CONTROL(apple80211_peer_cache_control *req)
+{
+	if (!req)
+		return kIOReturnBadArgument;
+	const uint8_t *p = (const uint8_t *)req;
+	uint32_t op = *(const uint32_t *)(p + AWDL_PCC_OP);
+	if (_peerCacheOps++ < AWDL_RX_LOG_FIRST)
+		LOG("awdl: peer cache op %u %02x:%02x:%02x:%02x:%02x:%02x", op,
+		    p[AWDL_PCC_MAC], p[AWDL_PCC_MAC + 1], p[AWDL_PCC_MAC + 2], p[AWDL_PCC_MAC + 3],
+		    p[AWDL_PCC_MAC + 4], p[AWDL_PCC_MAC + 5]);
+	uint8_t reply = op == 0 || op == 6 ? AWDL_PCC_ADDED : op == 2 ? AWDL_PCC_DELETED : 0;
+	if (!reply)
+		return kIOReturnSuccess;
+	/* The answer comes after this call, as Broadcom's from the firmware: the
+	 * caller may sleep waiting for it, and a wakeup sent before that sleep is
+	 * lost. Without a tick to carry it, it goes now and the wait times out. */
+	bool queued = false;
+	if (_txLock) {
+		IOLockLock(_txLock);
+		if (_txOn && _pccCount < 8) {
+			_pccOp[_pccCount] = reply;
+			memcpy(_pccDst[_pccCount++], p + AWDL_PCC_MAC, 6);
+			queued = true;
+		}
+		IOLockUnlock(_txLock);
+	}
+	if (!queued)
+		postPeerCache(reply, p + AWDL_PCC_MAC);
+	return kIOReturnSuccess;
+}
+
+/* u32 version, u32 limit; getCardCapableMaxPeerCacheSize caps it at 8. */
+IOReturn RTLAwdInterface::getPEER_CACHE_MAXIMUM_SIZE(apple80211_peer_cache_maximum_size *out)
+{
+	if (!out)
+		return kIOReturnBadArgument;
+	*(uint32_t *)((uint8_t *)out + 4) = 8;
+	return kIOReturnSuccess;
+}
+
+/*
+ * u32 version, u32 flags, u32 enabled. The manager routes the userspace GET
+ * 117 here (IO80211AWDLPeerManager::getAwdlSyncEnabled) and only compares the
+ * answer with its own state. wifip2pd issues that GET once, when it builds
+ * its AWDL interface object, and stores enabled != 0 as the flag that allows
+ * it to publish a peer's presence from the peer's action frames (event 48):
+ * the awdl0 neighbour entry over the routing socket, then ioctl 415. With the
+ * old answer (unsupported) the flag stayed 0, no peer ever got its neighbour
+ * entry without a manual ndp -s, and AirDrop never saw the iPhone (2026-11-08).
+ * The GET can come before the manager's SET 117, so the answer is 1 while the
+ * interface exists: sync runs here.
+ */
+IOReturn RTLAwdInterface::getAWDL_SYNC_ENABLED(apple80211_awdl_sync_enabled *out)
+{
+	if (!out)
+		return kIOReturnBadArgument;
+	uint32_t *p = (uint32_t *)(void *)out;
+	p[0] = 1;
+	p[1] = 0;
+	p[2] = 1;
+	LOG("awdl: getAWDL_SYNC_ENABLED -> 1");
+	return kIOReturnSuccess;
+}
 
 /* Publishes the interface on the controller, so getAwdlInterface() answers it.
  * The handler calls it once the start succeeded; NULL unpublishes. */

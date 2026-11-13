@@ -269,8 +269,13 @@ publicación de presencia ni de ausencia**: ni `sub_1002823D0` ni `sub_100282980
   `peers`, campo 44 `allServicesRegisteredDuringCurrentSession` — este último alinea exactamente
   con el slot `268h` del aged-out) sugiere la clase, pero el mapeo del `FieldOffsetVectorOffset`
   del nominal descriptor (`0x1004bddf8`, valor 110) no cierra con los slots `1C0h`/`2C8h`/`2F8h`.
-- Nombres de los dos Bools de la interfaz (slots `2C8h` y `2F8h` del field offset vector de la
-  clase del self).
+- ~~Nombres de los dos Bools de la interfaz (slots `2C8h` y `2F8h`)~~: cerrado en
+  [AWDL_RESULTADO_IPHONE_1.md](AWDL_RESULTADO_IPHONE_1.md) §3.1. El de `2F8h` se escribe una vez en el
+  init de la interfaz (`0x100417647`) con el testigo 4 de la conformancia `AWDLWiFiDriver` del tipo de
+  driver: para `AppleIO80211Driver` es `RawGet(117)` (`AWDL_SYNC_ENABLED`) sin error con `enabled`
+  (`u32 @+8`) distinto de 0 (`sub_1000A93F0`); para `AppleBroadcomDriver` es 0 constante
+  (`sub_100003B30`). El de `2C8h` lo pone a 1 «Driver interface was removed» (§3.4) y a 0 el init y la
+  recuperación (§3.3).
 - `sub_10014B180` (búsqueda de la `AWDLTrafficRegistrationConfiguration` por tag de `UMIOptions`)
   y la tabla de rawValues `unk_10046BE74`: qué rawValue `u32` corresponde a cada caso.
 - `sub_1004291D0`/`sub_1004292F0` (limpiezas llamadas dentro de la recuperación de la interfaz) y

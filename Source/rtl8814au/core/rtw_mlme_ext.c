@@ -1070,7 +1070,9 @@ static void init_mlme_ext_priv_value(_adapter *padapter)
 	pmlmeext->sitesurvey_res.rx_ampdu_accept = RX_AMPDU_ACCEPT_INVALID;
 	pmlmeext->sitesurvey_res.rx_ampdu_size = RX_AMPDU_SIZE_INVALID;
 #ifdef CONFIG_SCAN_BACKOP
-	mlmeext_assign_scan_backop_flags_sta(pmlmeext, /*SS_BACKOP_EN|*/SS_BACKOP_PS_ANNC | SS_BACKOP_TX_RESUME);
+	/* Back to the BSS every RTW_SCAN_NUM_OF_CH channels: without it a linked
+	 * scan is ~3.4 s off channel and every macOS scan stalls the link. */
+	mlmeext_assign_scan_backop_flags_sta(pmlmeext, SS_BACKOP_EN | SS_BACKOP_PS_ANNC | SS_BACKOP_TX_RESUME);
 	#ifdef CONFIG_AP_MODE
 	mlmeext_assign_scan_backop_flags_ap(pmlmeext, SS_BACKOP_EN | SS_BACKOP_PS_ANNC | SS_BACKOP_TX_RESUME);
 	#endif
@@ -1865,6 +1867,14 @@ unsigned int OnBeacon(_adapter *padapter, union recv_frame *precv_frame)
 	struct tdls_ch_switch *pchsw_info = &padapter->tdlsinfo.chsw_info;
 #endif
 #endif /* CONFIG_TDLS */
+
+	/* RTL8814Native: why a join that sees beacons never starts auth */
+	if ((pmlmeinfo->state & WIFI_FW_AUTH_NULL) && !g_jlog_bcn_auth_null) {
+		g_jlog_bcn_auth_null = 1;
+		rtl8814native_jlog(JL_BCN_AUTH_NULL, pmlmeext->sitesurvey_res.state |
+			(_rtw_memcmp(GetAddr3Ptr(pframe), get_my_bssid(&pmlmeinfo->network), ETH_ALEN) << 8) |
+			(rtw_sta_linking_test_wait_done() << 9) | (pmlmeext->join_abort << 10), len);
+	}
 
 	if (validate_beacon_len(pframe, len) == _FALSE)
 		return _SUCCESS;
@@ -7630,6 +7640,12 @@ void update_mgntframe_attrib(_adapter *padapter, struct pkt_attrib *pattrib)
 	pattrib->priority = 7;
 	pattrib->mac_id = RTW_DEFAULT_MGMT_MACID;
 	pattrib->qsel = QSLT_MGNT;
+	/* RTL8814Native: the frame is reused from the pool and nothing here
+	 * clears the attributes, so the per-frame AWDL settings start over. */
+	pattrib->data_tries = 0;
+	pattrib->rtl_awdl_rpt = 0;
+	pattrib->rtl_awdl_agg = 0;
+	pattrib->ampdu_en = _FALSE;
 
 #ifdef CONFIG_MCC_MODE
 	update_mcc_mgntframe_attrib(padapter, pattrib);
@@ -11376,6 +11392,7 @@ void start_clnt_join(_adapter *padapter)
 	u8 ASIX_ID[] = {0x00, 0x0E, 0xC6};
 
 	g_jlog_bcn = 0;
+	g_jlog_bcn_auth_null = 0;
 	rtl8814native_jlog(JL_CLNT_JOIN, pmlmeext->cur_channel, pmlmeext->cur_bwmode);
 	/* update wireless mode */
 	update_wireless_mode(padapter);
@@ -13028,6 +13045,12 @@ void linked_status_chk(_adapter *padapter, u8 from_timer)
 				}
 #endif
 				if (switch_channel_by_drv) {
+					/* AWDL holds the radio on its channel for a slot
+					 * (rtl8814native_radio_awdl_offch): it comes back
+					 * itself, and a probe here would wake the AP's queue
+					 * while the radio is away */
+					if (adapter_to_rfctl(padapter)->offch_state == OFFCHS_AWDL)
+						goto bypass_active_keep_alive;
 					if (!rtw_mi_get_ch_setting_union(padapter, &union_ch, &union_bw, &union_offset)
 						|| pmlmeext->cur_channel != union_ch)
 							goto bypass_active_keep_alive;
@@ -14467,6 +14490,9 @@ exit:
 }
 
 #ifdef CONFIG_SCAN_BACKOP
+extern void rtl8814native_awdl_scan_hold_decide(_adapter *padapter);
+extern u8 rtl8814native_awdl_scan_hold(void);
+
 u8 rtw_scan_backop_decision(_adapter *adapter)
 {
 	struct mlme_ext_priv *mlmeext = &adapter->mlmeextpriv;
@@ -14491,6 +14517,12 @@ u8 rtw_scan_backop_decision(_adapter *adapter)
 		backop_flags |= mlmeext_scan_backop_flags_mesh(mlmeext);
 #endif
 
+	/* RTL8814Native: not linked, parked on an AWDL channel with a peer around.
+	 * The scan returns there as it returns to a BSS, with the MAC IDs awake. */
+	if (!backop_flags && !MSTATE_STA_LD_NUM(&mstate) && !MSTATE_STA_LG_NUM(&mstate)
+	    && rtl8814native_awdl_scan_hold())
+		backop_flags = SS_BACKOP_EN_NL | SS_BACKOP_PS_ANNC | SS_BACKOP_TX_RESUME;
+
 	return backop_flags;
 }
 #endif
@@ -14511,6 +14543,8 @@ u32 rtw_scan_timeout_decision(_adapter *padapter)
 		max_chan_num = MAX_CHANNEL_NUM_2G;/*single band*/
 
 	#ifdef CONFIG_SCAN_BACKOP
+	/* RTL8814Native: whether this scan returns to the parked AWDL channel */
+	rtl8814native_awdl_scan_hold_decide(padapter);
 	if (rtw_scan_backop_decision(padapter))
 		back_op_times = (max_chan_num / ss->scan_cnt_max) * ss->backop_ms;
 	#endif
@@ -15123,12 +15157,37 @@ void sitesurvey_set_msr(_adapter *adapter, bool enter)
 	Set_MSR(adapter, network_type);
 }
 
+/* RTL8814Native: set while the scan's back-op lets rtl8814native_radio_awdl_offch
+ * take the radio to an AWDL slot; both change under offch_mutex. */
+extern u8 rtl8814native_awdl_backop;
+extern int rtl8814native_radio_awdl_offch(u8 ch);
+
+/*
+ * RTL8814Native: the back-op may only end with the radio home. Closing it here,
+ * under the mutex the AWDL switch holds, leaves no moment for a slot to start
+ * between the check and the state change. Returns false while a slot is running.
+ */
+static u8 sitesurvey_close_awdl_backop(_adapter *adapter)
+{
+	struct rf_ctl_t *rfctl = adapter_to_rfctl(adapter);
+	u8 closed = _TRUE;
+
+	_enter_critical_mutex(&rfctl->offch_mutex, NULL);
+	if (rfctl->offch_state == OFFCHS_AWDL)
+		closed = _FALSE;
+	else
+		rtl8814native_awdl_backop = 0;
+	_exit_critical_mutex(&rfctl->offch_mutex, NULL);
+	return closed;
+}
+
 void sitesurvey_set_offch_state(_adapter *adapter, u8 scan_state)
 {
 	struct rf_ctl_t *rfctl = adapter_to_rfctl(adapter);
 
 	_enter_critical_mutex(&rfctl->offch_mutex, NULL);
 
+	rtl8814native_awdl_backop = scan_state == SCAN_BACK_OP;
 	switch (scan_state) {
 	case SCAN_DISABLE:
 	case SCAN_BACK_OP:
@@ -15362,8 +15421,13 @@ operation_by_state:
 #endif /* CONFIG_MCC_MODE */
 
 		if (need_ch_setting_union) {
-			if (rtw_mi_get_ch_setting_union(padapter, &back_ch, &back_bw, &back_ch_offset) == 0)
-				rtw_warn_on(1);
+			if (rtw_mi_get_ch_setting_union(padapter, &back_ch, &back_bw, &back_ch_offset) == 0) {
+				/* RTL8814Native: not linked, the return is to the parked channel
+				 * (rtl8814native_awdl_scan_hold), where survey_done_set_ch_bw ends */
+				back_ch = pmlmeext->cur_channel;
+				back_bw = pmlmeext->cur_bwmode;
+				back_ch_offset = pmlmeext->cur_ch_offset;
+			}
 		}
 
 		#ifdef DBG_SITESURVEY
@@ -15401,6 +15465,13 @@ operation_by_state:
 		if (rtw_get_passing_time_ms(ss->backop_time) >= ss->backop_ms
 		    || pmlmeext->scan_abort
 		   ) {
+			if (!sitesurvey_close_awdl_backop(padapter)) {
+				/* a slot is 65.5 ms; past this nobody is bringing it home */
+				if (rtw_get_passing_time_ms(ss->backop_time) >= ss->backop_ms + 500)
+					rtl8814native_radio_awdl_offch(0);
+				set_survey_timer(pmlmeext, 10);
+				break;
+			}
 			mlmeext_set_scan_state(pmlmeext, SCAN_LEAVING_OP);
 			goto operation_by_state;
 		}

@@ -257,10 +257,37 @@ static s32 update_txdesc(struct xmit_frame *pxmitframe, u8 *pmem, s32 sz , u8 ba
 #endif
 		{
 			SET_TX_DESC_RETRY_LIMIT_ENABLE_8814A(ptxdesc, 1);
-			if (pattrib->retry_ctrl == _TRUE)
+			if (pattrib->data_tries)
+				SET_TX_DESC_DATA_RETRY_LIMIT_8814A(ptxdesc, pattrib->data_tries);
+			else if (pattrib->retry_ctrl == _TRUE)
 				SET_TX_DESC_DATA_RETRY_LIMIT_8814A(ptxdesc, 6);
 			else
 				SET_TX_DESC_DATA_RETRY_LIMIT_8814A(ptxdesc, 12);
+		}
+		/* RTL8814Native: AWDL unicast data at the layer's rate. Fallback stays
+		 * on (DISABLE_FB clear), down to OFDM 6 Mb/s at most, and the chip
+		 * sends a CCX TX report the layer's rate ladder counts. */
+		if (pattrib->rtl_awdl_rpt) {
+			SET_TX_DESC_DATA_RATE_FB_LIMIT_8814A(ptxdesc, 4);
+			SET_TX_DESC_SPE_RPT_8814A(ptxdesc, 1);
+		}
+		/* RTL8814Native: AWDL QoS data of a Block Ack session the layer
+		 * opened (AWDLTx.c). It sits in an AC queue with the layer's
+		 * sequence number, set above because qos_en is on, and the MAC may
+		 * join it with the frames behind it into an A-MPDU at an HT or VHT
+		 * rate, as it does for the station's own data. */
+		if (pattrib->rtl_awdl_agg) {
+			SET_TX_DESC_TX_RATE_8814A(ptxdesc, pattrib->rtl_awdl_agg);
+			SET_TX_DESC_AGG_ENABLE_8814A(ptxdesc, 1);
+			SET_TX_DESC_MAX_AGG_NUM_8814A(ptxdesc, pattrib->rtl_awdl_agg_num);
+			SET_TX_DESC_AMPDU_DENSITY_8814A(ptxdesc, pattrib->ampdu_spacing);
+			SET_TX_DESC_DATA_BW_8814A(ptxdesc, BWMapping_8814(padapter, pattrib));
+			SET_TX_DESC_DATA_SC_8814A(ptxdesc, SCMapping_8814(padapter, pattrib));
+			if (pattrib->sgi)
+				SET_TX_DESC_DATA_SHORT_8814A(ptxdesc, 1);
+			SET_TX_DESC_DATA_RATE_FB_LIMIT_8814A(ptxdesc, 4);
+			/* RTS/CTS or CTS-to-self when RTL_OPT_AWDL_PROT asks */
+			rtl8814a_fill_txdesc_vcs(padapter, pattrib, ptxdesc);
 		}
 
 #ifdef CONFIG_XMIT_ACK

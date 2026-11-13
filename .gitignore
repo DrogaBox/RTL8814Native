@@ -23,3 +23,11 @@ __pycache__/
 .idea/
 .vscode/
 Tools/cardcap
+
+# awdlsim build output
+Tools/awdlsim/target/
+
+# AirDrop beacon (Android) build output and local SDK path
+Tools/airdrop_beacon/.gradle/
+Tools/airdrop_beacon/app/build/
+Tools/airdrop_beacon/local.properties

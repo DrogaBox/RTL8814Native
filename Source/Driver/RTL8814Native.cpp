@@ -10,6 +10,7 @@
 #include "RTLUserClient.hpp"
 #include "VendorGlue.hpp"
 #include "RTLRadioABI.h"
+#include "RTLAwdlSim.h"
 
 #include <IOKit/IORegistryEntry.h>
 #include <IOKit/IOLocks.h>
@@ -181,6 +182,7 @@ bool RTL8814Native::startLocked(IOService *provider)
         /* System workqueue for the compat layer */
         rtl_workqueue_init();
         g_owner = this;
+        rtl_awdl_sim_init();
 
         /*
          * PHASE 1 integration point (future):
@@ -249,9 +251,16 @@ bool RTL8814Native::startLocked(IOService *provider)
          * re-join. Not only on a takeover: on 4.6g the old didTerminate
          * released the radio first, took_over stayed false and the link was
          * left DISCONNECTED. No-op until a join succeeded in this kext
-         * lifetime, so a cold boot is unaffected. */
-        if (probe_rc == 0)
-                rtl8814native_rejoin_last();
+         * lifetime, so a cold boot is unaffected.
+         * With rtlair=2 the AirLayer keeps en2 across the re-enumeration and
+         * WCL re-joins through it; a join of our own here raced that one and
+         * left it timing out (-3905). */
+        {
+                uint32_t rtlair = 0;
+                PE_parse_boot_argn("rtlair", &rtlair, sizeof(rtlair));
+                if (probe_rc == 0 && rtlair < 2)
+                        rtl8814native_rejoin_last();
+        }
 
         IOLog("RTL8814Native: started - device claimed, radio initialized\n");
         return true;
@@ -272,6 +281,7 @@ void RTL8814Native::stopLocked(IOService *provider)
 
         bool owner = (g_owner == this);
         if (owner) {
+                rtl_awdl_sim_abort();
                 rtl8814native_vendor_remove();
                 rtl8814native_set_usb_device(nullptr);
         }
@@ -308,11 +318,55 @@ void RTL8814Native::releaseVendorLocked()
 {
         if (g_owner != this)
                 return;
+        rtl_awdl_sim_abort();
         rtl8814native_vendor_remove();
         rtl8814native_set_usb_device(nullptr);
         rtl_sae_join_exit();
         rtl_workqueue_exit();
         g_owner = nullptr;
+}
+
+/* Virtual AWDL peer. The lifecycle lock keeps the vendor state alive for
+ * the call; a start or stop holding it means the radio is changing hands,
+ * so the frame is refused rather than waited on. */
+IOReturn RTL8814Native::awdlSimInject(const void *client, const uint8_t *frame,
+                                      uint32_t len, int8_t rssi)
+{
+        if (!rtl_awdl_sim_available())
+                return kIOReturnUnsupported;
+        if (!rtlAwdlSimOwns(client))
+                return kIOReturnExclusiveAccess;
+        IORecursiveLock *l = lifecycle_lock();
+        if (!l || !IORecursiveLockTryLock(l)) {
+                rtlAwdlSimCount(RTL_AWDL_SIM_C_INJ_NOTREADY);
+                return kIOReturnNotReady;
+        }
+        IOReturn ret;
+        int rc = (g_owner == this && _adapter) ? rtl8814native_awdl_sim_rx(frame, len, rssi)
+                                               : -ENODEV;
+        IORecursiveLockUnlock(l);
+        switch (rc) {
+        case 0:
+                rtlAwdlSimCount(RTL_AWDL_SIM_C_INJECTED);
+                ret = kIOReturnSuccess;
+                break;
+        case -EINVAL:
+                ret = kIOReturnBadArgument;
+                break;
+        case -EAGAIN:
+                rtlAwdlSimCount(RTL_AWDL_SIM_C_INJ_OFFCH);
+                ret = kIOReturnOffline;
+                break;
+        case -ENOENT:
+                rtlAwdlSimCount(RTL_AWDL_SIM_C_INJ_NOHOOK);
+                ret = kIOReturnNotReady;
+                break;
+        default:
+                rtlAwdlSimCount(RTL_AWDL_SIM_C_INJ_NOTREADY);
+                ret = kIOReturnNotReady;
+                break;
+        }
+        return ret;
 }
 
 void RTL8814Native::systemWillShutdown(IOOptionBits specifier)
@@ -450,7 +504,9 @@ IOReturn RTL8814Native::callPlatformFunction(const OSSymbol *functionName,
                 return kIOReturnNotReady;
 
         if (functionName->isEqualTo(RTL_RADIO_FN_SCAN_START))
-                return rtl8814native_trigger_scan() == 0 ? kIOReturnSuccess : kIOReturnBusy;
+                return rtl8814native_trigger_scan((const uint32_t *)param1,
+                                                  param1 && param2 ? *(const uint32_t *)param2 : 0) == 0
+                       ? kIOReturnSuccess : kIOReturnBusy;
         if (functionName->isEqualTo(RTL_RADIO_FN_SCAN_COPY)) {
                 if (!param1 || !param2)
                         return kIOReturnBadArgument;
@@ -516,6 +572,32 @@ IOReturn RTL8814Native::callPlatformFunction(const OSSymbol *functionName,
                        : rc == -EINVAL ? kIOReturnBadArgument
                        : rc == -EBUSY ? kIOReturnBusy
                        : rc == -ENOMEM ? kIOReturnNoResources : kIOReturnNotReady;
+        }
+        if (functionName->isEqualTo(RTL_RADIO_FN_AWDL_OFFCH)) {
+                if (!param1 || *(const uint32_t *)param1 > 0xFF)
+                        return kIOReturnBadArgument;
+                int rc = rtl8814native_radio_awdl_offch((uint8_t)*(const uint32_t *)param1);
+                return rc == 0 ? kIOReturnSuccess
+                       : rc == -EINVAL ? kIOReturnBadArgument
+                       : rc == -EBUSY ? kIOReturnBusy : kIOReturnNotReady;
+        }
+        if (functionName->isEqualTo(RTL_RADIO_FN_AWDL_RATE)) {
+                if (!param1)
+                        return kIOReturnBadArgument;
+                return rtl8814native_radio_awdl_rate(*(const uint32_t *)param1) == 0
+                       ? kIOReturnSuccess : kIOReturnBadArgument;
+        }
+        if (functionName->isEqualTo(RTL_RADIO_FN_AWDL_AGG)) {
+                if (!param1)
+                        return kIOReturnBadArgument;
+                return rtl8814native_radio_awdl_agg((struct rtl_radio_awdl_agg *)param1) == 0
+                       ? kIOReturnSuccess : kIOReturnBadArgument;
+        }
+        if (functionName->isEqualTo(RTL_RADIO_FN_AWDL_TXSTAT)) {
+                if (!param1)
+                        return kIOReturnBadArgument;
+                rtl8814native_radio_awdl_txstat((struct rtl_radio_awdl_txstat *)param1);
+                return kIOReturnSuccess;
         }
         if (functionName->isEqualTo(RTL_RADIO_FN_TX_80211)) {
                 if (!param1 || !param2)

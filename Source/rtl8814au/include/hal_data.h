@@ -386,6 +386,9 @@ typedef struct hal_com_data {
 	u8				rx_tsf_addr_filter_config; /* for 8822B/8821C USE */
 	BOOLEAN			bSwChnl;
 	BOOLEAN			bSetChnlBW;
+	/* AWDL off-channel switch: skip the TX power reload when the channel
+	 * index stays the same (only the primary sub-channel moves) */
+	u8			awdl_keep_txpwr;
 	BOOLEAN			bSWToBW40M;
 	BOOLEAN			bSWToBW80M;
 	BOOLEAN			bChnlBWInitialized;

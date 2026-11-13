@@ -1,0 +1,15 @@
+# Virtual AWDL peer for RTL8814Native (boot-arg rtlawdl_sim=1): a crosswind-awdl
+# node that hears what awdl0 sends and answers through the driver's AWDL RX hook.
+[package]
+name = "awdlsim"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "GPL-2.0-only"
+publish = false
+
+[dependencies]
+crosswind-awdl = { path = "vendor/crosswind-awdl" }
+
+[profile.release]
+debug = 1

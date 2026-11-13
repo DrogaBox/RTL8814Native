@@ -1,0 +1,13 @@
+# macOS builds on which RTL8814AirLayer was validated on hardware.
+# Read by Tools/airlayer_gate.py, which writes Source/AirLayer/KnownBuilds.inc.
+#
+#   darwin <major>                      Darwin major the header was generated for
+#   build <kern.osversion> <macOS> ...  one validated build per line
+#
+# Add a build only after the layer has run on it: boot with rtlairtrust=<build>,
+# check `Tools/airlayer_gate.py status`, test scan/join/data, then
+# `Tools/airlayer_gate.py learn --yes` and rebuild.
+
+darwin 25
+
+build 25G241 26.7.1 scan, join, WPA2/WPA3, data path (2026-10)
