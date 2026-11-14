@@ -10,9 +10,11 @@
  * A request goes out once a peer gets a run of unicast data, so a few packets
  * of discovery never start one. A peer that does not answer, refuses, or tears
  * the session down is left alone for a while and its data goes as single
- * frames, as before. The radio reports nothing about what it sent, so a
- * session that carries data out while nothing comes back from the peer is
- * taken for broken and closed.
+ * frames, as before. The radio reports nothing about what it sent, and a
+ * request held for a peer that is away is dropped once it is too old, so no
+ * answer does not mean the peer refused: it is asked again after a short
+ * pause, a refusal after a long one. A session that carries data out while
+ * nothing comes back from the peer is taken for broken and closed.
  *
  * No kernel types, so Tools/baorig_test.cpp runs it on the host. The caller
  * serialises the calls.
@@ -31,7 +33,8 @@
 #define AWDL_BAO_BURST_US         1000000ULL
 #define AWDL_BAO_ASK_US           500000ULL   /* how long an answer may take */
 #define AWDL_BAO_TRIES            3
-#define AWDL_BAO_BACKOFF_US       60000000ULL /* after no answer, a refusal or a broken session */
+#define AWDL_BAO_BACKOFF_US       60000000ULL /* after a refusal or a broken session */
+#define AWDL_BAO_SILENT_BACKOFF_US 5000000ULL /* after no answer: silence is not a refusal, the request may never have reached the peer */
 #define AWDL_BAO_DELBA_BACKOFF_US 10000000ULL /* after the peer closed the session */
 #define AWDL_BAO_IDLE_US          10000000ULL /* a session unused this long is asked for again */
 #define AWDL_BAO_WATCH_US         2000000ULL
@@ -131,7 +134,7 @@ static inline int awdlBaoQueued(AwdlBaoTab *t, const uint8_t *mac, uint64_t now,
 			act = AWDL_BAO_DO_REQUEST;
 		} else {
 			p->state = AWDL_BAO_REFUSED;
-			p->untilUs = now + AWDL_BAO_BACKOFF_US;
+			p->untilUs = now + AWDL_BAO_SILENT_BACKOFF_US;
 			t->noAnswer++;
 		}
 	}

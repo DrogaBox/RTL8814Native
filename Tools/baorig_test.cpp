@@ -84,7 +84,7 @@ int main()
 		CHECK(run(&t, A, &now, 16, &p) == 1 && p->seq == before);
 	}
 
-	/* No answer: three requests half a second apart, then a minute of single frames. */
+	/* No answer: three requests half a second apart, then a short pause of single frames and a new round. */
 	{
 		AwdlBaoTab t = {};
 		int req = 0;
@@ -95,8 +95,15 @@ int main()
 		CHECK(req == 3 && p->state == AWDL_BAO_REFUSED && t.noAnswer == 1);
 		uint8_t tok = p->token;
 		CHECK(!awdlBaoResponse(&t, A, tok, 0, OK_PARAMS, now));
-		now += AWDL_BAO_BACKOFF_US;
-		CHECK(run(&t, A, &now, 16, &p) == 1);
+		/* the pause runs from the last request's deadline, not from here */
+		uint64_t until = p->untilUs;
+		CHECK(until > now && until - now < AWDL_BAO_SILENT_BACKOFF_US);
+		now = until - 20000;
+		CHECK(run(&t, A, &now, 16, &p) == 0 && p->state == AWDL_BAO_REFUSED);
+		now = until;
+		CHECK(run(&t, A, &now, 16, &p) == 1 && p->state == AWDL_BAO_ASKED && p->token != tok);
+		CHECK(awdlBaoResponse(&t, A, p->token, 0, OK_PARAMS, now) && p->state == AWDL_BAO_ACTIVE);
+		CHECK(AWDL_BAO_SILENT_BACKOFF_US < AWDL_BAO_BACKOFF_US);
 	}
 
 	/* A refusal, and an answer that is not immediate Block Ack on TID 0. */

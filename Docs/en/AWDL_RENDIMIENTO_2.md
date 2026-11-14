@@ -63,7 +63,7 @@ An A-MPDU needs a Block Ack agreement with the receiver. The layer asks for it: 
 | Step | Rule |
 |---|---|
 | Request | 16 unicast frames to a peer within 1 s. ADDBA request: TID 0, window 64, immediate, no A-MSDU, no timeout. It goes to the head of the ring |
-| No answer | Repeated after 500 ms, 3 times. Then single frames for 60 s |
+| No answer | Repeated after 500 ms, 3 times. Then single frames for 5 s and another round of requests. Silence is not a refusal: the radio does not report whether the request went out, and a request held for more than 1.2 s for an absent peer is dropped. Until 2026-11-13 the pause was 60 s, longer than an ordinary transfer. In public reports of another driver with real iPhones (ForbiddenItlwm, issues 22 and 24; read, not reproduced) the agreement comes in about 1 s when it comes, and in two runs the sender asked hundreds of times without an agreement and the transfer finished |
 | Answer | Status 0, immediate, TID 0 and a window above 0 open the session. Anything else: single frames for 60 s |
 | DELBA from the peer | Closes the session; single frames for 10 s |
 | Unused session | After 10 s it is asked for again, with the numbering going on |

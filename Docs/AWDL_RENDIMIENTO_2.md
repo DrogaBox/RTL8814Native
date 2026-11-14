@@ -63,7 +63,7 @@ Un A-MPDU necesita un acuerdo de Block Ack con el receptor. La capa lo pide ella
 | Paso | Regla |
 |---|---|
 | Pedido | 16 frames unicast a un par en 1 s. ADDBA request: TID 0, ventana 64, inmediato, sin A-MSDU, sin timeout. Va a la cabeza del anillo |
-| Sin respuesta | Se repite a los 500 ms, 3 veces. Después, frames sueltos durante 60 s |
+| Sin respuesta | Se repite a los 500 ms, 3 veces. Después, frames sueltos durante 5 s y otra ronda de pedidos. El silencio no es un rechazo: el radio no informa si el pedido salió, y un pedido retenido más de 1,2 s por un par ausente se descarta. Hasta el 2026-11-13 la pausa era de 60 s, más que una transferencia corriente. En reportes públicos de otro driver con iPhones reales (ForbiddenItlwm, issues 22 y 24; leídos, no reproducidos) el acuerdo llega en cerca de 1 s cuando llega, y en dos corridas el emisor pidió cientos de veces sin acuerdo y la transferencia terminó |
 | Respuesta | Estado 0, inmediato, TID 0 y ventana mayor que 0 abren la sesión. Otra cosa: frames sueltos 60 s |
 | DELBA del par | Cierra la sesión; frames sueltos 10 s |
 | Sesión sin uso | A los 10 s se vuelve a pedir, con la numeración siguiendo |
