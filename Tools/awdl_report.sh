@@ -1328,6 +1328,39 @@ answer_norm() {   # key, value
 	esac
 }
 
+# 0 when the reply is one the question offers. Free-text questions take anything, and
+# - (no answer) is always accepted.
+answer_ok() {   # key, value
+	local low
+	low="$(printf '%s' "$2" | tr A-Z a-z | sed 's/^ *//; s/ *$//')"
+	[ "$low" = "-" ] && return 0
+	case "$1" in
+	direction)
+		case "$low" in
+		1|2|3|both|device-to-mac|"device to mac"|mac-to-device|"mac to device") return 0 ;;
+		esac
+		return 1 ;;
+	mac_in_device_sheet|device_in_mac_sheet)
+		case "$low" in
+		y|yes|n|no|"not tried") return 0 ;;
+		esac
+		return 1 ;;
+	transfer_started|transfer_finished|wifi_associated)
+		case "$low" in
+		y|yes|n|no) return 0 ;;
+		esac
+		return 1 ;;
+	wifi_band)
+		case "$low" in
+		2|2.4*|24*|5*|6*|unknown) return 0 ;;
+		esac
+		return 1 ;;
+	seconds)
+		printf '%s' "$low" | /usr/bin/grep -Eq '^[0-9]+([.,][0-9]+)?( *(s|sec|secs|seconds))?$' ;;
+	*) return 0 ;;
+	esac
+}
+
 question() {
 	case "$1" in
 	device_model) echo "Apple device model (for example iPhone 15 Pro, iPad Air M2)" ;;
@@ -1338,7 +1371,7 @@ question() {
 	transfer_started) echo "Did a transfer start? (yes / no)" ;;
 	transfer_finished) echo "Did it finish? (yes / no)" ;;
 	file_size) echo "File size (for example 64 MB)" ;;
-	seconds) echo "Seconds it took" ;;
+	seconds) echo "Seconds it took (a number)" ;;
 	wifi_associated) echo "Was the Mac's Wi-Fi connected to a network during the test? (yes / no)" ;;
 	wifi_band) echo "On which band is that network? (2.4 / 5 / 6 / unknown)" ;;
 	notes) echo "Anything else worth knowing, in one line (no names; Return to skip)" ;;
@@ -1364,8 +1397,13 @@ collect_answers() {   # run dir, --answers file or empty
 			[ "$asked" = 0 ] && printf '\nA few questions about the test. They go into the report as typed: no names.\n' >&2
 			asked=1
 			printf '\n%s\n> ' "$(question "$key")" >&2
-			IFS= read -r v || v=""
-			# An empty reply is an answer too: it is not asked again by the next pack.
+			while :; do
+				IFS= read -r v || { v=""; break; }
+				# An empty reply is an answer too: it is not asked again by the next pack.
+				[ -z "$v" ] && break
+				answer_ok "$key" "$v" && break
+				printf 'Not one of the choices. Type one of them, or Return to skip.\n> ' >&2
+			done
 			[ -z "$v" ] && v="-"
 		fi
 		printf '%s=%s\n' "$key" "$(answer_norm "$key" "$v")" >> "$tmp"
