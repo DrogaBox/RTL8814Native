@@ -23,7 +23,7 @@ If you have neither and still want to see this finished, you can [help me get an
 
 A few things to know before you start:
 
-- **Source only.** There are no prebuilt kexts and I do not plan to publish any. You build it yourself.
+- **One preview build.** The [Releases](https://github.com/DrogaBox/RTL8814Native/releases) page has a single prebuilt pair of kexts, so that people who want to test do not have to set up a build first. It is exactly what runs on my machine and it has been tested nowhere else. Building from source is still the reference.
 - **No support.** I cannot debug installs on machines I cannot see. I read every report and I will answer when I can, but I make no promises about fixes or timing.
 - **One setup.** All of this was built and tested on a single machine. Details below.
 
@@ -38,7 +38,7 @@ My setup: a TP-Link Archer T9UH v1 (`2357:0106`) on an AMD Hackintosh, macOS 26.
 - Sleep/wake and unplug/replug.
 - Location Services.
 - USB 3.0. The adapter enumerates as USB 2.0 and the driver switches it to USB 3.0 when it loads; on a motherboard port it then runs at SuperSpeed (5 Gbps).
-- About 386 Mbit/s down and 291 Mbit/s up on a WPA2 5 GHz 80 MHz link, measured while the adapter still ran at USB 2.0 High-Speed. I have not measured it again at SuperSpeed.
+- Speed at SuperSpeed, on a 5 GHz 80 MHz link to my 2x2 router: 320 to 360 Mbit/s down and 130 to 330 Mbit/s up in October 2026, before AWDL existed. The Linux in-tree driver gives 288 to 366 down and 227 to 280 up with the same adapter, port and router, so the download side is on par. Measured again on November 13, 2026, with AWDL enabled and sharing the radio: 297 Mbit/s down and 266 Mbit/s up with macOS's own `networkQuality -I en2 -s`, and a 200 MB upload at 245 Mbit/s. At USB 2.0 High-Speed it was about 150 down and 83 up.
 
 ### AWDL and AirDrop
 
@@ -176,6 +176,8 @@ nm -u Build/RTL8814Native.kext/Contents/MacOS/RTL8814Native | grep -E "rtw|rtl|h
 That must print nothing.
 
 ## Installing (OpenCore)
+
+The kexts come from your own build (`Build/`) or from the preview zip on the Releases page; the steps are the same. The preview was validated on build 25G241 and I run it on 25G342, so on any build other than 25G241 it needs `rtlairtrust=<your build>` in the boot-args (see [After a macOS update](#after-a-macos-update)).
 
 1. Copy `Build/RTL8814Native.kext` and `Build/RTL8814AirLayer.kext` into `EFI/OC/Kexts/` on your internal EFI partition. Check which disk you are writing to: a USB stick can have the same volume name.
 2. Strip resource forks and sync:
