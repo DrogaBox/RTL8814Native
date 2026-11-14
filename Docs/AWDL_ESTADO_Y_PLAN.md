@@ -3,6 +3,8 @@
 Punto de situación a 2026-11-06, antes de la primera prueba con un iPhone. Reemplaza como referencia a
 [AWDL_ESTADO_Y_BLOQUEO.md](AWDL_ESTADO_Y_BLOQUEO.md), de 2026-10-30, cuando no había ningún par por el aire. Lo no visto va con `?`.
 
+**Actualización 2026-11-14.** No hay un dispositivo Apple disponible desde el 2026-11-08, así que todo lo posterior está medido contra el par virtual. Hecho desde entonces: Block Ack de recepción y de emisión con A-MPDU, escalera de tasas, presencia densa y radio compartido con el Wi-Fi asociado (TCP por `awdl0` de 14 a 18 MB/s con el Wi-Fi asociado, unos 19 MB/s con el radio fijo a 80 MHz); tras una ronda de pedidos de Block Ack sin respuesta el siguiente pedido sale a los 5,5 s (antes 60 s), medido con `awdlsim --ba-silent 3`. El repositorio es público otra vez desde el 2026-11-13, con una versión preliminar compilada y la herramienta de reportes `Tools/awdl_report.sh`. Sigue sin probar contra un dispositivo Apple: Mac → iPhone, Block Ack y A-MPDU, y la velocidad de recepción. La lista vigente de lo hecho y lo abierto está al final de [ROADMAP.md](ROADMAP.md).
+
 **Actualización 2026-11-09.** La primera prueba con un iPhone (2026-11-08) está en
 [AWDL_RESULTADO_IPHONE_1.md](AWDL_RESULTADO_IPHONE_1.md): AirDrop iPhone → Mac funciona de punta a punta (video de 64 MB a
 unos 800 KB/s) tras corregir las tramas con envoltura de longitud de iOS 27 (94e83e7) y el modo de presencia (7333d24).

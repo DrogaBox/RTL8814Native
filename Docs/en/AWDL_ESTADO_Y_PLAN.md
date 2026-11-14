@@ -3,6 +3,8 @@
 Status at 2026-11-06, before the first test with an iPhone. As a reference it replaces
 [AWDL_ESTADO_Y_BLOQUEO.md](AWDL_ESTADO_Y_BLOQUEO.md), from 2026-10-30, when there was no peer over the air. Anything not seen goes with `?`.
 
+**Update 2026-11-14.** No Apple device has been available since 2026-11-08, so everything after that date is measured against the virtual peer. Done since then: receive and originator Block Ack with A-MPDU, the rate ladder, dense presence and the radio shared with an associated Wi-Fi link (TCP over `awdl0` at 14 to 18 MB/s with Wi-Fi associated, about 19 MB/s with the radio parked at 80 MHz); after a round of unanswered Block Ack requests the next request leaves 5.5 s later (60 s before), measured with `awdlsim --ba-silent 3`. The repository is public again since 2026-11-13, with one prebuilt preview and the report tool `Tools/awdl_report.sh`. Still untested against an Apple device: Mac to iPhone, Block Ack and A-MPDU, and the receive speed. The current list of what is done and what is open is at the end of [ROADMAP.md](../ROADMAP.md).
+
 **Update 2026-11-09.** The first test with an iPhone (2026-11-08) is in
 [AWDL_RESULTADO_IPHONE_1.md](AWDL_RESULTADO_IPHONE_1.md): iPhone → Mac AirDrop works end to end (a 64 MB video at about
 800 KB/s) after fixing iOS 27's length-wrapped data frames (94e83e7) and the presence mode (7333d24). The Mac did not

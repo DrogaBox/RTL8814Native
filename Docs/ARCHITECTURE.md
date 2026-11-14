@@ -1,5 +1,7 @@
 # RTL8814Native — Technical Architecture & Driver Reference
 
+**Status note, 2026-11-14.** This file is the build record of the radio driver up to milestone 4.22 (2026-10-27) and is kept as history: sections 3 to 5 describe the state at the time each entry was written. The current state is in the [README](../README.md) and in [ROADMAP.md](ROADMAP.md); the native layer is in [PHASE5_IO80211.md](PHASE5_IO80211.md) and AWDL in the `AWDL_*.md` files. Section 1 below was brought up to date.
+
 **Last Updated:** Milestone 4.22 deployed (`36ea1ac8a83a606ceeb2d36f8c9ff015`, UUID `37A9B718`, deployed to internal EFI `/Volumes/NO NAME`, **pending reboot + reconnect test**). Extends auth retries (`REAUTH_LIMIT` 4→32, ~9.6s budget) and raises `MAX_JOIN_TIMEOUT` 6500→15000 so the join survives the AP's ~20s post-disassociation silence on the first attempt without triggering a join-result failure or layer rescue. Previous: Milestone 4.21 (flush scan queue on recent leave -> full SSID survey).
 
 ---
@@ -7,14 +9,14 @@
 ## 1. System & Hardware Environment
 
 - **Host Machine:** Hackintosh `MacPro7,1` (AMD Ryzen 16-Core / 32-Thread, OpenCore Bootloader)
-- **Operating System:** macOS Tahoe / Sequoia (`25G241`, Darwin Kernel `25.6.0: RELEASE_X86_64`)
+- **Operating System:** macOS Tahoe 26.7.3 (`25G342`, Darwin Kernel `25.6.0: RELEASE_X86_64`); the work up to 2026-11-10 was done on 26.7.1 (`25G241`). Not run on Sequoia or earlier.
 - **Target Hardware:** TP-Link Archer T9UH v1 (Realtek **RTL8814AU** 4T4R 802.11ac MU-MIMO USB 3.0 Adapter)
   - **USB IDs:** `idVendor = 0x2357` (`9047`), `idProduct = 0x0106` (`262`), `bcdDevice = 0x0200`
   - **Permanent Hardware MAC (EFUSE `0xD8`):** `7C:C2:C6:xx:xx:xx` (Verified live on `en2`)
-  - **Bus Speed: USB 2.0 High-Speed, NOT SuperSpeed.** `ioreg` shows `USBSpeed = 3`, but in IOUSBHostFamily that is `kUSBHostConnectionSpeedHigh` (Super = 4, which is what the parent hub shows). Also `bcdUSB = 0x0200`, `bMaxPacketSize0 = 64`, `"Device Speed" = 2`, bulk `wMaxPacketSize = 512`, and chip register `0xFF` bit 7 = 1 (USB2 mode). The 8814AU enumerates in USB2 mode unless mode-switched (`HW_VAR_USB_MODE`). Earlier docs wrongly said SuperSpeed.
-  - **Physical Topology:** Dongle -> USB port on the monitor (`ioreg`: parent `USB3.0 Hub`) -> monitor upstream cable -> **red** USB port on the motherboard. Not plugged in directly; `UsbPowerSinkAllocation = 500`. The adapter works fine on this same port under Windows, so the hub is **not** a suspect. This is only for identifying the USB path; I can move it to another port if a test needs it.
+  - **Bus Speed: SuperSpeed (5 Gb/s) since 2026-10-27**, on a motherboard port: the adapter enumerates as USB 2.0 and the driver switches it to USB 3.0 when it loads (`usb_speed=3 (SuperSpeed)`, `bulk_in_mps=1024` in `Tools/test_uc`). History, 2026-10-26, when it ran at USB 2.0 High-Speed through the monitor's hub: `ioreg` shows `USBSpeed = 3`, but in IOUSBHostFamily that is `kUSBHostConnectionSpeedHigh` (Super = 4, which is what the parent hub shows). Also `bcdUSB = 0x0200`, `bMaxPacketSize0 = 64`, `"Device Speed" = 2`, bulk `wMaxPacketSize = 512`, and chip register `0xFF` bit 7 = 1 (USB2 mode). The 8814AU enumerates in USB2 mode unless mode-switched (`HW_VAR_USB_MODE`). Earlier docs wrongly said SuperSpeed.
+  - **Physical Topology (2026-10-26, no longer the case; the adapter is on a motherboard port now):** Dongle -> USB port on the monitor (`ioreg`: parent `USB3.0 Hub`) -> monitor upstream cable -> **red** USB port on the motherboard. Not plugged in directly; `UsbPowerSinkAllocation = 500`. The adapter works fine on this same port under Windows, so the hub is **not** a suspect. This is only for identifying the USB path; I can move it to another port if a test needs it.
   - **USB Endpoints (`bConfigurationValue = 1`, `bInterfaceNumber = 0`, `bNumEndpoints = 5`):**
-    - `0x84`: Bulk IN (RX packets + C2H events, max packet 512 at High-Speed)
+    - `0x84`: Bulk IN (RX packets + C2H events, max packet 1024 at SuperSpeed, 512 at High-Speed)
     - `0x05`: Bulk OUT #0 (TX High Queue)
     - `0x06`: Bulk OUT #1 (TX Normal Queue)
     - `0x08`: Bulk OUT #2 (TX Low Queue)

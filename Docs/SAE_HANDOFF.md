@@ -4,6 +4,8 @@ Notes for whoever picks this up. Everything below was checked on my one setup (T
 
 ## State
 
+Update (2026-11-14): the driver loaded today is built from the current tree, which contains the 4.34 changes described below, and it runs on macOS 26.7.3. WPA3 on the WPA2/WPA3 router is in daily use. The items under "Not verified yet" were not run as separate tests. AWDL is no longer "not started": see `Docs/ROADMAP.md`. WPA2/WPA3 Enterprise is still not started. The rest of this section is the state of 2026-10-28.
+
 Current (2026-10-28): driver 4.29 and layer 0.31 remain in my EFI. Local driver build 4.34 is built and offline-tested, not loaded or deployed. Its binary is in `Backups/build_4.34` (MD5 `a7ed6fc39a7f212e0edea17d3685f83b`).
 
 - SAE (group 19), the 4-way handshake for AKM 8 and protected management frames (CCMP, IGTK, BIP, SA Query) have prior live success against an SAE-only Android hotspot (2.4 and 5 GHz) and a WPA2/WPA3 router. The changes in 4.34 have not been tested against a live AP.
