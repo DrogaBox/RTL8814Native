@@ -77,6 +77,7 @@ struct Opts {
     six_e: bool,
     rest: bool,
     addba: bool,
+    ba_silent: u32,
     airdrop: bool,
     airdrop_flags: u32,
     pairing: bool,
@@ -84,7 +85,7 @@ struct Opts {
 
 const USAGE: &str = "usage: sudo awdlsim [--channel 6|44|149] [--mac xx:xx:xx:xx:xx:xx] [--metric N]
                     [--counter N] [--seconds N] [--rssi dBm] [--capture file.pcapng] [--echo] [--tun]
-                    [--umi SECONDS] [--6e] [--rest] [--addba] [--airdrop] [--airdrop-flags N] [--pairing]
+                    [--umi SECONDS] [--6e] [--rest] [--addba] [--ba-silent N] [--airdrop] [--airdrop-flags N] [--pairing]
 
   --channel  fix the node on this social channel (default: follow the channel of awdl0's PSFs)
   --mac      the node's AWDL address (default: random, locally administered)
@@ -107,6 +108,7 @@ const USAGE: &str = "usage: sudo awdlsim [--channel 6|44|149] [--mac xx:xx:xx:xx
              56963), which rapportd browses on awdl0 while the AirDrop sheet is open
   --addba    ask awdl0 for a Block Ack session (TID 0, window 64) like an iPhone, then send
              the node's data as QoS data, every eighth frame swapped with the next
+  --ba-silent N  leave awdl0's first N ADDBA requests unanswered, then accept as usual
   --6e       declare 6E in the Data Path State: without it IO80211 takes the node for a legacy peer
              and handleAirDropTrafficReg sends it no UMI
 Needs the boot-arg rtlawdl_sim=1 and awdl0 up (an AirDrop window open).";
@@ -133,6 +135,7 @@ fn parse_args() -> Result<Opts, String> {
         six_e: false,
         rest: false,
         addba: false,
+        ba_silent: 0,
         airdrop: false,
         airdrop_flags: svc::FLAGS_LEGACY,
         pairing: false,
@@ -172,6 +175,7 @@ fn parse_args() -> Result<Opts, String> {
             "--6e" => o.six_e = true,
             "--rest" => o.rest = true,
             "--addba" => o.addba = true,
+            "--ba-silent" => o.ba_silent = val()?.parse().map_err(|_| "bad count")?,
             "--airdrop" => o.airdrop = true,
             "--airdrop-flags" => {
                 o.airdrop = true;
@@ -502,7 +506,12 @@ impl Sim {
         }
         // awdl0 asks for a Block Ack session of its own: accepted, and its
         // QoS data reaches the node as plain data.
-        if let Some(r) = self.ba.answer(f, self.opts.mac.0) {
+        let asked = f.len() >= 33 && f[0] == 0xd0 && f[4..10] == self.opts.mac.0 && f[24] == 3 && f[25] == 0;
+        if asked && self.opts.ba_silent > 0 {
+            self.opts.ba_silent -= 1;
+            println!("[{:8.3}] ADDBA request from awdl0: token {} -> left unanswered ({} more)",
+                     secs(self.start, now), f[26], self.opts.ba_silent);
+        } else if let Some(r) = self.ba.answer(f, self.opts.mac.0) {
             if self.ba.rx_sessions <= 8 {
                 println!("[{:8.3}] ADDBA request from awdl0: token {} ssn {} -> accepted",
                          secs(self.start, now), f[26], u16::from_le_bytes([f[31], f[32]]) >> 4);
