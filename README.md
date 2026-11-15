@@ -120,9 +120,9 @@ You can still help, with a capture of what Apple devices say to each other. I ne
 
 This takes three devices, because the Mac that captures cannot take part in the transfer:
 
-1. On a Mac with Apple Wi-Fi, hold Option and click the Wi-Fi menu, choose Open Wireless Diagnostics, then Window, Sniffer. Pick channel 149 at 80 MHz. If nothing shows up, try 44, then 6.
-2. Start the capture, then AirDrop a file of 50 MB or more between the other two devices, right next to the Mac. Send it once in each direction.
-3. Stop the capture. macOS saves the file under `/var/tmp`.
+1. On a Mac with Apple Wi-Fi, hold Option and click the Wi-Fi menu, then choose Open Wireless Diagnostics. An assistant window opens: leave it alone and choose Window, Sniffer in the menu bar. Pick channel 149 and a width of 80 MHz, or the widest it offers. If nothing shows up, try 44, then 6.
+2. Click Start, then AirDrop a file of 50 MB or more between the other two devices, right next to the Mac. Send it once in each direction.
+3. Click Stop. macOS saves a `.pcap` file under `/var/tmp`, with the channel number in its name. In Finder, Go, Go to Folder, `/var/tmp` opens it.
 
 Do not attach the capture to a public issue. It contains the names and addresses of your devices and of every other device nearby on that channel. Open an issue saying you have one, with the device models and OS versions, and I will arrange a private way to receive it.
 
