@@ -130,6 +130,8 @@ Do not attach the capture to a public issue. It contains the names and addresses
 
 Reports about plain Wi-Fi are welcome too: another RTL8814AU model, an Intel Mac, a different macOS build. Say what you ran it on, what worked, and attach the output of `Tools/test_uc status` and `Tools/test_uc joinlog`.
 
+Other Realtek chips are not supported: RTL8811AU, RTL8812AU, RTL8821AU, RTL8821CU and the Wi-Fi 6 ones (RTL8851BU, RTL8852BU) are different chips with their own firmware and radio code, and this kext will not attach to them. The part that talks to macOS would carry over, the radio code would not. I can only write a driver for hardware I can plug in, and I cannot buy more adapters. If you want one of these supported, open an issue: lending or donating the adapter, or covering its cost through the sponsor links below, is what makes it possible. I make no promise on timing.
+
 ### Help me get an iPhone
 
 Everything above depends on other people's time. Someone runs a test, I change something, and then I wait until they can run it again. With a phone on my desk that same loop takes minutes.
