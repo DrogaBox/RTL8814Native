@@ -310,6 +310,7 @@ public:
 
 	uintptr_t setMacAddress(ether_addr &) override { return kIOReturnSuccess; }
 	uintptr_t prepareBSDInterface(__ifnet *ifp, unsigned int unit) override;
+	uintptr_t getSupportedMediaArray(unsigned int *media, unsigned int *count) override;
 	uintptr_t enable(unsigned int opts) override;
 	uintptr_t disable(unsigned int opts) override;
 

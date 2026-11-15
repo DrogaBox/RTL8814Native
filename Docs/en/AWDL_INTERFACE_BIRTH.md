@@ -447,6 +447,30 @@ consequence does not change: the project's own if_ioctl of `awdl0` must answer `
 link is up, and a list of 802.11 words (the daemon only looks at `ifm_current` for the gate; the
 remaining fields are used by the rest of the tools).
 
+### 6.4 The media list (measured on 2026-11-15)
+
+With a non-zero `ifm_count`, `ioctl_gifmedia` allocates a table of as many words as the
+`RegistrationInfo` announces (`+0x14`), calls slot `+0x948` with `rsi` = the table and `rdx` = a
+pointer to the count (`0xffffff8002b0aeee`-`0xffffff8002b0af01`) and returns `EIO` (5) if the slot
+fails or the count comes back as 0 or above the announced one
+(`0xffffff8002b0af07`-`0xffffff8002b0af35`). `IO80211SkywalkInterface::getSupportedMediaArray`
+(`0xffffff80022f8e5e`) asks the controller for its medium dictionary through its slot `+0x890`,
+which is `IONetworkController::copyMediumDictionary`; when that returns null it logs
+`not valid dictionary` and fails.
+
+The controller of `RTL8814AirLayer` publishes no medium dictionary. Effect measured with layer 0.32
+on 25G342: `ifconfig awdl0` prints `SIOCGIFXMEDIA: Input/output error`, lists the interface and
+exits with code 1, and the kernel logs `not valid dictionary` on every query. The interface works;
+a tool that tests `awdl0` by exit code reports it as missing.
+
+`RTLAwdInterface` overrides the slot and fills the table with `0x80` (`IFM_IEEE80211`, autoselect
+subtype). Measured with the layer loaded (UUID `893C72C8`, 25G342): `ifconfig awdl0` exits with
+code 0, shows `media: autoselect` and the kernel no longer logs `not valid dictionary` for `awdl0`.
+`?` Which list a Broadcom `awdl0` returns has not been read. The infrastructure interface had the
+same defect (`ifconfig` on it printed the same error); `RTLAirInterface` overrides the slot the same
+way. Measured with the layer loaded (UUID `D27B47D4`, 25G342): `ifconfig` on it exits with code 0
+and shows `media: autoselect` and `status: active`.
+
 ## 7. Operational summary for `RTL8814AirLayer`
 
 1. `setVIRTUAL_IF_CREATE` (slot 556/+0x1160) with role 6: create the interface object

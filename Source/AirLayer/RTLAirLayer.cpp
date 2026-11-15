@@ -364,6 +364,21 @@ bool RTLAirInterface::initWithController(RTLAirController *ctrl, const uint8_t m
 	return true;
 }
 
+/* The media list of SIOCGIFMEDIA with a count: the family's body asks the
+ * controller for a medium dictionary, which this one does not publish, and the
+ * ioctl ended in EIO (`ifconfig` printed the interface and exited 1). The table
+ * has as many words as the registration info announces; each one is
+ * IFM_IEEE80211 with the autoselect subtype. Same answer as RTLAwdInterface,
+ * Docs/AWDL_INTERFACE_BIRTH.md 6.4. */
+uintptr_t RTLAirInterface::getSupportedMediaArray(unsigned int *media, unsigned int *count)
+{
+	if (!media || !count || !*count)
+		return (uintptr_t)(uint32_t)kIOReturnBadArgument;
+	for (unsigned int i = 0; i < *count; i++)
+		media[i] = 0x80;
+	return kIOReturnSuccess;
+}
+
 /* Order of AppleBCMWLANSkywalkInterface::start(AppleBCMWLANCore*, RegistrationInfo*). */
 bool RTLAirInterface::startWithRegistration(RTLAirController *ctrl, void *regInfo)
 {

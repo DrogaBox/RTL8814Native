@@ -2519,6 +2519,24 @@ bool RTLAwdInterface::sendAf(uint8_t subtype, uint8_t channel, uint16_t mask, bo
  * in the RegInfo. A larger packet than the TX ring holds would vanish in
  * queueData with no error to the stack (Docs/AWDL_A53_SNIFFER.md §14).
  */
+/*
+ * The media list of SIOCGIFMEDIA with a count. The family's body asks the
+ * controller for its medium dictionary, which this controller does not
+ * publish, so it logged "not valid dictionary" and the ioctl ended in EIO:
+ * `ifconfig awdl0` printed the interface and exited 1. ioctl_gifmedia hands
+ * over a table of as many words as the registration info announces and
+ * rejects a count of 0 or above that. Every word is IFM_IEEE80211 with the
+ * autoselect subtype, the one ifm_current carries.
+ */
+uintptr_t RTLAwdInterface::getSupportedMediaArray(unsigned int *media, unsigned int *count)
+{
+	if (!media || !count || !*count)
+		return (uintptr_t)(uint32_t)kIOReturnBadArgument;
+	for (unsigned int i = 0; i < *count; i++)
+		media[i] = 0x80;
+	return kIOReturnSuccess;
+}
+
 uintptr_t RTLAwdInterface::prepareBSDInterface(__ifnet *ifp, unsigned int unit)
 {
 	uintptr_t r = IO80211VirtualInterface::prepareBSDInterface(ifp, unit);

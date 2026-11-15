@@ -437,6 +437,29 @@ consecuencia no cambia: la if_ioctl propia de `awdl0` debe responder `SIOCGIFMED
 enlace esté arriba y una lista de palabras 802.11 (el daemon solo mira `ifm_current` para el gate; los
 campos restantes los usa el resto de herramientas).
 
+### 6.4 La lista de medios (medido el 2026-11-15)
+
+Con `ifm_count` distinto de cero, `ioctl_gifmedia` reserva una tabla de tantas palabras como anuncia
+el `RegistrationInfo` (`+0x14`), llama al slot `+0x948` con `rsi` = la tabla y `rdx` = un puntero al
+recuento (`0xffffff8002b0aeee`-`0xffffff8002b0af01`) y devuelve `EIO` (5) si el slot falla o si el
+recuento vuelve en 0 o por encima del anunciado (`0xffffff8002b0af07`-`0xffffff8002b0af35`).
+`IO80211SkywalkInterface::getSupportedMediaArray` (`0xffffff80022f8e5e`) pide el diccionario de medios
+al controlador por su slot `+0x890`, que es `IONetworkController::copyMediumDictionary`; si vuelve
+nulo registra `not valid dictionary` y falla.
+
+El controlador de `RTL8814AirLayer` no publica diccionario de medios. Efecto medido con la capa
+0.32 en 25G342: `ifconfig awdl0` imprime `SIOCGIFXMEDIA: Input/output error`, lista la interfaz y
+termina con código 1, y el kernel registra `not valid dictionary` en cada consulta. La interfaz
+funciona; una herramienta que compruebe `awdl0` por el código de salida la da por ausente.
+
+`RTLAwdInterface` sobrescribe el slot y llena la tabla con `0x80` (`IFM_IEEE80211`, subtipo
+automático). Medido con la capa cargada (UUID `893C72C8`, 25G342): `ifconfig awdl0` termina con
+código 0, muestra `media: autoselect` y el kernel ya no registra `not valid dictionary` para `awdl0`.
+`?` Qué lista devuelve un `awdl0` de Broadcom no se ha leído. La interfaz de infraestructura tenía
+el mismo defecto (`ifconfig` sobre ella imprimía el mismo error); `RTLAirInterface` sobrescribe el slot
+igual. Medido con la capa cargada (UUID `D27B47D4`, 25G342): `ifconfig` sobre ella termina con
+código 0 y muestra `media: autoselect` y `status: active`.
+
 ## 7. Resumen operativo para `RTL8814AirLayer`
 
 1. `setVIRTUAL_IF_CREATE` (slot 556/+0x1160) con rol 6: crear el objeto interfaz (equivalente

@@ -75,6 +75,7 @@ public:
 	bool startWithRegistration(RTLAirController *ctrl, void *regInfo);
 	void stop(IOService *provider) override;
 	uintptr_t enable(unsigned int opts) override;
+	uintptr_t getSupportedMediaArray(unsigned int *media, unsigned int *count) override;
 	uintptr_t disable(unsigned int opts) override;
 	void rxFrames(mbuf_t chain);
 
