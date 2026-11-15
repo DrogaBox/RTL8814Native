@@ -1,13 +1,19 @@
 # RTL8814Native
 
-A native macOS driver for Realtek RTL8814AU (4x4 802.11ac) USB Wi-Fi adapters, with AWDL implemented in software so that AirDrop can run on a radio Apple never shipped.
+A native macOS driver for Realtek RTL8814AU (4x4 802.11ac) USB Wi-Fi adapters on macOS 26 (Tahoe), with AWDL implemented in software so that AirDrop can run on a radio Apple never shipped.
 
-I wrote it because the only options on macOS were closed-source Realtek utilities, and I wanted the adapter to show up in the normal Wi-Fi menu like any other card. Once that worked, I kept going into AWDL.
+I wrote it because what I found for this adapter on macOS came with its own utility, and I wanted it to show up in the normal Wi-Fi menu like any other card. Once that worked, I kept going into AWDL.
 
 It is two kexts, loaded through OpenCore:
 
 - `RTL8814Native.kext` is the radio driver: USB transport, the Realtek HAL/PHY code (from `morrownr/8814au`) behind a small Linux-to-XNU compatibility layer, firmware loading, and an in-kernel WPA2-PSK and WPA3-SAE supplicant (4-way handshake, 802.11w).
 - `RTL8814AirLayer.kext` publishes the radio to macOS as a native Skywalk/IO80211 interface, so `airportd`, the menu bar and System Settings can scan, join and reconnect on their own. It also creates `awdl0` and runs AWDL on top of the same radio.
+
+## What it supports
+
+- **Chip: RTL8814AU only.** I built and tested it on a TP-Link Archer T9UH v1 (`2357:0106`). The `Info.plist` also lists the USB IDs of other RTL8814AU adapters (ASUS USB-AC68, Alfa AWUS1900, Netgear A7000, Edimax EW-7833UAC, D-Link DWA-192, and others). Those come from the vendor driver and are untested; a report from one of them is welcome.
+- **Other Realtek chips do not work.** RTL8811AU, RTL8812AU, RTL8821AU, RTL8821CU and the Wi-Fi 6 ones (RTL8851BU, RTL8852BU) are different chips with their own firmware and radio code, and this kext will not attach to them. Nothing breaks, it just does not load. The half that talks to macOS would carry over to another chip; the radio code would not. I can only write a driver for hardware I can plug in, and I cannot buy more adapters. If you want one of these supported, open an issue: lending or donating the adapter, or covering its cost through the [links further down](#help-me-get-an-iphone), is what would make it possible. I make no promise on timing.
+- **macOS 26.7.x on x86_64 only.** Validated on 26.7.1 (25G241); I run it on 26.7.3 (25G342). It has never been run on macOS 15 (Sequoia) or earlier, and the layer refuses to start there. See [After a macOS update](#after-a-macos-update).
 
 ## Where this stands
 
@@ -29,7 +35,7 @@ A few things to know before you start:
 
 ## What was tested, and how
 
-My setup: a TP-Link Archer T9UH v1 (`2357:0106`) on an AMD Hackintosh, macOS 26.7.3 (25G342), x86_64, with a CSR-based USB Bluetooth dongle. One WPA2/WPA3-transition router on 5 GHz and an Android hotspot that allows WPA3-SAE only. I have not tried any other adapter, board or access point. These are kernel extensions, so a bug can panic the machine. Keep a working copy of your EFI folder and use this at your own risk.
+My setup: the TP-Link Archer T9UH v1 on an AMD Hackintosh, macOS 26.7.3 (25G342), x86_64, with a CSR-based USB Bluetooth dongle. One WPA2/WPA3-transition router on 5 GHz and an Android hotspot that allows WPA3-SAE only. I have not tried any other adapter, board or access point. These are kernel extensions, so a bug can panic the machine. Keep a working copy of your EFI folder and use this at your own risk.
 
 ### Wi-Fi
 
@@ -51,7 +57,7 @@ My setup: a TP-Link Archer T9UH v1 (`2357:0106`) on an AMD Hackintosh, macOS 26.
 | The Mac sees the iPhone in its AirDrop sheet | Failed that day. I found the cause and fixed it afterwards | Fix checked against the simulator only |
 | Mac to iPhone, any file | **Never tested** | Nothing |
 | Mac to the software receiver, a full file | Works | `Tools/awdlsim` |
-| TCP from the Mac over `awdl0` | About 19 MB/s with the radio parked at 80 MHz, about 15 MB/s while Wi-Fi stays associated | `Tools/awdlsim` |
+| TCP from the Mac over `awdl0` | About 19 MB/s with the radio parked at 80 MHz, 14 to 18 MB/s while Wi-Fi stays associated | `Tools/awdlsim` |
 | Wi-Fi stays connected while AWDL runs | Works: one hour associated, link never dropped | `Tools/awdlsim` |
 | Block Ack and A-MPDU toward an Apple device | **Never tested.** The Mac requests it and aggregates on the air; whether an iPhone accepts is unknown | Simulator only |
 | Receive speed after the reordering work | **Never tested.** The 800 KB/s figure is from before it | Simulator only |
@@ -66,7 +72,10 @@ The simulator is a virtual AWDL peer (`Tools/awdlsim`) that talks to the driver 
 - **WPA/TKIP-only and WEP.** The join code refuses anything but open or CCMP/WPA2-PSK.
 - **Following an access point's channel switch (CSA).** The driver parses the announcement and moves without leaving, but I could not make any of my access points announce one, so it is untested. Roaming between bands is implemented but I have not seen it fire.
 
-The `Info.plist` also lists USB IDs of other RTL8814AU adapters (ASUS USB-AC68, Alfa AWUS1900, Netgear A7000, Edimax EW-7833UAC, D-Link DWA-192, and others). Those come from the vendor driver and are untested.
+### Seen once, cause not found
+
+- On November 11, 2026, the radio stopped receiving about 38 s after it joined a network at boot, and turning Wi-Fi off and on did not bring it back. I changed when the driver runs a calibration afterwards, which I suspect and could not prove. I have not seen it again.
+- On November 14, 2026, the Wi-Fi link dropped by itself once, with no test running. The first rejoin failed and the second one, about 90 s after the drop, worked.
 
 ## How you can help
 
@@ -78,10 +87,10 @@ This is the one I need most. An iPhone, an iPad or another Mac all count.
 
 You need:
 
-- An x86_64 Mac or Hackintosh on macOS 26.7.x. The layer checks the macOS build at boot; see [After a macOS update](#after-a-macos-update) if yours is not 25G342.
+- An x86_64 Mac or Hackintosh on macOS 26.7.x. The layer checks the macOS build at boot, and on any build other than 25G241 it needs one extra boot-arg; see [After a macOS update](#after-a-macos-update).
 - Working Bluetooth with Low Energy. AirDrop finds devices over Bluetooth before AWDL carries anything. On my CSR dongle that took one preference change, described in [Docs/en/AWDL_AIRDROP_BLE_CONTROLADOR.md](Docs/en/AWDL_AIRDROP_BLE_CONTROLADOR.md).
-- Both kexts built and installed with the AWDL boot-args from [Installing](#installing-opencore).
-- AirDrop set to Everyone on both sides.
+- Both kexts installed, from your own build or from the preview zip, with the AWDL boot-args from [Installing](#installing-opencore).
+- AirDrop set to Everyone on both sides. On an iPhone that setting lasts 10 minutes and then goes back to Contacts Only, so set it again right before the test.
 - `Tools/test_uc` built. The one-line command is under [Diagnostics](#diagnostics).
 
 Then:
@@ -96,7 +105,7 @@ It changes nothing and needs no root. It tells you whether the machine is ready 
 sudo Tools/awdl_report.sh run
 ```
 
-Leave it running and do these, in this order, with a file of 50 MB or more:
+Leave it running and do these, in this order, with a file of 50 MB or more. Keep the Apple device unlocked while it sends or receives:
 
 1. Open the AirDrop sheet on the Apple device. Does this Mac appear?
 2. Send the file from the Apple device to the Mac. Does it arrive? How long does it take?
@@ -128,9 +137,8 @@ Do not attach the capture to a public issue. It contains the names and addresses
 
 ### 3. You have a different adapter, board or macOS build
 
-Reports about plain Wi-Fi are welcome too: another RTL8814AU model, an Intel Mac, a different macOS build. Say what you ran it on, what worked, and attach the output of `Tools/test_uc status` and `Tools/test_uc joinlog`.
+Reports about plain Wi-Fi are welcome too: another RTL8814AU adapter, an Intel Mac, a different macOS build. Say what you ran it on, what worked, and attach the output of `Tools/test_uc status` and `Tools/test_uc joinlog`.
 
-Other Realtek chips are not supported: RTL8811AU, RTL8812AU, RTL8821AU, RTL8821CU and the Wi-Fi 6 ones (RTL8851BU, RTL8852BU) are different chips with their own firmware and radio code, and this kext will not attach to them. The part that talks to macOS would carry over, the radio code would not. I can only write a driver for hardware I can plug in, and I cannot buy more adapters. If you want one of these supported, open an issue: lending or donating the adapter, or covering its cost through the sponsor links below, is what makes it possible. I make no promise on timing.
 
 ### Help me get an iPhone
 
