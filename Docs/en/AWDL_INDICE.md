@@ -58,6 +58,7 @@ Status convention:
 | [AWDL_REQUEST_ISSUERS.md](AWDL_REQUEST_ISSUERS.md) | Who emits each AWDL request: the kernel `IO80211AWDLPeerManager` and `IO80211.framework`; airportd the rest | Closed and verified |
 | [AWDL_AF_TO_DAEMON.md](AWDL_AF_TO_DAEMON.md) | Which action frames reach the daemon as event 48: the gate is `ctx+0x2C == 0` and `peerReachability == 1` at the end of `actionFrameProcessInput`, not the subtype or the channel; what is consumed silently, dedup and rate limit, implications for the driver | Verified in IDA (25G241); closes question E3 of [AWDL_ETAPAS_2_A_4.md](AWDL_ETAPAS_2_A_4.md) §5; counter block of `actionFrameReport`, bit 0 of `priv+88` and the second `ud1` of the thread `?` |
 | [AWDL_REF_SIMPLEBCM.md](AWDL_REF_SIMPLEBCM.md) | SimpleBCM (AirPortBrcmNIC on Sequoia/Tahoe without the system IOSkywalkFamily, commit `624fca1`): own user client, struct translation, how `awdl0` comes up and answers for this project | Code reading only (nothing compiled or run); whatever depends on Apple binaries absent from the repository `?` |
+| [AWDL_ENERGIA_REENUMERACION.md](AWDL_ENERGIA_REENUMERACION.md) | Dongle re-enumeration and power: "driver not available" auto-join (event 55), ioctls sleeping in `IOSkywalkNetworkBSDClient` with no radio, restart hang from `llw0` left out of the power tree; `reboot_kernel` order | Verified in IDA (`airportd` 25G342, kernelcache 25G332) and measured; hot unplug with layer `4997D361` not tested |
 
 ## 3. On-the-air protocol, PeerManager, firmware and RTL8814 hardware
 

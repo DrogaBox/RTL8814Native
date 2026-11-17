@@ -15,7 +15,7 @@ decided without execution goes as `?`.
 |---|---|
 | **1. Ioctls 130/131** | They are not apple80211 requests. `wifip2pd` issues them over an `AF_INET6`/`SOCK_DGRAM` socket with `0xC0806982` (`_IOWR('i',130,128)`) and `0xC1206983` (`_IOWR('i',131,288)`). The 130 is consumed by the IPv6 stack in `in6_control` (0xffffff80007dd4b0), without a direct call to `processBSDCommand` (the indirect calls of the attachment were not resolved, `?`). The 131 does not fit the switch of `in6_control`: it falls to `ifnet_ioctl` (0xffffff80007de187) and, if the bridge does not intercept it (`?`), it reaches the `processBSDCommand` of the interface, where base `IO80211SkywalkInterface::processBSDCommand` (0xffffff80022f6e98) rejects it with **45 (ENOTSUP)** and the log `Rejected w/ENOTSUP`; the LL class does not reject it itself. The daemon sees `errno = 45` on the first ioctl (131) and no longer sends the 130. It does not break AWDL: the 293 does not depend on this pair and there is no teardown of `awdl0`. |
 | **2. Destruction (op = 0)** | `wifip2pd` never issues `op = 0`: the only `Apple80211RawSet` of type 293 (0x10004b3e6, in `sub_10004B300`) builds the payload with `op = 1`; there is no `RawSet` 95 nor another construction of the 293. The destruction branch of the kernel exists and was walked: `AppleBCMWLANProximityInterface::setCOMPANION_SKYWALK_IF_CREATE` (0xffffff8001722ef2) → `AppleBCMWLANCore::destroySkywalkInterface` (0xffffff80016aae4e) → `IOService::terminate(2)` (slot +0x600, 0xffffff8000a937b0) → `AppleBCMWLANLowLatencyInterface::free` (slot +0x90, 0xffffff80015e0046) → core table slot to zero. It is only reachable from an external client, not from this daemon. |
-| **3. Minimal class** | It is a second object of the `IO80211VirtualInterface` chain, created with the same sequence as `awdl0` (init with role 2 and name "llw", `setInterfaceId`, `attach`, `start`, `initRegistrationInfo`, `registerEthernetInterface`, `registerService`), with `getBSDNamePrefix` → "llw" and the BSD name copied to payload+8. `awdl0` does **not** need a reference to the companion for the 293 to return 0; the two links of the family are null-safe or write-only. |
+| **3. Minimal class** | It is a second object of the `IO80211VirtualInterface` chain, created with the same sequence as `awdl0` (init with role 2 and name "llw", `setInterfaceId`, `attach`, `start`, `initRegistrationInfo`, `registerEthernetInterface`, `registerService`), with `getBSDNamePrefix` → "llw" and the BSD name copied to payload+8. `awdl0` does **not** need a reference to the companion for the 293 to return 0; the two links of the family are null-safe or write-only. **Corrected in §6:** the sequence lacks `setParentInterface(awdl0)` before `start`; without it, `start` fails for role 2. |
 
 ## 2. Point 1 — the ioctls 130/131
 
@@ -201,7 +201,91 @@ that link.
 | `AWDL_LLW_COMPANION.md` §3.5 / `AWDL_ETAPAS_2_A_4.md` §3.4 | The ioctls 130/131 are not apple80211. The 130 resolves in `in6_control`; the 131, if the bridge does not intercept it (`?`), goes through `processBSDCommand` and the base rejects it with 45 (ENOTSUP). |
 | `AWDL_ETAPAS_2_A_4.md` §3.2 | The destruction by `op = 0` is not issued by `wifip2pd` in this build (there is only one 293, with `op = 1`); the kernel branch remains for an external client. |
 
-## 6. Method and limits
+## 6. Correction (2026-11-15): `llw0` needs `awdl0` as its parent before `start`
+
+The sequence in §4.2 leaves out a mandatory step. Basis: the same copy of the 26.7.1
+kernelcache (md5 `f489ff8be80e6013a1bf47561dcaef45`), headless Hex-Rays on a fresh copy of the
+database.
+
+### 6.1 What `start` requires for role 2
+
+`IO80211SkywalkInterface::start` (0xffffff80022f5792) reads the role at ivars+88. For **role 2**:
+
+- it takes the parent from ivars+104;
+- if it is null, it logs `"Error: Assert failure"` (source `IO80211SkywalkInterface.cpp`, line
+  516) and returns failure: the interface does not start;
+- if it exists, it copies the parent's peer manager (`*(*(parent+288)+40)`) into the LL's
+  ivars+40 and logs `"Assigning peerManager %p for interfaceid %d, from ivars->parentInterface (%p) role %d"`.
+
+For the other roles, `start` calls the peer manager creation slot and fails if it returns null
+(`"ERROR: Family Skywalk Interface start peer manager init fail"`). For role 2 that slot is not
+called. `IO80211VirtualInterface::createPeerManager` (0xffffff80023308c2) creates a manager only
+for roles 6, 7, 8, 9 and 10; for any other role it returns 0.
+
+### 6.2 Who writes the parent and in what order
+
+ivars+104 is written by `IO80211SkywalkInterface::setParentInterface` (0xffffff80022f97a2), which
+does only that write. `AppleBCMWLANLowLatencyInterface::withProvider` (0xffffff80015dfee4),
+before the `start` done by `createSkywalkInterface`, calls in this order:
+
+1. `AppleBCMWLANSkywalkInterface::initWithProviderAndParameters` (role from the params, 2);
+2. `IO80211SkywalkInterface::setLowLatencyEnabled(true)` (0xffffff80022f97c6, byte ivars+112);
+3. `IO80211SkywalkInterface::setParentInterface(LL, parent)`;
+4. `IO80211VirtualInterface::setCompanionLowLatencySkywalkInterface(parent, LL)`.
+
+Correction to §4.2: `setLowLatencyEnabled(true)` and `setParentInterface(awdl0)` go between
+`setInterfaceId` and `start`. §4.4 still holds for `awdl0`: the LL needs the link to its
+parent, not the other way round.
+
+### 6.3 Base of the class
+
+Broadcom's LL belongs to the infra chain (`IO80211InfraProtocol`). In that chain:
+
+- `IO80211InfraInterface::start` (0xffffff800235f2e6) does work of its own only when the role
+  (ivars+88) is 1;
+- `IO80211InfraInterface::registerInfraEthernetInterface` (0xffffff80023683e0) also limits its
+  own part to role 1 and calls `IOSkywalkEthernetInterface::registerEthernetInterface`.
+
+An LL on the `IO80211VirtualInterface` chain, as §4.2 proposed, is not ruled out if the parent
+is set before `start`, but this was not checked (`?`). The implementation follows Broadcom's
+chain.
+
+### 6.4 State of the implementation
+
+`RTLLlwInterface` in `Source/AirLayer/AWDLInterface.cpp`:
+
+- infra chain, role 2, id 9, low latency enabled and `awdl0` as its parent before `start`;
+- prefix `llw`, registration flags 4, `awdl0`'s MAC and MTU;
+- what it sends goes into `awdl0`'s TX ring; reception is not implemented.
+
+It answers the 293 only with `rtlawdl_llw=1`. The symbols resolve against the 25G342
+kernelcache. The layer (UUID `CB0F467C`) was installed on the EFI on 2026-11-15 and was loaded; what was measured is in §6.5.
+
+Three boots with `rtlawdl_llw=1`, 25G342 kernelcache:
+1. **Layer `CB0F467C`.** The 293 arrives and `llw0` registers, but the BSD name is still empty
+   after `registerService` and the layer tears it down. The kernel logs
+   `PM waiting on pmDriverCallout(0x2) to RTLLlwInterface (2000 ms)` and the ioctl takes about
+   10 s. `IO80211InfraInterface::setPowerState` (0xffffff8002367f58, 25G241 addresses) calls
+   `IO80211SkywalkInterface::setPowerState` (0xffffff80022f8782) and then, when not on the
+   thread of the work loop at ivars+56, passes the WCL system state through `runActionBlock` on
+   that work loop, which the 293 handler holds. Fix: `llw0` answers `setPowerState` with the
+   Skywalk part only.
+2. **Layer `F1B9F4DB`.** The power wait is gone, but no `ifnet` appears and `wifip2pd` runs out
+   its 30 s (`Timed out while waiting for the low latency interface`). The kernel creates and
+   closes the `llw0` nexus provider twice, 5 s apart. `IOSkywalkNetworkBSDClient::start`
+   (0xffffff8002aff562) retries `kern_nexus_controller_alloc_net_provider_instance` 50 times
+   every 100 ms while it returns 16 (EBUSY).
+   `IOSkywalkEthernetInterface::initBSDInterfaceParameters` (0xffffff8002b10bca) uses the 6-byte
+   MAC as the `ifnet` unique id (eparams +16 pointer, +24 length), and `llw0` carries `awdl0`'s
+   MAC. `AppleBCMWLANLowLatencyInterface::initBSDInterfaceParameters` (0xffffff80015e034a)
+   replaces it with an 8-byte id of its own. Fix: the same, with the MAC followed by `"ll"`.
+3. **Layer `CF88F890`.** `llw0` appears with `awdl0`'s MAC, MTU 1428, `media: autoselect` and
+   `IO80211InterfaceRole = "LowLatency"`. `wifip2pd` accepts it (`Created WiFiInterface ...[llw0]`,
+   link up, link-local IPv6 address) and no longer logs the companion error. `awdl0` stays up.
+Pending: reception on `llw0`, what `rapportd` does with a real low latency session and which
+`fd39::` address `llw0` gets. That needs an iPhone.
+
+## 7. Method and limits
 
 - Headless disassembly over copies of the databases of `wifip2pd` and of the kernelcache,
   with probing scripts `e1`–`e10` (daemon) and `f1`–`f14` (kernel); the originals were not

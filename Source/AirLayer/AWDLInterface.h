@@ -296,6 +296,8 @@ static_assert(sizeof(IO80211AWDLProtocol) == 0x130, "IO80211AWDLProtocol layout"
  * Every AWDL slot answers kIOReturnUnsupported in stage 1: the interface exists
  * and is published, it does not run the AWDL state machine yet.
  */
+class RTLLlwInterface;
+
 class RTLAwdInterface : public IO80211AWDLProtocol {
 	OSDeclareDefaultStructors(RTLAwdInterface)
 public:
@@ -304,9 +306,20 @@ public:
 	void stop(IOService *provider) override;
 	void free() override;
 	const char *bsdName() const { return _bsdName; }
+	/* llw0, for the power tree (nullptr until wifip2pd asks for it). */
+	IOService *companion() const;
 	/* A new radio after a USB re-enumeration: hooks and port 1 again. */
 	void radioBack();
 	void radioGone();
+	/* One Ethernet II frame from llw0: same MAC, same peers, same ring. */
+	void companionTx(const uint8_t *eth, uint32_t len);
+	/* Largest IP packet the TX ring carries: the MTU of awdl0 and llw0. */
+	static uint32_t dataMtu();
+
+	/* COMPANION_SKYWALK_IF_CREATE (type 293): wifip2pd asks for llw0 right
+	 * after awdl0 is up (Docs/AWDL_LLW_COMPANION.md, AWDL_STAGE4_LLW_CLOSURE.md).
+	 * Off unless rtlawdl_llw=1: it answers unsupported, as before. */
+	IOReturn setCOMPANION_SKYWALK_IF_CREATE(apple80211_companion_skywalk_if_create *req) override;
 
 	uintptr_t setMacAddress(ether_addr &) override { return kIOReturnSuccess; }
 	uintptr_t prepareBSDInterface(__ifnet *ifp, unsigned int unit) override;
@@ -413,8 +426,6 @@ public:
 	AWDL_STUB(setAWDL_ENCRYPTION_TYPE, apple80211_encrypt)
 	AWDL_STUB(setAWDL_DFSP_CONFIG, apple80211_awdl_dfsp_config)
 	AWDL_STUB(setAWDL_DFSP_UCSA_CONFIG, apple80211_awdl_dfsp_ucsa_config)
-	AWDL_STUB(setCOMPANION_SKYWALK_IF_CREATE,
-	          apple80211_companion_skywalk_if_create)
 	AWDL_STUB(setAWDL_OOB_SEC_PAYLOAD_REQUEST,
 	          apple80211_awdl_af_sec_payload_request)
 	AWDL_STUB(setLLW_PARAMS, apple80211_llw_params)
@@ -431,8 +442,11 @@ private:
 	uint8_t *_regInfo;          /* IOSkywalkEthernetInterface::RegistrationInfo */
 	uint8_t _mac[6];
 	char _bsdName[16];
+	RTLLlwInterface *_llw;      /* the companion, once created */
+	bool _llwAllowed;
 
 	bool createDatapath();
+	void destroyCompanion();
 	void teardownDatapath();
 	static IOReturn txData(OSObject *owner, void *queue, void *const *pkts,
 	                       uint32_t count, void *refCon);
@@ -694,6 +708,55 @@ private:
  * __cxa_pure_virtual in the vtable the family calls. */
 static_assert(__is_abstract(IO80211AWDLProtocol), "IO80211AWDLProtocol is abstract");
 static_assert(!__is_abstract(RTLAwdInterface), "RTLAwdInterface must override every pure slot");
+
+/*
+ * llw0, the low latency companion of awdl0. Same family chain as
+ * AppleBCMWLANLowLatencyInterface (an infra protocol interface, role 2,
+ * BSD prefix llw, interface id 9) with awdl0 as its parent: the family's
+ * start takes the parent's peer manager for role 2. It has no radio of its
+ * own: what it sends goes into awdl0's TX ring. Nothing is received on it
+ * yet; how Broadcom's firmware tells its traffic apart is not known.
+ */
+class RTLLlwInterface : public RTLAirInterfaceStubs {
+	OSDeclareDefaultStructors(RTLLlwInterface)
+public:
+	bool initWithParent(RTLAirController *ctrl, RTLAwdInterface *awdl, const uint8_t mac[6]);
+	bool startWithRegistration(RTLAirController *ctrl);
+	void stop(IOService *provider) override;
+	void free() override;
+	uintptr_t enable(unsigned int opts) override;
+	uintptr_t disable(unsigned int opts) override;
+	uintptr_t prepareBSDInterface(__ifnet *ifp, unsigned int unit) override;
+	uintptr_t getSupportedMediaArray(unsigned int *media, unsigned int *count) override;
+	/* Only the Skywalk part: the infra one waits on the work loop the 293
+	 * handler holds while llw0 is being registered. */
+	IOReturn setPowerState(unsigned long ordinal, IOService *device) override;
+	/* Its own ifnet unique id: the Ethernet default is the MAC, which awdl0
+	 * already holds, and dlil answers EBUSY to a second user of it. */
+	uintptr_t initBSDInterfaceParameters(ifnet_init_eparams *params, sockaddr_dl **ll) override;
+	const char *bsdName() const { return _bsdName; }
+	/* awdl0 is going away: no more frames to it. */
+	void detachParent();
+
+private:
+	RTLAwdInterface *_awdl;    /* retained until free() */
+	IOLock *_awdlLock;
+	bool _parentLive;          /* cleared by detachParent(), under _awdlLock */
+	void *_txPool, *_rxPool;
+	void *_txSubQ, *_txCompQ, *_rxCompQ;
+	uint8_t *_regInfo;
+	uint8_t _mac[6];
+	uint8_t _uniqueId[8];     /* MAC + "ll" */
+	char _bsdName[16];
+	uint32_t _txFrames;
+
+	bool createDatapath();
+	static IOReturn removeQueues(OSObject *owner, void *, void *, void *, void *);
+	static IOReturn switchQueues(OSObject *owner, void *on, void *, void *, void *);
+	static IOReturn txData(OSObject *owner, void *queue, void *const *pkts,
+	                       uint32_t count, void *refCon);
+};
+static_assert(!__is_abstract(RTLLlwInterface), "RTLLlwInterface must override every pure slot");
 
 /* IO80211Controller::setAwdlInterface, wrapped so the handler that creates the
  * interface does not carry the family symbol. NULL unpublishes it. */

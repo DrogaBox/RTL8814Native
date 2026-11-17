@@ -74,6 +74,20 @@ void *rtl_sky_getWorkQueue(void *iface)
 	__asm("__ZN23IO80211SkywalkInterface12getWorkQueueEv");
 const char *rtl_sky_getBSDName(void *iface)
 	__asm("__ZN23IO80211SkywalkInterface10getBSDNameEv");
+/* llw0 (Docs/AWDL_STAGE4_LLW_CLOSURE.md §4, AppleBCMWLANLowLatencyInterface::withProvider). */
+void rtl_llw_setRole(void *iface, uint32_t role)
+	__asm("__ZN23IO80211SkywalkInterface16setInterfaceRoleEj");
+void rtl_llw_setParent(void *iface, void *parent)
+	__asm("__ZN23IO80211SkywalkInterface18setParentInterfaceEP23IO80211VirtualInterface");
+void rtl_llw_setLowLatency(void *iface, bool on)
+	__asm("__ZN23IO80211SkywalkInterface20setLowLatencyEnabledEb");
+IOReturn rtl_llw_registerInfra(void *iface, void *reg, void **queues, uint32_t n,
+                               void *txPool, void *rxPool)
+	__asm("__ZN21IO80211InfraInterface30registerInfraEthernetInterfaceEPN26IOSkywalkEthernetInterface16RegistrationInfoEPP20IOSkywalkPacketQueuejP25IOSkywalkPacketBufferPoolS7_");
+void rtl_llw_reportLink(void *iface, uint32_t status, uint32_t media)
+	__asm("__ZN25IOSkywalkNetworkInterface16reportLinkStatusEjj");
+IOReturn rtl_llw_skyPower(void *iface, unsigned long ordinal, IOService *device)
+	__asm("__ZN23IO80211SkywalkInterface13setPowerStateEmP9IOService");
 void *rtl_pool_withName(const char *name, OSObject *owner, uint32_t type, const void *opts)
 	__asm("__ZN25IOSkywalkPacketBufferPool8withNameEPKcP8OSObjectjPKNS_11PoolOptionsE");
 void *rtl_txsub_withPool(void *pool, uint32_t cap, uint32_t flags, OSObject *owner,
@@ -192,6 +206,10 @@ bool RTLAwdInterface::initWithController(RTLAirController *ctrl, const uint8_t m
 	_txSubQ = _txCompQ = _rxCompQ = nullptr;
 	_bsdName[0] = '\0';
 	memcpy(_mac, mac, 6);
+	_llw = nullptr;
+	uint32_t llw = 0;
+	PE_parse_boot_argn("rtlawdl_llw", &llw, sizeof(llw));
+	_llwAllowed = llw != 0;
 	if (!init()) {
 		LOG("awdl: init() failed");
 		return false;
@@ -494,6 +512,7 @@ void RTLAwdInterface::teardownDatapath()
 
 void RTLAwdInterface::stop(IOService *provider)
 {
+	destroyCompanion();
 	setRadioTx(false);
 	setRadioRx(false);
 	/* The IOKit termination thread, no gate held
@@ -2535,6 +2554,386 @@ uintptr_t RTLAwdInterface::getSupportedMediaArray(unsigned int *media, unsigned 
 	for (unsigned int i = 0; i < *count; i++)
 		media[i] = 0x80;
 	return kIOReturnSuccess;
+}
+
+uint32_t RTLAwdInterface::dataMtu()
+{
+	return (uint32_t)(sizeof(((AwdlTxFrame *)nullptr)->frame) - AWDL_WLAN_HDR - 16);
+}
+
+/* One frame from llw0, as txData handles one from awdl0: llw0 has awdl0's
+ * MAC, so queueData takes it as ours. */
+void RTLAwdInterface::companionTx(const uint8_t *eth, uint32_t len)
+{
+	void *pm = _txOn && len >= 14 ? rtl_sky_getPeerManager(this) : nullptr;
+	if (pm)
+		rtl_pm_preQueueQuietMode(pm, eth);
+	if (pm && !(eth[0] & 1))
+		pmCount(pm, AWDL_PM_TX_UNICAST, AWDL_PM_TX_BYTES, len);
+	queueData(eth, len);
+}
+
+/*
+ * COMPANION_SKYWALK_IF_CREATE, as AppleBCMWLANProximityInterface's handler
+ * (25G241 0xffffff8001722ef2): u32 at +4 is the operation, 1 creates, 0
+ * destroys, anything else is accepted and ignored; the BSD name goes to +8
+ * (16 bytes), which wifip2pd checks with if_nametoindex. A failed create
+ * leaves +8 alone, so wifip2pd fails on the spot instead of waiting 30 s.
+ */
+IOReturn RTLAwdInterface::setCOMPANION_SKYWALK_IF_CREATE(apple80211_companion_skywalk_if_create *req)
+{
+	if (!_llwAllowed)
+		return kIOReturnUnsupported;
+	if (!req)
+		return kIOReturnBadArgument;
+	uint8_t *p = (uint8_t *)req;
+	uint32_t op = *(const uint32_t *)(p + 4);
+	LOG("awdl: companion request, op %u", op);
+	if (op == 0) {
+		if (!_llw)
+			return (IOReturn)0xE00002C0;
+		destroyCompanion();
+		return kIOReturnSuccess;
+	}
+	if (op != 1)
+		return kIOReturnSuccess;
+	if (!_llw) {
+		RTLLlwInterface *llw = OSTypeAlloc(RTLLlwInterface);
+		if (!llw)
+			return kIOReturnNoMemory;
+		if (!llw->initWithParent(_ctrl, this, _mac) || !llw->startWithRegistration(_ctrl)) {
+			LOG("awdl: companion not created");
+			llw->detachParent();
+			llw->terminate();
+			llw->release();
+			return (IOReturn)0xE00002BC;
+		}
+		_llw = llw;
+		LOG("awdl: companion %s created", llw->bsdName());
+	}
+	strlcpy((char *)(p + 8), _llw->bsdName(), 16);
+	return kIOReturnSuccess;
+}
+
+IOService *RTLAwdInterface::companion() const
+{
+	return _llw;
+}
+
+/* Before awdl0's own teardown: llw0 shares its peer manager. */
+void RTLAwdInterface::destroyCompanion()
+{
+	RTLLlwInterface *llw = _llw;
+	_llw = nullptr;
+	if (!llw)
+		return;
+	llw->detachParent();
+	llw->terminate();
+	llw->release();
+	LOG("awdl: companion gone");
+}
+
+/* ---- llw0 ---- */
+
+#define LLW_IFACE_ID   9       /* createSkywalkInterface params+0x10 */
+#define LLW_ROLE       2       /* IO80211InterfaceRole "LowLatency" */
+#define LLW_REG_FLAGS  4       /* the |= 4 createSkywalkInterface adds for role 2 */
+#define LLW_LINK_UP    3       /* AppleBCMWLANLowLatencyInterface::setInterfaceEnable */
+#define LLW_LINK_DOWN  1
+
+OSDefineMetaClassAndStructors(RTLLlwInterface, RTLAirInterfaceStubs)
+
+/* The order of AppleBCMWLANLowLatencyInterface::withProvider: role, low
+ * latency on, parent, then attach. IO80211SkywalkInterface::start refuses a
+ * role 2 interface without a parent and takes the parent's peer manager. */
+bool RTLLlwInterface::initWithParent(RTLAirController *ctrl, RTLAwdInterface *awdl, const uint8_t mac[6])
+{
+	_awdl = nullptr;
+	_awdlLock = nullptr;
+	_parentLive = false;
+	_regInfo = nullptr;
+	_txPool = _rxPool = nullptr;
+	_txSubQ = _txCompQ = _rxCompQ = nullptr;
+	_bsdName[0] = '\0';
+	_txFrames = 0;
+	memcpy(_mac, mac, 6);
+	memcpy(_uniqueId, mac, 6);
+	_uniqueId[6] = 'l';
+	_uniqueId[7] = 'l';
+	if (!init())
+		return false;
+	_awdlLock = IOLockAlloc();
+	if (!_awdlLock)
+		return false;
+	awdl->retain();
+	_awdl = awdl;
+	_parentLive = true;
+	ether_addr ea;
+	memcpy(ea.octet, mac, 6);
+	if (!IO80211SkywalkInterface::init(ctrl, &ea)) {
+		LOG("llw: base init failed");
+		return false;
+	}
+	rtl_llw_setRole(this, LLW_ROLE);
+	rtl_sky_setId(this, LLW_IFACE_ID);
+	rtl_llw_setLowLatency(this, true);
+	rtl_llw_setParent(this, awdl);
+	if (!attach(ctrl)) {
+		LOG("llw: attach failed");
+		return false;
+	}
+	return true;
+}
+
+bool RTLLlwInterface::createDatapath()
+{
+	rtl_awdl_pool_options o;
+	bzero(&o, sizeof(o));
+	o.packetCount = 256;
+	o.bufferCount = 256;
+	o.bufferSize = 2048;
+	o.maxBuffersPerPacket = 1;
+	o.poolFlags = 1;
+	_txPool = rtl_pool_withName("rtlllw:tx", this, 1, &o);
+	_rxPool = rtl_pool_withName("rtlllw:rx", this, 1, &o);
+	if (!_txPool || !_rxPool)
+		return false;
+	_txSubQ = rtl_txsub_withPool(_txPool, 128, 0, this, (void *)&RTLLlwInterface::txData, nullptr, 0);
+	_txCompQ = rtl_txcomp_withPool(_txPool, 128, 0, this, (void *)&rtlAwdIdleAction, nullptr, 0);
+	_rxCompQ = rtl_rxcomp_withPool(_rxPool, 128, 0, this, (void *)&rtlAwdIdleAction, nullptr, 0);
+	if (!_txSubQ || !_txCompQ || !_rxCompQ)
+		return false;
+	IOWorkLoop *wq = (IOWorkLoop *)rtl_sky_getWorkQueue(this);
+	if (!wq)
+		return false;
+	wq->addEventSource((IOEventSource *)_txSubQ);
+	wq->addEventSource((IOEventSource *)_txCompQ);
+	wq->addEventSource((IOEventSource *)_rxCompQ);
+	return true;
+}
+
+/* AppleBCMWLANCore::createSkywalkInterface's registration for role 2: the
+ * awdl0 values with role 2, prefix llw and flags 4, then the infra
+ * registration AppleBCMWLANSkywalkInterface::start uses. */
+bool RTLLlwInterface::startWithRegistration(RTLAirController *ctrl)
+{
+	if (!IO80211InfraInterface::start(ctrl)) {
+		LOG("llw: base start failed");
+		return false;
+	}
+	_regInfo = (uint8_t *)IOMalloc(AWDL_REGINFO_SIZE);
+	if (!_regInfo)
+		return false;
+	bzero(_regInfo, AWDL_REGINFO_SIZE);
+	rtl_sky_initRegInfo(this, _regInfo, 1, AWDL_REGINFO_SIZE);
+	*(uint32_t *)(_regInfo + AWDL_REGINFO_SUBFAMILY) = 3;
+	*(uint32_t *)(_regInfo + AWDL_REGINFO_ROLE) = LLW_ROLE;
+	*(uint32_t *)(_regInfo + AWDL_REGINFO_NMEDIA) = 2;
+	*(uint32_t *)(_regInfo + AWDL_REGINFO_MEDIA) = 0x80;
+	*(uint32_t *)(_regInfo + AWDL_REGINFO_MEDIA_CUR) = 0x80;
+	*(const char **)(_regInfo + AWDL_REGINFO_PREFIX) = "llw";
+	*(uint32_t *)(_regInfo + AWDL_REGINFO_UNIT) = 0;
+	*(uint16_t *)(_regInfo + AWDL_REGINFO_HEADROOM) = 64;
+	*(uint32_t *)(_regInfo + AWDL_REGINFO_FLAGS) = LLW_REG_FLAGS;
+	*(uint64_t *)(_regInfo + AWDL_REGINFO_MTU) = 0x59400000594ULL;
+	memcpy(_regInfo + AWDL_REGINFO_MAC, _mac, 6);
+	if (!createDatapath()) {
+		LOG("llw: datapath failed");
+		return false;
+	}
+	void *queues[3] = { _txSubQ, _txCompQ, _rxCompQ };
+	IOReturn r = rtl_llw_registerInfra(this, _regInfo, queues, 3, _txPool, _rxPool);
+	LOG("llw: registerInfraEthernetInterface 0x%x", r);
+	if (r != kIOReturnSuccess)
+		return false;
+	registerService(kIOServiceSynchronous);
+	setRunningState(false);
+	const char *name = rtl_sky_getBSDName(this);
+	if (name && name[0]) {
+		strlcpy(_bsdName, name, sizeof(_bsdName));
+	} else {
+		/* The BSD client may finish after the 293 handler lets go of the work
+		 * loop. Prefix and unit come from the registration; wifip2pd waits up
+		 * to 30 s for if_nametoindex to resolve it. */
+		snprintf(_bsdName, sizeof(_bsdName), "llw%u",
+		         *(uint32_t *)(_regInfo + AWDL_REGINFO_UNIT));
+		LOG("llw: bsd name pending, answering %s", _bsdName);
+	}
+	return true;
+}
+
+/*
+ * IOSkywalkEthernetInterface::initBSDInterfaceParameters (25G241
+ * 0xffffff8002b10bca) sets the ifnet unique id to the 6-byte MAC (eparams
+ * +16 pointer, +24 length). llw0 carries awdl0's MAC, so dlil found the id
+ * in use and kern_nexus_controller_alloc_net_provider_instance returned
+ * EBUSY on all 50 tries of IOSkywalkNetworkBSDClient::start (measured
+ * 2026-11-15: nexus created and closed twice, 5 s each, no ifnet).
+ * AppleBCMWLANLowLatencyInterface::initBSDInterfaceParameters
+ * (0xffffff80015e034a) replaces it with an 8-byte id of its own.
+ */
+uintptr_t RTLLlwInterface::initBSDInterfaceParameters(ifnet_init_eparams *params, sockaddr_dl **ll)
+{
+	uintptr_t r = IO80211InfraInterface::initBSDInterfaceParameters(params, ll);
+	if (r == 0 && params) {
+		uint8_t *p = (uint8_t *)params;
+		*(const void **)(p + 16) = _uniqueId;
+		*(uint32_t *)(p + 24) = sizeof(_uniqueId);
+	}
+	LOG("llw: initBSDInterfaceParameters 0x%lx", (unsigned long)r);
+	return r;
+}
+
+/* Same MTU as awdl0: its frames go into the same ring. */
+uintptr_t RTLLlwInterface::prepareBSDInterface(__ifnet *ifp, unsigned int unit)
+{
+	uintptr_t r = IO80211InfraInterface::prepareBSDInterface(ifp, unit);
+	u_int32_t mtu = RTLAwdInterface::dataMtu();
+	errno_t e = ifnet_set_mtu((ifnet_t)ifp, mtu);
+	LOG("llw: prepareBSDInterface 0x%lx, MTU %u -> %d", (unsigned long)r, mtu, e);
+	return r;
+}
+
+/*
+ * IO80211InfraInterface::setPowerState (25G241 0xffffff8002367f58) calls the
+ * Skywalk one and then, off the work loop thread, runActionBlock for the WCL
+ * system state. Measured 2026-11-15: PM waited on that callout while the 293
+ * handler held the work loop, and the BSD name never came. llw0 has no WCL
+ * work of its own, so it stops at the Skywalk part.
+ */
+IOReturn RTLLlwInterface::setPowerState(unsigned long ordinal, IOService *device)
+{
+	LOG("llw: setPowerState %lu", ordinal);
+	return rtl_llw_skyPower(this, ordinal, device);
+}
+
+uintptr_t RTLLlwInterface::getSupportedMediaArray(unsigned int *media, unsigned int *count)
+{
+	if (!media || !count || !*count)
+		return (uintptr_t)(uint32_t)kIOReturnBadArgument;
+	for (unsigned int i = 0; i < *count; i++)
+		media[i] = 0x80;
+	return kIOReturnSuccess;
+}
+
+IOReturn RTLLlwInterface::switchQueues(OSObject *owner, void *on, void *, void *, void *)
+{
+	RTLLlwInterface *me = (RTLLlwInterface *)owner;
+	void *qs[3] = { me->_txCompQ, me->_rxCompQ, me->_txSubQ };
+	rtlAwdSetQueues(qs, on != nullptr);
+	return kIOReturnSuccess;
+}
+
+IOReturn RTLLlwInterface::removeQueues(OSObject *owner, void *, void *, void *, void *)
+{
+	RTLLlwInterface *me = (RTLLlwInterface *)owner;
+	IOWorkLoop *wq = (IOWorkLoop *)rtl_sky_getWorkQueue(me);
+	void **qs[3] = { &me->_txSubQ, &me->_txCompQ, &me->_rxCompQ };
+	for (int i = 0; i < 3; i++) {
+		IOEventSource *q = (IOEventSource *)*qs[i];
+		if (!q)
+			continue;
+		q->disable();
+		if (wq)
+			wq->removeEventSource(q);
+		q->release();
+		*qs[i] = nullptr;
+	}
+	return kIOReturnSuccess;
+}
+
+/* Queues on and the link reported up, as Broadcom's setInterfaceEnable does
+ * for its low latency interface. */
+uintptr_t RTLLlwInterface::enable(unsigned int opts)
+{
+	uintptr_t r = RTLAirInterfaceStubs::enable(opts);
+	IOWorkLoop *wq = (IOWorkLoop *)rtl_sky_getWorkQueue(this);
+	if (wq)
+		wq->runAction(&RTLLlwInterface::switchQueues, this, (void *)1);
+	rtl_llw_reportLink(this, LLW_LINK_UP, 0x80);
+	LOG("llw: enable 0x%x", opts);
+	return r;
+}
+
+uintptr_t RTLLlwInterface::disable(unsigned int opts)
+{
+	uintptr_t r = RTLAirInterfaceStubs::disable(opts);
+	IOWorkLoop *wq = (IOWorkLoop *)rtl_sky_getWorkQueue(this);
+	if (wq)
+		wq->runAction(&RTLLlwInterface::switchQueues, this, nullptr);
+	rtl_llw_reportLink(this, LLW_LINK_DOWN, 0x80);
+	LOG("llw: disable 0x%x", opts);
+	return r;
+}
+
+/* Each frame goes to awdl0's ring while awdl0 is alive; every packet then
+ * goes back through the TX completion queue, the whole batch, as txData. */
+IOReturn RTLLlwInterface::txData(OSObject *owner, void *, void *const *pkts,
+                                 uint32_t count, void *)
+{
+	RTLLlwInterface *me = OSDynamicCast(RTLLlwInterface, owner);
+	if (!me || !count || !me->_txCompQ)
+		return 0;
+	if (me->_txFrames == 0)
+		LOG("llw: first frames to send, %u", count);
+	me->_txFrames += count;
+	IOLockLock(me->_awdlLock);
+	if (me->_parentLive) {
+		for (uint32_t i = 0; i < count; i++) {
+			void *pkt = pkts[i];
+			if (!rtl_pkt_bufcount(pkt))
+				continue;
+			const uint8_t *eth = (const uint8_t *)(uintptr_t)(rtl_pkt_base(pkt) + rtl_pkt_off(pkt));
+			me->_awdl->companionTx(eth, rtl_pkt_len(pkt));
+		}
+	}
+	IOLockUnlock(me->_awdlLock);
+	for (uint32_t done = 0; done < count; done += 64) {
+		uint32_t n = count - done > 64 ? 64 : count - done;
+		if (rtl_txcomp_enqueue(me->_txCompQ, pkts + done, n, 0) != kIOReturnSuccess)
+			for (uint32_t i = 0; i < n; i++)
+				rtl_pool_free(me->_txPool, pkts[done + i]);
+	}
+	return (IOReturn)count;
+}
+
+void RTLLlwInterface::detachParent()
+{
+	if (!_awdlLock)
+		return;
+	IOLockLock(_awdlLock);
+	_parentLive = false;
+	IOLockUnlock(_awdlLock);
+}
+
+void RTLLlwInterface::stop(IOService *provider)
+{
+	detachParent();
+	IOWorkLoop *wq = (IOWorkLoop *)rtl_sky_getWorkQueue(this);
+	if (wq)
+		wq->runAction(&RTLLlwInterface::removeQueues, this);
+	else
+		removeQueues(this, nullptr, nullptr, nullptr, nullptr);
+	RTLAirInterfaceStubs::stop(provider);
+}
+
+void RTLLlwInterface::free()
+{
+	OSSafeReleaseNULL(*(OSObject **)&_txSubQ);
+	OSSafeReleaseNULL(*(OSObject **)&_txCompQ);
+	OSSafeReleaseNULL(*(OSObject **)&_rxCompQ);
+	OSSafeReleaseNULL(*(OSObject **)&_txPool);
+	OSSafeReleaseNULL(*(OSObject **)&_rxPool);
+	if (_regInfo) {
+		IOFree(_regInfo, AWDL_REGINFO_SIZE);
+		_regInfo = nullptr;
+	}
+	OSSafeReleaseNULL(_awdl);
+	if (_awdlLock) {
+		IOLockFree(_awdlLock);
+		_awdlLock = nullptr;
+	}
+	RTLAirInterfaceStubs::free();
 }
 
 uintptr_t RTLAwdInterface::prepareBSDInterface(__ifnet *ifp, unsigned int unit)

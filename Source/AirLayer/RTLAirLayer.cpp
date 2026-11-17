@@ -10,6 +10,7 @@
 #include "RTLAirLayer.hpp"
 #include <IOKit/IOLib.h>
 #include <IOKit/IOWorkLoop.h>
+#include <IOKit/pwr_mgt/RootDomain.h>
 #include <libkern/OSByteOrder.h>
 #include <pexpert/pexpert.h>
 #include <sys/errno.h>
@@ -126,7 +127,7 @@ static const char *gStubSeen[kStubTraceMax];
 static uint64_t gStubSeenMs[kStubTraceMax];
 static volatile SInt32 gStubN, gStubFlushed;
 static volatile SInt32 gStatusCalls;
-static volatile uint32_t gPowerSets, gPowerLast;
+static volatile uint32_t gPowerSets, gPowerLast, gDriverAvailPosts;
 
 static void stubSeen(const char *fn)
 {
@@ -259,7 +260,16 @@ enum {
 	kMsgLqm            = 39,    /* apple80211_lqm_event_data, 476 */
 	kMsgReassoc        = 73,    /* u32 status, u32 reason (AppleBCMWLANCore::handleReassocEvent) */
 	kMsgRoamDone       = 80,    /* roam status, 168, u32 status first */
+	kMsgDriverAvail    = 55,    /* APPLE80211_M_DRIVER_AVAILABLE, 248 */
 };
+
+/* AppleBCMWLANCore::powerOn: 0xF8 bytes, u32 3 at +0, available at +8,
+ * reason at +16 (0xE0821803 on power on). */
+#define DRIVER_AVAIL_LEN    0xF8
+#define DRIVER_AVAIL_REASON 0xE0821803u
+
+/* Radio gone for this long: not a wake re-enumeration (about 1 s here). */
+#define kAnchorDelayMs      5000
 
 #define BEACON_HDR          68
 #define LQM_LEN             476
@@ -1406,6 +1416,48 @@ void RTLAirController::radioGone(IOService *rad)
 		post(kMsgWclScanDone, &status, sizeof(status));
 		post(kMsgScanDone, &status, sizeof(status));
 	}
+	/* On a wake the dongle is back within about a second (radioBack);
+	 * unplugged it never is. See anchorPower. */
+	if (_anchorCall && !_pmAnchored && !_stopping) {
+		uint64_t deadline;
+		clock_interval_to_deadline(kAnchorDelayMs, kMillisecondScale, &deadline);
+		thread_call_enter_delayed(_anchorCall, deadline);
+	}
+}
+
+/*
+ * en2 and awdl0 are power children of the radio. When it terminates, its
+ * PMstop drops them and they stay powered off with no parent, and
+ * IOSkywalkNetworkBSDClient::ioctlHandler puts every ioctl on a powered off
+ * interface to sleep on the gate until power comes back: with the dongle
+ * unplugged that is never, and configd hung there until its watchdog fired
+ * (IPConfigurationAgentQueue -> ifnet_ioctl -> ioctlHandler -> sleepGate).
+ * The root domain as a second parent keeps them powered while the system
+ * is awake; the controller then answers without a radio (not ready). Once
+ * done it stays: the radio, when it returns, is added as another parent.
+ */
+void RTLAirController::anchorEntry(thread_call_param_t p0, thread_call_param_t)
+{
+	((RTLAirController *)p0)->anchorPower();
+}
+
+void RTLAirController::anchorPower()
+{
+	if (_pmAnchored || _stopping || _radio)
+		return;
+	IOPMrootDomain *root = getPMRootDomain();
+	if (!root)
+		return;
+	_pmAnchored = true;
+	if (_iface)
+		root->joinPMtree(_iface);
+	if (_awdl) {
+		root->joinPMtree(_awdl);
+		if (IOService *llw = _awdl->companion())
+			root->joinPMtree(llw);
+	}
+	LOG("radio not back after %u ms: interfaces kept powered by the root domain",
+	    (unsigned)kAnchorDelayMs);
 }
 
 /* The new RTL8814Native for the same dongle: same ABI and hardware MAC. */
@@ -1428,11 +1480,22 @@ bool RTLAirController::radioBack(IOService *rad)
 		setRadio(nullptr);
 		return false;
 	}
+	if (_anchorCall)
+		thread_call_cancel(_anchorCall);
 	/* The interfaces were power children of the old radio (PMstop dropped them). */
 	if (_iface)
 		rad->joinPMtree(_iface);
 	if (_awdl) {
 		rad->joinPMtree(_awdl);
+		/*
+		 * llw0 is a power child of the radio too. Left out, it stayed
+		 * powered off after every re-enumeration (each wake, or a replug),
+		 * and at restart reboot_kernel's if_down_all waited forever in
+		 * IOSkywalkNetworkBSDClient::ioctlHandler for its power: every
+		 * restart after a wake or a replug hung, the others did not.
+		 */
+		if (IOService *llw = _awdl->companion())
+			rad->joinPMtree(llw);
 		_awdl->radioBack();
 	}
 	LOG("radio back, mac %02x:%02x:%02x:%02x:%02x:%02x", mac[0], mac[1], mac[2], mac[3],
@@ -1568,8 +1631,8 @@ static void flushEntry(thread_call_param_t, thread_call_param_t)
 	if (gPowerSets != lastPowerSets) {
 		lastStatus = gStatusCalls;
 		lastPowerSets = gPowerSets;
-		airLog("@%llu status calls %d, setPOWER x%u (last %u)", uptimeMs(), (int)lastStatus,
-		       lastPowerSets, gPowerLast);
+		airLog("@%llu status calls %d, setPOWER x%u (last %u), driver available x%u", uptimeMs(),
+		       (int)lastStatus, lastPowerSets, gPowerLast, gDriverAvailPosts);
 	}
 	uint64_t deadline;
 	clock_interval_to_deadline(uptimeMs() - gFlushStartMs < 180000 ? 1000 : 10000,
@@ -1768,10 +1831,11 @@ bool RTLAirController::start(IOService *provider)
 	_awdlLock = IOLockAlloc();
 	_poll = thread_call_allocate(&RTLAirController::pollEntry, this);
 	_rxDrain = thread_call_allocate(&RTLAirController::rxDrainEntry, this);
+	_anchorCall = thread_call_allocate(&RTLAirController::anchorEntry, this);
 	_scan = (struct rtl_radio_bss *)IOMalloc(sizeof(*_scan) * kScanMax);
 	_regInfo = (uint8_t *)IOMalloc(REGINFO_SIZE);
 	if (!_symTx || !_lock || !_rxLock || !_awdlLock || !_poll || !_rxDrain ||
-	    !_scan || !_regInfo) {
+	    !_anchorCall || !_scan || !_regInfo) {
 		LOG("allocation failed");
 		setRadio(nullptr);
 		return false;
@@ -1871,6 +1935,8 @@ void RTLAirController::quiesce()
 void RTLAirController::stop(IOService *provider)
 {
 	_stopping = true;
+	if (_anchorCall)
+		thread_call_cancel_wait(_anchorCall);
 	RTLAirNub *nub = OSDynamicCast(RTLAirNub, provider);
 	if (nub)
 		nub->setController(nullptr);
@@ -1893,6 +1959,10 @@ void RTLAirController::free()
 	if (_rxDrain) {
 		thread_call_free(_rxDrain);
 		_rxDrain = nullptr;
+	}
+	if (_anchorCall) {
+		thread_call_free(_anchorCall);
+		_anchorCall = nullptr;
 	}
 	if (_scan) {
 		IOFree(_scan, sizeof(*_scan) * kScanMax);
@@ -2236,8 +2306,25 @@ IOReturn RTLAirController::setPOWER(IO80211SkywalkInterface *, apple80211_power_
 	_power = *(uint32_t *)((uint8_t *)pd + 8) ? 1 : 0;
 	gPowerSets++;
 	gPowerLast = _power;
-	if (!_power)
+	if (!_power) {
 		leave(true);
+		return kIOReturnSuccess;
+	}
+	/*
+	 * airportd only auto-joins on an interface whose node is marked driver
+	 * available (__allowAutoJoinWithTrigger, else error 37 'driver not
+	 * available'). The mark is set at airportd start for interfaces already
+	 * present, otherwise only by this event; an en2 that attaches after
+	 * airportd starts stays unavailable until it comes. Broadcom posts it
+	 * from powerOn. A repeat is ignored (airportd acts on a change only).
+	 */
+	uint8_t avail[DRIVER_AVAIL_LEN];
+	bzero(avail, sizeof(avail));
+	*(uint32_t *)(avail + 0) = 3;
+	*(uint32_t *)(avail + 8) = 1;
+	*(uint32_t *)(avail + 16) = DRIVER_AVAIL_REASON;
+	post(kMsgDriverAvail, avail, sizeof(avail));
+	gDriverAvailPosts++;
 	return kIOReturnSuccess;
 }
 

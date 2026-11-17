@@ -292,6 +292,12 @@ private:
 	static void rxHook(void *ctx, void *m);
 	static void rxDrainEntry(thread_call_param_t p0, thread_call_param_t p1);
 	void flushRx();
+	/* Radio gone and not back in time: the interfaces get the root domain
+	 * as power parent, so en2 stays powered and its ioctls answer. */
+	thread_call_t _anchorCall;
+	bool _pmAnchored;
+	static void anchorEntry(thread_call_param_t p0, thread_call_param_t p1);
+	void anchorPower();
 };
 
 #endif /* _RTL_AIR_LAYER_HPP */
