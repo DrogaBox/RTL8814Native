@@ -24,7 +24,10 @@
 #define RTL_RADIO_FN_ABI          "rtlRadioAbi"        /* p1: uint32_t *abi (out) */
 #define RTL_RADIO_FN_SCAN_START   "rtlRadioScanStart"  /* p1: const uint32_t *channels or NULL (whole plan), p2: const uint32_t *count;
                                                         * channels off the plan are dropped, none left scans nothing;
-                                                        * kIOReturnBusy if one is running. Older drivers ignore p1/p2. */
+                                                        * kIOReturnBusy if one is running. Older drivers ignore p1/p2.
+                                                        * p3: const uint32_t *flags or NULL, RTL_RADIO_SCAN_*; older
+                                                        * drivers ignore it and scan actively. */
+#define RTL_RADIO_SCAN_PASSIVE    0x1                  /* no probe requests, no TX power load on the scan channels */
 #define RTL_RADIO_FN_SCAN_COPY    "rtlRadioScanCopy"   /* p1: struct rtl_radio_bss[], p2: uint32_t *count (in: capacity, out: filled) */
 #define RTL_RADIO_FN_CHANNELS     "rtlRadioChannels"   /* p1: struct rtl_radio_chan[], p2: uint32_t *count (in/out) */
 #define RTL_RADIO_FN_JOIN         "rtlRadioJoin"       /* p1: struct rtl_radio_join * (SAE password consumed and wiped) */
@@ -97,6 +100,28 @@ struct rtl_radio_awdl_txstat {
 	uint32_t lost;             /* retry limit or lifetime reached */
 	uint32_t rate;             /* final rate of the last report (descriptor index) */
 	uint32_t reports;          /* all of them, since the kext loaded */
+};
+/*
+ * Delivery of the unicast AWDL action frames (the UMIs). Each one asks the
+ * chip for a CCX TX report, tagged with a number the report carries back.
+ * The results sit in a ring of the last RTL_RADIO_AFSTAT_RING, the newest at
+ * (head - 1) % RTL_RADIO_AFSTAT_RING. A caller keeps the head it last read
+ * and takes the entries after it; more than the ring behind, the oldest are
+ * gone. sent - head - unmatched is how many reports have not come back.
+ * Older builds answer kIOReturnUnsupported.
+ */
+#define RTL_RADIO_FN_AWDL_AFSTAT  "rtlRadioAwdlAfStat" /* p1: struct rtl_radio_awdl_afstat * (out) */
+#define RTL_RADIO_AFSTAT_RING     16
+struct rtl_radio_awdl_afstat {
+	uint32_t head;             /* results written since the kext loaded */
+	uint32_t sent;             /* frames that asked for a report */
+	uint32_t unmatched;        /* reports whose number no frame was waiting for */
+	uint8_t  raw[8];           /* payload of the last report of either kind */
+	struct {
+		uint8_t mac[6];        /* receiver of the frame */
+		uint8_t status;        /* 0 acknowledged, 1 retry limit or lifetime reached */
+		uint8_t retries;       /* data retries the chip counted */
+	} e[RTL_RADIO_AFSTAT_RING];
 };
 
 /*

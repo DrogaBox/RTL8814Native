@@ -980,6 +980,9 @@ u32 rtl8814au_hal_init(PADAPTER Adapter)
 
 	systime init_start_time = rtw_get_current_time();
 
+	/* the chip's TXAGC table starts over: nothing written is known */
+	_rtw_memset(pHalData->txpwr_idx_cache, 0, sizeof(pHalData->txpwr_idx_cache));
+	pHalData->bw_regs_applied = 0;
 
 #ifdef DBG_HAL_INIT_PROFILING
 
@@ -1291,8 +1294,10 @@ u32 rtl8814au_hal_init(PADAPTER Adapter)
 
 	rtw_hal_set_hwreg(Adapter, HW_VAR_NAV_UPPER, ((u8 *)&NavUpper));
 
-	/* enable Tx report. */
-	rtw_write8(Adapter,  REG_FWHW_TXQ_CTRL + 1, 0x0F);
+	/* enable Tx report. RTL8814Native: 0x1F, bit 12 of the register too
+	 * (CONFIG_XMIT_ACK's "ack for xmit mgmt frames", as rtw88 writes): with
+	 * 0x0F no CCX report came back for the AWDL frames that asked for one. */
+	rtw_write8(Adapter,  REG_FWHW_TXQ_CTRL + 1, 0x1F);
 
 	/* Suggested by SD1 pisa. Added by tynli. 2011.10.21. */
 	/* rtw_write8(Adapter, REG_EARLY_MODE_CONTROL_8812+3, 0x01); */ /* Pretx_en, for WEP/TKIP SEC */

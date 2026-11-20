@@ -18,6 +18,36 @@
 
 #include <rtl8814a_hal.h>
 #include "hal_com_h2c.h"
+#include "../../../Driver/RTLScanLog.h"
+
+extern void rtl8814native_slog(u8 ev, u8 a, u16 b);
+extern u64 rtl8814native_uptime_us(void);
+extern u8 rtl8814native_scan_no_txpwr;
+extern u8 rtl8814native_awdl_fullpwr;
+extern u8 rtl8814native_awdl_fwchsw;
+u8 rtl8814native_awdl_data_rate(void);
+int rtl8814native_fw_chsw(void *adapter, u8 center, u8 bw, u8 sc40, u8 sc80, u8 rfe, u32 *wait_us);
+
+/* Scan step log of the channel set's parts, while a scan runs or an AWDL
+ * visit to another channel is on (the hop and its return): the return to the
+ * BSS channel (157, 80 MHz) took 80 ms against 31 ms going out (2026-11-17,
+ * test_uc scanlog with driver 3905A4BF), and AWDL hops outside scans were
+ * never logged. */
+static int phy_slog_on(PADAPTER Adapter)
+{
+	return check_fwstate(&Adapter->mlmepriv, _FW_UNDER_SURVEY) ||
+	       adapter_to_rfctl(Adapter)->offch_state == OFFCHS_AWDL;
+}
+
+static u64 phy_slog_part(PADAPTER Adapter, u8 part, u64 t0)
+{
+	u64 now = rtl8814native_uptime_us();
+	u64 d = (now - t0) / 10;
+
+	if (phy_slog_on(Adapter))
+		rtl8814native_slog(SL_PHY, part, d > 0xffff ? 0xffff : (u16)d);
+	return now;
+}
 
 /*---------------------Define local function prototype-----------------------*/
 
@@ -664,8 +694,57 @@ PHY_SetTxPowerLevel8814(
 	};
 
 
+	/* A scan's channel loads only CCK and OFDM (phy_check_under_survey_ch),
+	 * so the HT/VHT entries still hold the BSS channel's values when a
+	 * return comes back to it. Writing all 248 entries again took 62 ms of
+	 * every return to 157 at 80 MHz, a USB write of 0.25 ms each
+	 * (2026-11-17, SL_PHY in test_uc scanlog, driver 620F4316). During a
+	 * scan a load for the channel and width last loaded in full writes only
+	 * CCK/OFDM; outside a scan every load is a full one. */
+	/* An AWDL visit to another 5 GHz block at the BSS width, and its return,
+	 * load only OFDM the same way: with the BSS on 52/80 and AWDL on 149 a
+	 * full load took 48 ms of each hop, both ways, and left the BSS about
+	 * 3 ms of its 65 ms slot (2026-11-19, SL_PHY, driver 67AF395A). The
+	 * HT/VHT entries keep the BSS channel's indexes while on the AWDL
+	 * channel (AWDL action frames, ACKs and CTS go at OFDM rates and get the
+	 * AWDL channel's). RTL_OPT_AWDL_FULLPWR (test_uc awdlfullpwr 1) loads them
+	 * in full. */
+	/* The 32 OFDM entries were still 8 ms of each hop (0.25 ms a USB write,
+	 * BSS on 52/80 and AWDL on 149, driver F31FDF84). On the way out only
+	 * what the visit sends at OFDM is written: 6/12/24 (action frames and
+	 * control responses) and the AWDL data rate; a rate set during the visit
+	 * writes its own entry (rtl8814native_radio_awdl_rate). The chip's
+	 * step-down on retries can reach the other OFDM rates, which keep the
+	 * BSS channel's indexes like HT/VHT. The return loads all of OFDM and
+	 * the write cache leaves only the entries the visit changed.
+	 * awdlfullpwr 2 keeps the whole OFDM section on the way out. */
+	if (!phy_check_under_survey_ch(Adapter)) {
+		if (rtl8814native_awdl_fullpwr != 1 &&
+		    adapter_to_rfctl(Adapter)->offch_state == OFFCHS_AWDL &&
+		    pHalData->txpwr_ht_ch &&
+		    pHalData->txpwr_ht_bw == (u8)pHalData->current_channel_bw + 1) {
+			struct mlme_ext_priv *ext = &Adapter->mlmeextpriv;
+
+			pHalData->txpwr_legacy_only = 1;
+			if (!rtl8814native_awdl_fullpwr &&
+			    Channel != rtw_get_center_ch(ext->cur_channel, ext->cur_bwmode, ext->cur_ch_offset))
+				pHalData->txpwr_awdl_few = 1;
+		} else if (check_fwstate(&Adapter->mlmepriv, _FW_UNDER_SURVEY) &&
+		    pHalData->txpwr_ht_ch == Channel &&
+		    pHalData->txpwr_ht_bw == (u8)pHalData->current_channel_bw + 1)
+			pHalData->txpwr_legacy_only = 1;
+		else {
+			pHalData->txpwr_ht_ch = Channel;
+			pHalData->txpwr_ht_bw = (u8)pHalData->current_channel_bw + 1;
+		}
+	}
+
+	pHalData->txpwr_in_level = 1;
 	for (path = RF_PATH_A; path <= RF_PATH_D; ++path)
 		phy_set_tx_power_level_by_path(Adapter, Channel, (u8)path);
+	pHalData->txpwr_in_level = 0;
+	pHalData->txpwr_legacy_only = 0;
+	pHalData->txpwr_awdl_few = 0;
 #if 0 /* todo H2C_TXPOWER_INDEX_OFFLOAD ? */
 	if (Adapter->MgntInfo.bScanInProgress == FALSE &&  pHalData->RegFWOffload == 2)
 		HalDownloadTxPowerLevel8814(Adapter, value);
@@ -748,8 +827,47 @@ PHY_SetTxPowerIndex_8814A(
 )
 {
 	u32	txagc_table_wd = 0x00801000;
+	HAL_DATA_TYPE	*pHalData = GET_HAL_DATA(Adapter);
+	u8	hw_rate = MRateToHwRate(Rate);
 
-	txagc_table_wd |= (RFPath << 8) | MRateToHwRate(Rate) | (PowerIndex << 24);
+	/* any other writer of an HT/VHT entry: the full load is not known any more */
+	if (!pHalData->txpwr_in_level && (IS_HT_RATE(Rate) || IS_VHT_RATE(Rate)))
+		pHalData->txpwr_ht_ch = 0;
+
+	/* On a 2.4 GHz scan channel with OFDM management frames (a 5 GHz BSS)
+	 * the radio sends only probe requests at 6 Mb/s and control responses
+	 * at the OFDM basic rates, 6/12/24. The other OFDM entries keep the BSS
+	 * channel's values, so the return no longer rewrites them: it rewrote
+	 * all 32 OFDM entries after every 2.4 GHz channel, about 7 ms, and the
+	 * way out wrote them as well (2026-11-17, driver C8A320FA, test_uc
+	 * scanlog). CCK is loaded in full: only 2.4 GHz uses it, so its entries
+	 * repeat from scan to scan and the cache skips them. */
+	if (pHalData->txpwr_in_level && IS_OFDM_RATE(Rate) && Rate != MGN_6M && Rate != MGN_12M &&
+	    Rate != MGN_24M && pHalData->current_channel <= 14 &&
+	    !IS_CCK_RATE(Adapter->mlmeextpriv.tx_rate) && phy_check_under_survey_ch(Adapter))
+		return;
+
+	/* the way out of an AWDL visit (PHY_SetTxPowerLevel8814) */
+	if (pHalData->txpwr_in_level && pHalData->txpwr_awdl_few && IS_OFDM_RATE(Rate) &&
+	    Rate != MGN_6M && Rate != MGN_12M && Rate != MGN_24M &&
+	    Rate != rtl8814native_awdl_data_rate())
+		return;
+
+	/* An entry that already holds the index is not written again: the return
+	 * to 155 at 80 MHz rewrote the same 32 OFDM entries every time, 8 ms of
+	 * 0.25 ms USB writes (2026-11-17, driver C23C9B14). This was limited to
+	 * scans, so with the BSS on 52/80 and AWDL on 149 every AWDL hop and
+	 * return outside a scan rewrote the whole table. Every TXAGC write goes
+	 * through here (phydm's power tracking too), and the cache is cleared at
+	 * each HAL init. 1M is always written: its write opens the table. */
+	if (RFPath < 4 && hw_rate < 0x54) {
+		if (Rate != MGN_1M &&
+		    pHalData->txpwr_idx_cache[RFPath][hw_rate] == (u8)(PowerIndex + 1))
+			return;
+		pHalData->txpwr_idx_cache[RFPath][hw_rate] = (u8)(PowerIndex + 1);
+	}
+
+	txagc_table_wd |= (RFPath << 8) | hw_rate | (PowerIndex << 24);
 	phy_set_bb_reg(Adapter, 0x1998, bMaskDWord, txagc_table_wd);
 	/* RTW_INFO("txagc_table_wd %x\n", txagc_table_wd); */
 	if (Rate == MGN_1M) {
@@ -1657,13 +1775,43 @@ void phy_ModifyInitialGain_8814A(
 }
 
 
+/* Only the primary 20 MHz moves inside one 40/80 MHz block (an AWDL hop):
+ * band, channel index and width stay, so only the sub-channel registers
+ * change. The full phy_SetBwMode8814A took 7 ms of every hop between 149 and
+ * 157 at 80 MHz (2026-11-17, SL_PHY, driver C23C9B14). */
+static void phy_SetBwPrimary8814A(PADAPTER Adapter)
+{
+	HAL_DATA_TYPE	*pHalData = GET_HAL_DATA(Adapter);
+	u8		SubChnlNum = phy_GetSecondaryChnl_8814A(Adapter);
+
+	rtw_write8(Adapter, REG_DATA_SC_8814A, SubChnlNum);
+	if (pHalData->rf_chip == RF_PSEUDO_11N)
+		return;
+
+	if (pHalData->current_channel_bw == CHANNEL_WIDTH_40) {
+		phy_set_bb_reg(Adapter, rRFMOD_Jaguar, 0x3C, SubChnlNum);
+		phy_set_bb_reg(Adapter, rCCK_System_Jaguar, bCCK_System_Jaguar,
+		               SubChnlNum == VHT_DATA_SC_20_UPPER_OF_80MHZ ? 1 : 0);
+	} else if (pHalData->current_channel_bw == CHANNEL_WIDTH_80)
+		phy_set_bb_reg(Adapter, rRFMOD_Jaguar, 0x3C, SubChnlNum);
+}
+
 void phy_SetBwMode8814A(PADAPTER	Adapter)
 {
 	u8			SubChnlNum = 0;
 	HAL_DATA_TYPE	*pHalData = GET_HAL_DATA(Adapter);
+	/* A move of the center at the same band and width (a scan channel, an
+	 * AWDL hop to another 80 MHz block) leaves the width-only registers as
+	 * they are: the four RF 0x18 read-modify-writes and the MAC/ADC/AGC
+	 * writes took most of the 6-7 ms of every set (2026-11-19, driver
+	 * 4606114B). The sub-channel and spur settings follow the channel. */
+	u8			bw_key = 0x80 | (pHalData->current_band_type << 4) |
+				         pHalData->current_channel_bw;
+	u8			bw_same = pHalData->bw_regs_applied == bw_key;
 
 	/* 3 Set Reg668 BW */
-	phy_SetBwRegMac_8814A(Adapter, pHalData->current_channel_bw);
+	if (!bw_same)
+		phy_SetBwRegMac_8814A(Adapter, pHalData->current_channel_bw);
 
 	/* 3 Set Reg483 */
 	SubChnlNum = phy_GetSecondaryChnl_8814A(Adapter);
@@ -1674,10 +1822,12 @@ void phy_SetBwMode8814A(PADAPTER	Adapter)
 		return;
 	}
 
-	/* 3 Set Reg8AC Reg8C4 Reg8C8 */
-	phy_SetBwRegAdc_8814A(Adapter, pHalData->current_band_type, pHalData->current_channel_bw);
-	/* 3 Set Reg82C */
-	phy_SetBwRegAgc_8814A(Adapter, pHalData->current_band_type, pHalData->current_channel_bw);
+	if (!bw_same) {
+		/* 3 Set Reg8AC Reg8C4 Reg8C8 */
+		phy_SetBwRegAdc_8814A(Adapter, pHalData->current_band_type, pHalData->current_channel_bw);
+		/* 3 Set Reg82C */
+		phy_SetBwRegAgc_8814A(Adapter, pHalData->current_band_type, pHalData->current_channel_bw);
+	}
 
 	/* 3 Set Reg848  RegA00 */
 	switch (pHalData->current_channel_bw) {
@@ -1710,7 +1860,10 @@ void phy_SetBwMode8814A(PADAPTER	Adapter)
 	}
 #endif
 	/* 3 Set RF related register */
-	PHY_RF6052SetBandwidth8814A(Adapter, pHalData->current_channel_bw);
+	if (!bw_same) {
+		PHY_RF6052SetBandwidth8814A(Adapter, pHalData->current_channel_bw);
+		pHalData->bw_regs_applied = bw_key;
+	}
 
 	phy_ADC_CLK_8814A(Adapter);
 	phy_SpurCalibration_8814A(Adapter);
@@ -1891,11 +2044,15 @@ phy_SwChnl8814A(
 #endif
 	u8			channelToSW = pHalData->current_channel;
 	u32			RFValToWR , RFTmpVal, BitShift, BitMask;
+	/* parts 5 (band) and 6 (fc_area and RF channel) of the scan step log:
+	 * a 2.4/5 GHz channel set took 11-12 ms each way (2026-11-17) */
+	u64			t = rtl8814native_uptime_us();
 
 	/* RTW_INFO("[BW:CHNL], phy_SwChnl8814A(), switch to channel %d !!\n", channelToSW); */
 
 	if (phy_SwBand8814A(pAdapter, channelToSW) == FALSE)
 		RTW_INFO("error Chnl %d", channelToSW);
+	t = phy_slog_part(pAdapter, 5, t);
 
 	if (pHalData->rf_chip == RF_PSEUDO_11N) {
 		return;
@@ -1954,6 +2111,7 @@ phy_SwChnl8814A(
 
 			phy_set_rf_reg(pAdapter, eRFPath, RF_CHNLBW_Jaguar, BitMask, RFTmpVal);
 		}
+		t = phy_slog_part(pAdapter, 6, t);
 
 		if (36 <= channelToSW && channelToSW <= 64)				/* Band 1 & Band 2 */
 			phy_set_bb_reg(pAdapter, rAGC_table_Jaguar2, 0x1F, 1);	/* 0x958[4:0] = 0x1 */
@@ -2082,6 +2240,7 @@ phy_SwChnlAndSetBwMode8814A(
 	HAL_DATA_TYPE		*pHalData = GET_HAL_DATA(Adapter);
 	struct dm_struct		*pDM_Odm = &pHalData->odmpriv;
 	u8			keep_txpwr;
+	u64			t;
 
 	/* RTW_INFO("phy_SwChnlAndSetBwMode8814A(): bSwChnl %d, bSetChnlBW %d\n", pHalData->bSwChnl, pHalData->bSetChnlBW); */
 	if (Adapter->bNotifyChannelChange) {
@@ -2103,25 +2262,65 @@ phy_SwChnlAndSetBwMode8814A(
 	 * unchanged. A channel index change reloads them as always. */
 	keep_txpwr = pHalData->awdl_keep_txpwr && !pHalData->bSwChnl;
 
+	if (phy_slog_on(Adapter))
+		rtl8814native_slog(SL_PHY, 0, pHalData->current_channel |
+		                   ((u16)pHalData->current_channel_bw << 8));
+	t = rtl8814native_uptime_us();
+
+	/* An AWDL hop to another 5 GHz block at the same band and width
+	 * (RTL_OPT_AWDL_FWCHSW): the firmware does what phy_SwChnl8814A and the
+	 * width part do there, the driver only spur and TX power. Without the
+	 * C2H it falls through to the software path, which writes the same. */
+	if (rtl8814native_awdl_fwchsw && pHalData->bSwChnl && !keep_txpwr &&
+	    adapter_to_rfctl(Adapter)->offch_state == OFFCHS_AWDL &&
+	    pHalData->current_channel > 14 && pHalData->current_band_type == BAND_ON_5G &&
+	    pHalData->current_channel_bw != CHANNEL_WIDTH_20 &&
+	    pHalData->bw_regs_applied == (0x80 | (BAND_ON_5G << 4) | pHalData->current_channel_bw) &&
+	    pHalData->rf_chip != RF_PSEUDO_11N) {
+		u32 wait_us = 0;
+		if (rtl8814native_fw_chsw(Adapter, pHalData->current_channel, pHalData->current_channel_bw,
+		                          pHalData->nCur40MhzPrimeSC, pHalData->nCur80MhzPrimeSC,
+		                          pHalData->rfe_type, &wait_us) == 0) {
+			t = phy_slog_part(Adapter, 7, t);
+			if (phy_slog_on(Adapter))
+				rtl8814native_slog(SL_PHY, 8, wait_us / 10 > 0xffff ? 0xffff : (u16)(wait_us / 10));
+			pHalData->bSwChnl = FALSE;
+			pHalData->bSetChnlBW = FALSE;
+			phy_ADC_CLK_8814A(Adapter);
+			phy_SpurCalibration_8814A(Adapter);
+			t = phy_slog_part(Adapter, 9, t);
+		}
+	}
 	if (pHalData->bSwChnl) {
 		phy_SwChnl8814A(Adapter);
 		pHalData->bSwChnl = FALSE;
+		t = phy_slog_part(Adapter, 1, t);
 	}
 
 	if (pHalData->bSetChnlBW) {
-		phy_SetBwMode8814A(Adapter);
+		/* keep_txpwr: same channel index and width (see
+		 * PHY_HandleSwChnlAndSetBW8814A), only the primary moves */
+		if (keep_txpwr)
+			phy_SetBwPrimary8814A(Adapter);
+		else
+			phy_SetBwMode8814A(Adapter);
 		pHalData->bSetChnlBW = FALSE;
+		t = phy_slog_part(Adapter, 2, t);
 	}
 
 	if (Adapter->registrypriv.mp_mode == 0) {
-		if (!keep_txpwr) {
+		/* a passive scan channel transmits nothing (site_survey) */
+		if (!keep_txpwr && (!rtl8814native_scan_no_txpwr ||
+		                    rtl8814native_scan_no_txpwr != pHalData->current_channel)) {
 			odm_clear_txpowertracking_state(pDM_Odm);
 			rtw_hal_set_tx_power_level(Adapter, pHalData->current_channel);
+			t = phy_slog_part(Adapter, 3, t);
 		}
 		if (pHalData->bNeedIQK == _TRUE) {
 			/*phy_iq_calibrate_8814a(pDM_Odm, _FALSE);*/
 			halrf_iqk_trigger(&pHalData->odmpriv, _FALSE);
 			pHalData->bNeedIQK = _FALSE;
+			t = phy_slog_part(Adapter, 4, t);
 		}
 	} else
 		halrf_iqk_trigger(&pHalData->odmpriv, _FALSE);

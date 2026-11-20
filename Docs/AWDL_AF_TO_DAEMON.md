@@ -134,8 +134,18 @@ real genera frames sin TLVs.
 | Condición | Dirección | Efecto |
 |---|---|---|
 | par RTG activo (`priv+1689` bit 0, estado `priv+1698` = 1/2) cuyos AFs dejan de traer TLV de RTG durante ≥ 5001 ms (`0x1389`) desde `priv+1744` | logs 3192/3198 y llamadas en el bloque `0xffffff80021b1d40`-`0xffffff80021b1db3` | `removePeerFromRealTimeGroup` (`0xffffff80021b1da6`) + `setPeerNotReachable` (`0xffffff80021b1dae` ⇒ `priv+120 = 3`, `cleanUpForPeerRemovedFromNDP`, que alimenta el evento 47) + `removeAllIfOnlyPassivePeers`; los siguientes AFs del par no se publican hasta re-enrutable |
-| ídem con 2001–5000 ms | log «…no RTG TLV for 2 Seconds, trying to recover» (3210) | intento de recuperación con `sendRealTimeUMI` (`0xffffff80022020e8`); sin cambio de reachability |
+| ídem con 2001–5000 ms | log «…no RTG TLV for 2 Seconds, trying to recover» (3210) | intento de recuperación con `sendRealTimeUMI` (`0xffffff80022020e8`) solo si el estado es 2 y el tipo de par es 8 (opciones `0x11000000`) o 12 (`0x17000000`); si el envío devuelve 0, `priv+1744` pasa a ser el instante actual y la cuenta empieza de nuevo. Con otro tipo de par no hay recuperación y la cuenta sigue hasta los 5001 ms; sin cambio de reachability |
 | RTG pasivo (estado 3) sin TLV de RTG | log 3188 | sólo `removePeerFromRealTimeGroup`; la reachability no cambia aquí |
+
+Las tres filas se evalúan en cada AF de difusión del par (con TLV 12 y sin opciones de unicast,
+`ctx+87` = 1) que llega sin TLV 31. `priv+1744` lo escriben `parseAWDLRealTimeGroupTLV`
+(`0xffffff80021b3516`, en cada TLV 31 de al menos 20 bytes, también en un UMI) y
+`addPeerToRealTimeGroup` (`0xffffff80021e8e72`, al dar de alta al par); si vale 0, el primer AF sin
+TLV lo pone en el instante actual. Los tipos de par que `addPeerToRealTimeGroup` nombra son
+2 `sidecar`, 3 `airplay`, 6 `RemoteCamera`, 7 `TVRemoteCamera`, 8 `RemoteScreen`,
+12 `ContinuityRealTimeGroup` y el resto `ensemble`. Con el tipo 6 no hay UMI de recuperación: el
+par cae a los 5 s si sus AFs de difusión no traen el TLV 31. `?` qué tipo recibe el par de la
+Cámara de Continuidad (no se observó).
 
 ### 4.5 Condiciones que deciden `peerReachability == 1` (vía `setPeerRoutable`)
 

@@ -25,6 +25,11 @@ void rtl8814native_get_join_log(struct rtl_jlog *out)
 	_rtw_memcpy(out, &g_jlog, sizeof(*out));
 }
 extern u8 rtl8814native_awdl_backop;
+extern u8 rtl8814native_awdl_fullpwr;
+extern u8 rtl8814native_awdl_fwchsw;
+/* kernel KPI, for RTL_OPT_USB_BENCH */
+extern uint64_t mach_absolute_time(void);
+extern void absolutetime_to_nanoseconds(uint64_t abstime, uint64_t *result);
 extern volatile uint32_t g_rx_reassemble;
 extern volatile uint32_t g_rx_skb_recycle;
 static uint32_t g_bulk_in_mps;
@@ -843,27 +848,37 @@ void rtl8814native_rejoin_last(void)
  * macOS request usually names 2-3 of them, and associated every channel is
  * ~100 ms away from the BSS. Channels off the plan are dropped; when none is
  * left nothing is scanned (an empty list would make rtw scan the whole plan).
+ *
+ * RTL_RADIO_SCAN_PASSIVE (the request's scan type, locationd's every minute)
+ * scans without probe requests: scan_mode passive, and the listed channels
+ * marked passive. site_survey then also skips the TX power load on them.
  */
-int rtl8814native_trigger_scan(const uint32_t *channels, uint32_t count)
+int rtl8814native_trigger_scan(const uint32_t *channels, uint32_t count, uint32_t flags)
 {
 	struct sitesurvey_parm *parm = NULL;
+	u8 passive = (flags & RTL_RADIO_SCAN_PASSIVE) != 0;
 	u8 res;
 
 	if (!g_padapter || !g_padapter->bup)
 		return -ENODEV;
 
-	if (channels && count) {
+	if ((channels && count) || passive) {
 		parm = (struct sitesurvey_parm *)rtw_zmalloc(sizeof(*parm));
 		if (!parm)
 			return -ENOMEM;
 		rtw_init_sitesurvey_parm(g_padapter, parm);
-		for (uint32_t i = 0; i < count && parm->ch_num < RTW_CHANNEL_SCAN_AMOUNT; i++) {
+		if (passive)
+			parm->scan_mode = SCAN_PASSIVE;
+		for (uint32_t i = 0; channels && i < count && parm->ch_num < RTW_CHANNEL_SCAN_AMOUNT; i++) {
 			if (channels[i] == 0 || channels[i] > 255 ||
 			    rtw_chset_search_ch(adapter_to_chset(g_padapter), (u32)channels[i]) < 0)
 				continue;
-			parm->ch[parm->ch_num++].hw_value = (u16)channels[i];
+			parm->ch[parm->ch_num].hw_value = (u16)channels[i];
+			if (passive)
+				parm->ch[parm->ch_num].flags |= RTW_IEEE80211_CHAN_PASSIVE_SCAN;
+			parm->ch_num++;
 		}
-		if (!parm->ch_num) {
+		if (channels && count && !parm->ch_num) {
 			rtw_mfree((u8 *)parm, sizeof(*parm));
 			return 0;
 		}
@@ -872,8 +887,8 @@ int rtl8814native_trigger_scan(const uint32_t *channels, uint32_t count)
 	/* Note: rtw_set_802_11_bssid_list_scan acquires &mlmepriv.lock internally */
 	res = rtw_set_802_11_bssid_list_scan(g_padapter, parm);
 
-	rtl_printk("RTL8814Native: triggered 802.11 scan, %u channels (res=%u)\n",
-		   parm ? parm->ch_num : 0, res);
+	rtl_printk("RTL8814Native: triggered 802.11 scan, %u channels%s (res=%u)\n",
+		   parm ? parm->ch_num : 0, passive ? ", passive" : "", res);
 	if (parm)
 		rtw_mfree((u8 *)parm, sizeof(*parm));
 	return (res == _TRUE) ? 0 : -EBUSY;
@@ -1351,6 +1366,13 @@ static void rtl8814_fill_rate_diag(struct rtl8814_rate_diag *r)
 	r->ampdu_window_shift = (uint32_t)g_padapter->recvpriv.dbg_rx_ampdu_window_shift_cnt;
 	r->rx_drop = (uint32_t)g_padapter->recvpriv.dbg_rx_drop_count;
 	r->warm_start = g_rate_diag.warm_start;
+	/* Counted in the RX path (VendorOsDep.c) and the RA report handler */
+	_rtw_memcpy(r->c2h_id_cnt, g_rate_diag.c2h_id_cnt, sizeof(r->c2h_id_cnt));
+	r->c2h_id_other = g_rate_diag.c2h_id_other;
+	r->c2h_parse_fail = g_rate_diag.c2h_parse_fail;
+	r->ra_rpt_handled = g_rate_diag.ra_rpt_handled;
+	_rtw_memcpy(r->ra_rpt_last, g_rate_diag.ra_rpt_last, sizeof(r->ra_rpt_last));
+	r->ra_rpt_last_len = g_rate_diag.ra_rpt_last_len;
 
 	r->cur_bw = pmlmeext->cur_bwmode;
 	r->cur_ch_offset = pmlmeext->cur_ch_offset;
@@ -1537,6 +1559,33 @@ int rtl8814native_reg_access(uint32_t op, uint32_t width, uint32_t addr, uint32_
 			return rtl8814native_awdl_set_scan_hold(value, out);
 		case RTL_OPT_AWDL_CAL:
 			return rtl8814native_awdl_cal_stats(out);
+		case RTL_OPT_AWDL_FULLPWR:
+			*out = rtl8814native_awdl_fullpwr;
+			rtl8814native_awdl_fullpwr = value > 2 ? 1 : (u8)value;
+			return 0;
+		case RTL_OPT_AWDL_FWCHSW:
+			*out = rtl8814native_awdl_fwchsw;
+			rtl8814native_awdl_fwchsw = value ? 1 : 0;
+			return 0;
+		case RTL_OPT_AWDL_FWCHSW_STATS:
+			return rtl8814native_fw_chsw_stats(out);
+		case RTL_OPT_AWDL_TESTHOP:
+			return rtl8814native_awdl_test_hop((u8)(value & 0xFF), value >> 8, out);
+		case RTL_OPT_USB_BENCH: {
+			/* REG_MACID holds the MAC address only: rewriting what it reads is harmless */
+			u32 v = rtw_read32(g_padapter, REG_MACID);
+			if (value == 3) {
+				u64 t0 = mach_absolute_time(), ns;
+				for (int i = 0; i < 200; i++)
+					rtw_write32(g_padapter, REG_MACID, v);
+				absolutetime_to_nanoseconds(mach_absolute_time() - t0, &ns);
+				*out = (u32)(ns / 1000);
+				return 0;
+			}
+			if (value != 1 && value != 2)
+				return -EINVAL;
+			return rtl8814native_usb_bench(REG_MACID, v, 200, value == 2, out) ? -EIO : 0;
+		}
 		case RTL_OPT_RESET_PERF:
 			*out = 0;
 			g_rate_diag.rx_xfers = 0;

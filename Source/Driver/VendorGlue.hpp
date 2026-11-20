@@ -112,6 +112,8 @@ struct rtl8814_rx_log {
 void rtl8814native_get_rx_log(struct rtl8814_rx_log *out);
 struct rtl_jlog;
 void rtl8814native_get_join_log(struct rtl_jlog *out);
+struct rtl_slog;
+void rtl8814native_get_scan_log(struct rtl_slog *out);
 
 /* Live driver options (rtl8814native_reg_access op 3, addr = option id) */
 enum {
@@ -122,6 +124,11 @@ enum {
 	RTL_OPT_AWDL_PROT = 4,      /* protection of AWDL session data: 0 none, 1 RTS/CTS, 2 CTS-to-self */
 	RTL_OPT_AWDL_CAL = 6,       /* read only: thermal I/Q calibrations run (low 16 bits) and put off by an AWDL slot (high 16) */
 	RTL_OPT_AWDL_SCAN_HOLD = 5, /* seconds after an AWDL frame in which an unlinked scan returns to the parked channel, 0 = never */
+	RTL_OPT_AWDL_FULLPWR = 7,   /* TX power an AWDL visit to another 5 GHz block loads: 0 OFDM 6/12/24 + data rate out and all OFDM back, 1 whole table, 2 all OFDM both ways */
+	RTL_OPT_USB_BENCH = 8,      /* 200 rewrites of REG_MACID: 1 raw sync, 2 raw async, 3 rtw_write32; out = us */
+	RTL_OPT_AWDL_FWCHSW = 9,    /* 1: AWDL hops to another 5 GHz block switch by firmware (H2C 0x1C) */
+	RTL_OPT_AWDL_FWCHSW_STATS = 10, /* read only: firmware switches done (low 16), timeouts (high 16) */
+	RTL_OPT_AWDL_TESTHOP = 11,  /* value = channel | dwell ms << 8: one AWDL-style visit and back; out = 10 us units, out low 16, back high 16 */
 };
 extern struct rtl8814_trx_diag g_trx_diag;
 
@@ -245,7 +252,7 @@ enum {
 /* vendor_probe() return value: the chip dropped off the bus to re-enumerate as USB 3.0 */
 #define RTL_PROBE_USB3_SWITCH 1
 
-int  rtl8814native_trigger_scan(const uint32_t *channels, uint32_t count);
+int  rtl8814native_trigger_scan(const uint32_t *channels, uint32_t count, uint32_t flags);
 int  rtl8814native_get_scan_results(struct rtl_scan_entry *entries, uint32_t max_entries, uint32_t *out_count);
 int  rtl8814native_join_network(const char *ssid, const char *psk, uint32_t auth_mode);
 int  rtl8814native_disconnect(void);
@@ -277,10 +284,15 @@ int  rtl8814native_awdl_set_prot(uint32_t mode, uint32_t *prev);
 /* AWDLTx.c: returns of an unlinked scan to the parked channel while a peer is around */
 int  rtl8814native_awdl_set_scan_hold(uint32_t seconds, uint32_t *prev);
 int  rtl8814native_awdl_cal_stats(uint32_t *out);
+int  rtl8814native_fw_chsw_stats(uint32_t *out);
+int  rtl8814native_awdl_test_hop(uint8_t ch, uint32_t dwell_ms, uint32_t *out);
+/* RTL_OPT_USB_BENCH: n writes of value to addr, async or one at a time */
+int  rtl8814native_usb_bench(uint16_t addr, uint32_t value, uint32_t n, int async, uint32_t *us);
 void rtl8814native_awdl_note_peer(int data);
 /* AWDLTx.c: unicast AWDL data rate (descriptor index, 0 = fixed 12 Mb/s) and its CCX counts */
 int  rtl8814native_radio_awdl_rate(uint32_t rate);
 void rtl8814native_radio_awdl_txstat(struct rtl_radio_awdl_txstat *out);
+void rtl8814native_radio_awdl_afstat(struct rtl_radio_awdl_afstat *out);
 int  rtl8814native_radio_awdl_agg(struct rtl_radio_awdl_agg *cfg);
 void rtl8814native_get_link_status(struct rtl8814_link_status *out);
 /* Live register access for diagnostics: op 0=MAC read, 1=MAC write, 2=RF read (addr = path<<8 | reg),

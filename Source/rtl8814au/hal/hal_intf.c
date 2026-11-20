@@ -1196,6 +1196,7 @@ exit:
 #if defined(CONFIG_MP_INCLUDED) && defined(CONFIG_RTL8723B)
 #include <rtw_bt_mp.h> /* for MPTBT_FwC2hBtMpCtrl */
 #endif
+void rtl8814native_fw_chsw_done(u8 ch);
 s32 c2h_handler(_adapter *adapter, u8 id, u8 seq, u8 plen, u8 *payload)
 {
 	u8 sub_id = 0;
@@ -1234,6 +1235,10 @@ s32 c2h_handler(_adapter *adapter, u8 id, u8 seq, u8 plen, u8 *payload)
 		break;
 	case C2H_BCN_EARLY_RPT:
 		rtw_tdls_ch_sw_back_to_base_chnl(adapter);
+		break;
+	/* H2C 0x1C done (rtl8814native_fw_chsw, AWDL hops): payload[0] = channel */
+	case C2H_FW_CHNL_SWITCH_COMPLETE:
+		rtl8814native_fw_chsw_done(plen ? payload[0] : 0);
 		break;
 #endif
 

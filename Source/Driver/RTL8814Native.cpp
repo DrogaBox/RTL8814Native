@@ -505,7 +505,8 @@ IOReturn RTL8814Native::callPlatformFunction(const OSSymbol *functionName,
 
         if (functionName->isEqualTo(RTL_RADIO_FN_SCAN_START))
                 return rtl8814native_trigger_scan((const uint32_t *)param1,
-                                                  param1 && param2 ? *(const uint32_t *)param2 : 0) == 0
+                                                  param1 && param2 ? *(const uint32_t *)param2 : 0,
+                                                  param3 ? *(const uint32_t *)param3 : 0) == 0
                        ? kIOReturnSuccess : kIOReturnBusy;
         if (functionName->isEqualTo(RTL_RADIO_FN_SCAN_COPY)) {
                 if (!param1 || !param2)
@@ -597,6 +598,12 @@ IOReturn RTL8814Native::callPlatformFunction(const OSSymbol *functionName,
                 if (!param1)
                         return kIOReturnBadArgument;
                 rtl8814native_radio_awdl_txstat((struct rtl_radio_awdl_txstat *)param1);
+                return kIOReturnSuccess;
+        }
+        if (functionName->isEqualTo(RTL_RADIO_FN_AWDL_AFSTAT)) {
+                if (!param1)
+                        return kIOReturnBadArgument;
+                rtl8814native_radio_awdl_afstat((struct rtl_radio_awdl_afstat *)param1);
                 return kIOReturnSuccess;
         }
         if (functionName->isEqualTo(RTL_RADIO_FN_TX_80211)) {

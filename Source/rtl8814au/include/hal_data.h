@@ -389,6 +389,24 @@ typedef struct hal_com_data {
 	/* AWDL off-channel switch: skip the TX power reload when the channel
 	 * index stays the same (only the primary sub-channel moves) */
 	u8			awdl_keep_txpwr;
+	/* HT/VHT TX power entries last written in full: channel and width + 1
+	 * (0: not known), set and used by PHY_SetTxPowerLevel8814 during a scan;
+	 * txpwr_legacy_only is on while that call writes only CCK/OFDM,
+	 * txpwr_in_level while it writes at all */
+	u8			txpwr_ht_ch;
+	u8			txpwr_ht_bw;
+	u8			txpwr_legacy_only;
+	u8			txpwr_in_level;
+	/* that call is the way out of an AWDL visit: of OFDM only 6/12/24 and
+	 * the AWDL data rate are written (PHY_SetTxPowerIndex_8814A) */
+	u8			txpwr_awdl_few;
+	/* TX power index last written to the TXAGC table (0x1998) per path and
+	 * hardware rate, + 1 (0: not known); cleared at every HAL init */
+	u8			txpwr_idx_cache[4][0x54];
+	/* Band and width the width-only registers (MAC 0x668, BB 0x8ac[1:0],
+	 * 0x82c[15:12], RF 0x18[11:10]) were last written for: 0x80 | band << 4
+	 * | width (0: not known); cleared at every HAL init */
+	u8			bw_regs_applied;
 	BOOLEAN			bSWToBW40M;
 	BOOLEAN			bSWToBW80M;
 	BOOLEAN			bChnlBWInitialized;

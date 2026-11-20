@@ -17,7 +17,7 @@
 /* #include <drv_types.h> */
 #include <rtl8814a_hal.h>
 
-extern void rtl8814native_awdl_tx_report(int lost, u8 retries, u8 rate);
+extern void rtl8814native_awdl_ccx_report(const u8 *pl, u8 len);
 
 #define CONFIG_H2C_EF
 
@@ -641,14 +641,10 @@ C2HTxFeedbackHandler_8814(
 		u8			CmdLen
 )
 {
-	/* RTL8814Native: every report comes from an AWDL data frame that asked
-	 * for one (rtl_awdl_rpt); the layer's rate ladder reads the counts. The
-	 * fields reach payload byte 5. */
-	if (CmdLen >= 6)
-		rtl8814native_awdl_tx_report(GET_8814A_C2H_TX_RPT_RETRY_OVER(CmdBuf) |
-		                             GET_8814A_C2H_TX_RPT_LIFE_TIME_OVER(CmdBuf),
-		                             GET_8814A_C2H_TX_RPT_DATA_RETRY_CNT(CmdBuf),
-		                             GET_8814A_C2H_TX_RPT_FINAL_DATA_RATE(CmdBuf));
+	/* RTL8814Native: every report comes from an AWDL frame that asked for
+	 * one (rtl_awdl_rpt): data for the layer's rate ladder, or a UMI for
+	 * the family's event 69 (AWDLTx.c). */
+	rtl8814native_awdl_ccx_report(CmdBuf, CmdLen);
 #ifdef CONFIG_XMIT_ACK
 	if (GET_8814A_C2H_TX_RPT_RETRY_OVER(CmdBuf) | GET_8814A_C2H_TX_RPT_LIFE_TIME_OVER(CmdBuf))
 		rtw_ack_tx_done(&Adapter->xmitpriv, RTW_SCTX_DONE_CCX_PKT_FAIL);

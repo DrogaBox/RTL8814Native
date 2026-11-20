@@ -668,8 +668,12 @@ IOReturn RTLAirInterface::setWCL_SCAN_REQ(apple80211ScanRequest *req)
 		if (c && ((g2 && c <= 14) || (g5 && c >= 36 && c <= 196)))
 			ch[k++] = c;
 	}
-	LOG("WCL scan request, %u channels:%s -> %u", n, list, k);
-	return k ? _ctrl->startScan(ch, k) : _ctrl->startScan();
+	/* +64 scan type, 1 active, 2 passive (IO80211ScanRequest::getScanRequestForDriver,
+	 * 25G241): locationd's scan every minute is passive (Docs/AWDL_ESCANEO_HUECOS_MEDIDOS.md
+	 * §4.13); scanned actively it sent two probe requests per channel. */
+	uint32_t type = *(const uint32_t *)((const uint8_t *)req + 64);
+	LOG("WCL scan request, %u channels:%s -> %u, type %u", n, list, k, type);
+	return k ? _ctrl->startScan(ch, k, type == 2) : _ctrl->startScan(nullptr, 0, type == 2);
 }
 
 /* apple80211AssocCandidates, see Docs/PHASE5_IO80211.md for the offsets. */
@@ -1305,7 +1309,7 @@ OSDefineMetaClassAndAbstractStructors(RTLAirControllerStubs, IO80211Controller)
 
 OSDefineMetaClassAndStructors(RTLAirController, RTLAirControllerStubs)
 
-IOReturn RTLAirController::radio(const char *fn, void *p1, void *p2)
+IOReturn RTLAirController::radio(const char *fn, void *p1, void *p2, void *p3)
 {
 	IOService *rad = _radio;        /* one read: radioGone may clear it meanwhile */
 	if (!rad)
@@ -1313,7 +1317,7 @@ IOReturn RTLAirController::radio(const char *fn, void *p1, void *p2)
 	const OSSymbol *sym = OSSymbol::withCString(fn);
 	if (!sym)
 		return kIOReturnNoMemory;
-	IOReturn r = rad->callPlatformFunction(sym, false, p1, p2, nullptr, nullptr);
+	IOReturn r = rad->callPlatformFunction(sym, false, p1, p2, p3, nullptr);
 	sym->release();
 	if (!strcmp(fn, RTL_RADIO_FN_STATUS))
 		OSIncrementAtomic(&gStatusCalls);
@@ -2339,8 +2343,10 @@ void RTLAirController::schedulePoll(uint32_t ms)
 	thread_call_enter_delayed(_poll, deadline);
 }
 
-IOReturn RTLAirController::startScan(const uint32_t *channels, uint32_t count)
+IOReturn RTLAirController::startScan(const uint32_t *channels, uint32_t count, bool passive)
 {
+	/* p3 is new: an older driver ignores it and scans actively */
+	uint32_t flags = passive ? RTL_RADIO_SCAN_PASSIVE : 0;
 	struct rtl_radio_status st;
 	if (_stopping)
 		return kIOReturnNotReady;
@@ -2353,8 +2359,8 @@ IOReturn RTLAirController::startScan(const uint32_t *channels, uint32_t count)
 		return kIOReturnBusy;
 	}
 	/* a driver without the list ignores it and scans the whole plan */
-	IOReturn r = count ? radio(RTL_RADIO_FN_SCAN_START, (void *)channels, &count)
-	                   : radio(RTL_RADIO_FN_SCAN_START);
+	IOReturn r = count ? radio(RTL_RADIO_FN_SCAN_START, (void *)channels, &count, &flags)
+	                   : radio(RTL_RADIO_FN_SCAN_START, nullptr, nullptr, &flags);
 	if (r == kIOReturnSuccess) {
 		infraTouch();
 		_scanPending = true;

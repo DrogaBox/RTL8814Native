@@ -244,6 +244,114 @@ int RTLUsbDevice::controlTransfer(uint8_t requestType, uint8_t request,
 }
 
 /* ---------------------------------------------------------------------
+ * Control write benchmark (RTL_OPT_USB_BENCH): how much of a register
+ * write's ~0.22 ms is the wait for each request, against queuing them
+ * all on ep0 and waiting once.
+ * --------------------------------------------------------------------- */
+struct RtlBenchCtx {
+        IOLock *lock;
+        volatile uint32_t done;
+        volatile uint32_t failed;
+};
+static void rtlBenchCompletion(void *owner, void *parameter,
+                               IOReturn status, uint32_t bytesTransferred)
+{
+        (void)parameter;
+        (void)bytesTransferred;
+        RtlBenchCtx *c = (RtlBenchCtx *)owner;
+        IOLockLock(c->lock);
+        if (status != kIOReturnSuccess)
+                c->failed++;
+        c->done++;
+        IOLockWakeup(c->lock, (event_t)&c->done, false);
+        IOLockUnlock(c->lock);
+}
+int RTLUsbDevice::benchControlWrite(uint16_t addr, uint32_t value, uint32_t n,
+                                    bool async, uint64_t *us)
+{
+        if (!_interface || !us || !n || n > 1000)
+                return -EINVAL;
+        uint32_t *buf = (uint32_t *)IOMalloc(sizeof(uint32_t));
+        if (!buf)
+                return -ENOMEM;
+        *buf = OSSwapHostToLittleInt32(value);
+        uint64_t t0 = mach_absolute_time(), t1;
+        int rc = 0;
+        if (!async) {
+                for (uint32_t i = 0; i < n && rc >= 0; i++)
+                        rc = controlTransfer(0x40, 0x05, addr, 0, buf, 4, 0);
+                t1 = mach_absolute_time();
+                IOFree(buf, sizeof(uint32_t));
+                rc = rc < 0 ? rc : 0;
+        } else {
+                StandardUSB::DeviceRequest *req = (StandardUSB::DeviceRequest *)
+                        IOMalloc(n * sizeof(*req));
+                IOUSBHostCompletion *comp = (IOUSBHostCompletion *)IOMalloc(n * sizeof(*comp));
+                RtlBenchCtx *c = (RtlBenchCtx *)IOMalloc(sizeof(*c));
+                IOLock *lock = IOLockAlloc();
+                if (!req || !comp || !c || !lock) {
+                        if (req) IOFree(req, n * sizeof(*req));
+                        if (comp) IOFree(comp, n * sizeof(*comp));
+                        if (c) IOFree(c, sizeof(*c));
+                        if (lock) IOLockFree(lock);
+                        IOFree(buf, sizeof(uint32_t));
+                        return -ENOMEM;
+                }
+                c->lock = lock;
+                c->done = 0;
+                c->failed = 0;
+                uint32_t queued = 0;
+                for (uint32_t i = 0; i < n; i++) {
+                        req[i].bmRequestType = 0x40;
+                        req[i].bRequest = 0x05;
+                        req[i].wValue = HostToUSB16(addr);
+                        req[i].wIndex = 0;
+                        req[i].wLength = HostToUSB16(4);
+                        comp[i].owner = c;
+                        comp[i].action = rtlBenchCompletion;
+                        comp[i].parameter = nullptr;
+                        if (_interface->deviceRequest(req[i], buf, &comp[i]) != kIOReturnSuccess) {
+                                rc = -EIO;
+                                break;
+                        }
+                        queued++;
+                }
+                /* every queued request completes, also when aborted: the
+                 * buffers stay until then */
+                uint64_t deadline;
+                clock_interval_to_deadline(2000, kMillisecondScale, &deadline);
+                IOLockLock(lock);
+                while (c->done < queued &&
+                       IOLockSleepDeadline(lock, (event_t)&c->done, deadline, THREAD_UNINT) ==
+                       THREAD_AWAKENED)
+                        ;
+                bool all = c->done >= queued;
+                IOLockUnlock(lock);
+                t1 = mach_absolute_time();
+                if (!all) {
+                        _interface->abortDeviceRequests();
+                        IOLockLock(lock);
+                        while (c->done < queued)
+                                IOLockSleep(lock, (event_t)&c->done, THREAD_UNINT);
+                        IOLockUnlock(lock);
+                        rc = -ETIMEDOUT;
+                }
+                if (!rc && c->failed)
+                        rc = -EIO;
+                IOLog("RTL8814Native: usb bench async queued %u done %u failed %u\n",
+                      queued, c->done, c->failed);
+                IOFree(req, n * sizeof(*req));
+                IOFree(comp, n * sizeof(*comp));
+                IOFree(c, sizeof(*c));
+                IOLockFree(lock);
+                IOFree(buf, sizeof(uint32_t));
+        }
+        uint64_t ns;
+        absolutetime_to_nanoseconds(t1 - t0, &ns);
+        *us = ns / 1000;
+        return rc;
+}
+/* ---------------------------------------------------------------------
  * Synchronous bulk (used for 8814A firmware RSVD page download & sync I/O)
  * --------------------------------------------------------------------- */
 int RTLUsbDevice::bulkTransfer(uint8_t endpoint, uint8_t direction,

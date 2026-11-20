@@ -32,6 +32,7 @@ enum {
         kRTLUC_AwdlSimCtl    = 12,  /* in: op, arg0; out: RTL_AWDL_SIM_C_COUNT counters */
         kRTLUC_AwdlSimInject = 13,  /* in: rssi (int8), struct: 802.11 frame */
         kRTLUC_AwdlSimRead   = 14,  /* in: timeout us; struct out: rtl_awdl_sim_rec + frame */
+        kRTLUC_GetScanLog    = 15,  /* out: struct rtl_slog (RTLScanLog.h) */
         kRTLUC_SelCount
 };
 

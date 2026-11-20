@@ -464,6 +464,8 @@ private:
 	uint64_t _rxAf, _rxData, _rxOther, _rxDropped;
 	uint64_t _rxLagMax;         /* longest arrival-to-drain delay of an AF since the last log */
 	uint64_t _rxDataUp, _rxDataBad, _rxDataNotUs, _rxDataFail, _rxDataWrapped;
+	/* Plain RFC 1042 MSDUs (no AWDL head): llw0's traffic. */
+	uint64_t _rxDataPlain, _rxDataPlainLost;
 
 	/* Block Ack recipient sessions (Docs/AWDL_BLOCK_ACK.md): the layer answers
 	 * a peer's ADDBA request and keeps a reorder window per (peer, TID); the
@@ -530,6 +532,11 @@ private:
 	} _umi[4];
 	uint8_t _umiCount;
 	uint64_t _txUmi, _txUmiDrop;
+	/* The UMIs' delivery reports from the radio, posted as event 69 (tick only) */
+	bool _afStatOff, _afStatInit, _afUnmatchedLogged;
+	uint32_t _afHead;           /* the radio's ring head already posted */
+	uint64_t _ev69Ack, _ev69Fail, _ev69Missed;
+	void postAfStatus();
 	uint8_t _afBuf[1488];       /* sendAf, tick only: the radio's frame limit */
 	uint64_t _clkBaseUs;        /* start of the slot whose first AW is _clkBaseAw */
 	uint16_t _clkBaseAw;
@@ -564,8 +571,12 @@ private:
 	uint8_t _mccCur;            /* channel the radio was sent to, 0 = the BSS */
 	uint8_t _mccTarget;         /* social channel served while associated, 0 = none */
 	uint64_t _mccPreUs;         /* slot start a tick armed early switches for, 0 = none */
+	uint64_t _scanTailUs;       /* a scan just ended: serve as in a return until then */
+	bool     _scanSeen;         /* txTick saw a scan running */
 	IOLock *_mccLock;
 	uint64_t _mccSwitches, _mccFail, _mccUsMax, _mccUsSum, _mccEarly;
+	uint32_t _mccLeaveUs[8];     /* last switches to the AWDL channel, us (txTick's lead) */
+	uint8_t _mccLeaveIdx;
 	uint8_t _clkMaster[6];      /* master the AW clock follows (alignClock) */
 	uint64_t _clkMasterUs;      /* last frame from it, 0 = none */
 
@@ -611,7 +622,7 @@ private:
 	void notePeerSeq(mbuf_t m, const uint8_t *src);
 	bool peerOnChannel(const uint8_t *da, uint32_t slot, uint8_t ch, uint64_t now) const;
 
-	void queueData(const uint8_t *eth, uint32_t len);
+	void queueData(const uint8_t *eth, uint32_t len, bool plain = false);
 	void flushRadioTx();
 
 	/* The data pump. txTick runs once per AW and sets what data may do in it:
@@ -659,7 +670,7 @@ private:
 	void txTick();
 	void armTick(uint64_t deadline);
 	uint8_t parkRadio(uint8_t idleCh, uint64_t nowUs, bool infraBusy);
-	uint8_t mccChannel(uint8_t home, uint64_t nowUs);
+	uint8_t mccChannel(uint8_t home, uint64_t nowUs, bool backop);
 	bool mccSwitch(uint8_t want);
 	uint16_t servedMask(uint8_t ch) const;
 	/* Dense presence (MtkWireless 1.0.3, docs/AIRDROP-PERFORMANCE.md): awdld
@@ -672,6 +683,7 @@ private:
 	bool _dense;
 	uint8_t _denseRun;	/* busy bits of the last 4 samples, newest in bit 0 */
 	uint64_t _denseFrames, _denseSampleUs, _denseBusyUs, _denseChanges;
+	uint64_t _denseQueued;	/* _txDataQueued at the last sample */
 	bool updateDense(uint64_t now, bool off);
 	/* TX rate ladder for unicast data (MtkWireless 1.0.3): OFDM 6/12/24/36/48/
 	 * 54 Mb/s, then HT MCS 7 with the boot-arg rtlawdl_ratemax=6. The radio
@@ -714,8 +726,9 @@ static_assert(!__is_abstract(RTLAwdInterface), "RTLAwdInterface must override ev
  * AppleBCMWLANLowLatencyInterface (an infra protocol interface, role 2,
  * BSD prefix llw, interface id 9) with awdl0 as its parent: the family's
  * start takes the parent's peer manager for role 2. It has no radio of its
- * own: what it sends goes into awdl0's TX ring. Nothing is received on it
- * yet; how Broadcom's firmware tells its traffic apart is not known.
+ * own: what it sends goes into awdl0's TX ring without the AWDL head (plain
+ * RFC 1042), and awdl0's RX hands it the plain RFC 1042 MSDUs, the way the
+ * iPhone carries Continuity Camera's stream.
  */
 class RTLLlwInterface : public RTLAirInterfaceStubs {
 	OSDeclareDefaultStructors(RTLLlwInterface)
@@ -726,6 +739,9 @@ public:
 	void free() override;
 	uintptr_t enable(unsigned int opts) override;
 	uintptr_t disable(unsigned int opts) override;
+	/* What the infra chain calls when llw0 goes up or down; enable() and
+	 * disable() are not called for it. */
+	uintptr_t setInterfaceEnable(bool on) override;
 	uintptr_t prepareBSDInterface(__ifnet *ifp, unsigned int unit) override;
 	uintptr_t getSupportedMediaArray(unsigned int *media, unsigned int *count) override;
 	/* Only the Skywalk part: the infra one waits on the work loop the 293
@@ -737,6 +753,9 @@ public:
 	const char *bsdName() const { return _bsdName; }
 	/* awdl0 is going away: no more frames to it. */
 	void detachParent();
+	/* One received MSDU from awdl0's RX path, up as Ethernet II. */
+	bool rxPlain(const uint8_t *da, const uint8_t *sa, const uint8_t *type,
+	             const uint8_t *payload, size_t plen);
 
 private:
 	RTLAwdInterface *_awdl;    /* retained until free() */
@@ -749,10 +768,13 @@ private:
 	uint8_t _uniqueId[8];     /* MAC + "ll" */
 	char _bsdName[16];
 	uint32_t _txFrames;
+	uint64_t _rxFrames, _rxDropped;
 
 	bool createDatapath();
+	void setActive(bool on);
 	static IOReturn removeQueues(OSObject *owner, void *, void *, void *, void *);
 	static IOReturn switchQueues(OSObject *owner, void *on, void *, void *, void *);
+	static IOReturn rxPlainAction(OSObject *owner, void *args, void *, void *, void *);
 	static IOReturn txData(OSObject *owner, void *queue, void *const *pkts,
 	                       uint32_t count, void *refCon);
 };

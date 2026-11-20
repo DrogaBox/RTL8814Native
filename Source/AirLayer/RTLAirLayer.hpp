@@ -177,14 +177,15 @@ public:
 	IO80211WorkQueue *getWorkQueue() const override;
 
 	/* Radio ABI, routed to the RTL8814Native provider. */
-	IOReturn radio(const char *fn, void *p1 = nullptr, void *p2 = nullptr);
+	IOReturn radio(const char *fn, void *p1 = nullptr, void *p2 = nullptr, void *p3 = nullptr);
 	IOReturn radioStatus(struct rtl_radio_status *st);
 
 	/* Driver -> WCL event (IO80211Controller::postMessage on the STA interface). */
 	void post(uint32_t msg, void *data, size_t len);
 
 	/* Called by the interface. */
-	IOReturn startScan(const uint32_t *channels = nullptr, uint32_t count = 0);
+	/* passive: the request's scan type is passive (no probe requests) */
+	IOReturn startScan(const uint32_t *channels = nullptr, uint32_t count = 0, bool passive = false);
 	IOReturn startJoin(const struct rtl_radio_join *j);
 	IOReturn startRoam(const uint8_t *bssids, uint32_t count);
 	void leave(bool notify);

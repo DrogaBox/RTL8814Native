@@ -267,9 +267,16 @@ static s32 update_txdesc(struct xmit_frame *pxmitframe, u8 *pmem, s32 sz , u8 ba
 		/* RTL8814Native: AWDL unicast data at the layer's rate. Fallback stays
 		 * on (DISABLE_FB clear), down to OFDM 6 Mb/s at most, and the chip
 		 * sends a CCX TX report the layer's rate ladder counts. */
-		if (pattrib->rtl_awdl_rpt) {
+		if (pattrib->rtl_awdl_rpt == 1) {
 			SET_TX_DESC_DATA_RATE_FB_LIMIT_8814A(ptxdesc, 4);
 			SET_TX_DESC_SPE_RPT_8814A(ptxdesc, 1);
+		}
+		/* RTL8814Native: a unicast AWDL action frame (the UMI). Its report
+		 * carries this number back in payload byte 6, bits 7:2 (bits 1:0 are
+		 * the firmware's), so the C2H handler tells it from data. */
+		if (pattrib->rtl_awdl_rpt & 0xFC) {
+			SET_TX_DESC_SPE_RPT_8814A(ptxdesc, 1);
+			SWDefineContent |= pattrib->rtl_awdl_rpt & 0xFC;
 		}
 		/* RTL8814Native: AWDL QoS data of a Block Ack session the layer
 		 * opened (AWDLTx.c). It sits in an AC queue with the layer's

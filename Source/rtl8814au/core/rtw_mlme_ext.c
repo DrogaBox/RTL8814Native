@@ -21,6 +21,7 @@
 #include <hal_data.h>
 #include "../../Driver/SAEJoin.h"
 #include "../../Driver/WPA2Supplicant.h"
+#include "../../Driver/RTLScanLog.h"
 
 
 struct mlme_handler mlme_sta_tbl[] = {
@@ -14492,6 +14493,27 @@ exit:
 #ifdef CONFIG_SCAN_BACKOP
 extern void rtl8814native_awdl_scan_hold_decide(_adapter *padapter);
 extern u8 rtl8814native_awdl_scan_hold(void);
+/* RTL8814Native: with AWDL data going, a linked scan returns after every
+ * channel, for a shorter time (Source/Driver/AWDLTx.c) */
+extern u8 rtl8814native_awdl_scan_cnt_max(u8 def);
+extern u16 rtl8814native_awdl_scan_backop_ms(u16 def);
+extern void rtl8814native_awdl_scan_backop_start(void);
+extern u8 rtl8814native_awdl_scan_backop_over(u32 ms, u16 def);
+extern void rtl8814native_slog(u8 ev, u8 a, u16 b);
+extern u8 rtl8814native_awdl_scan_ps_annc(_adapter *padapter, u8 ps);
+extern u64 rtl8814native_uptime_us(void);
+extern u8 rtl8814native_scan_no_txpwr;
+
+/* RTL8814Native: HW_VAR_CHECK_TXBUF, timed into the scan step log */
+static void sitesurvey_check_txbuf(_adapter *padapter, u8 where)
+{
+	u64 t0 = rtl8814native_uptime_us();
+	u64 d;
+
+	rtw_hal_set_hwreg(padapter, HW_VAR_CHECK_TXBUF, 0);
+	d = (rtl8814native_uptime_us() - t0) / 100;
+	rtl8814native_slog(SL_TXBUF, where, d > 0xFFFF ? 0xFFFF : (u16)d);
+}
 
 u8 rtw_scan_backop_decision(_adapter *adapter)
 {
@@ -14546,7 +14568,8 @@ u32 rtw_scan_timeout_decision(_adapter *padapter)
 	/* RTL8814Native: whether this scan returns to the parked AWDL channel */
 	rtl8814native_awdl_scan_hold_decide(padapter);
 	if (rtw_scan_backop_decision(padapter))
-		back_op_times = (max_chan_num / ss->scan_cnt_max) * ss->backop_ms;
+		back_op_times = (max_chan_num / rtl8814native_awdl_scan_cnt_max(ss->scan_cnt_max))
+				* rtl8814native_awdl_scan_backop_ms(ss->backop_ms);
 	#endif
 
 	if (ss->duration)
@@ -14736,7 +14759,7 @@ static u8 sitesurvey_pick_ch_behavior(_adapter *padapter, u8 *ch, RT_SCAN_TYPE *
 
 #ifdef CONFIG_DFS
 		#ifdef CONFIG_SCAN_BACKOP
-		if (!(backop_flags && ss->scan_cnt >= ss->scan_cnt_max))
+		if (!(backop_flags && ss->scan_cnt >= rtl8814native_awdl_scan_cnt_max(ss->scan_cnt_max)))
 		#endif
 		{
 			#ifdef CONFIG_RTW_WIFI_HAL
@@ -14781,7 +14804,7 @@ static u8 sitesurvey_pick_ch_behavior(_adapter *padapter, u8 *ch, RT_SCAN_TYPE *
 
 		#ifdef CONFIG_SCAN_BACKOP
 		if (backop_flags) {
-			if (ss->scan_cnt < ss->scan_cnt_max)
+			if (ss->scan_cnt < rtl8814native_awdl_scan_cnt_max(ss->scan_cnt_max))
 				ss->scan_cnt++;
 			else {
 				mlmeext_assign_scan_backop_flags(pmlmeext, backop_flags);
@@ -14859,7 +14882,14 @@ void site_survey(_adapter *padapter, u8 survey_channel, RT_SCAN_TYPE ScanType)
 #endif
 
 	if (survey_channel != 0) {
+		/* A channel without probe requests sends nothing, so it needs no TX
+		 * power load; the return then finds the BSS channel's entries in
+		 * place (rtl8814native_scan_no_txpwr, PHY_SetTxPowerIndex_8814A). */
+		rtl8814native_scan_no_txpwr = (ScanType == SCAN_ACTIVE ?
+		                               ss->scan_mode == SCAN_ACTIVE || ss->ssid_num :
+		                               ss->dfs_ch_ssid_scan && ss->ssid_num) ? 0 : survey_channel;
 		set_channel_bwmode(padapter, survey_channel, HAL_PRIME_CHNL_OFFSET_DONT_CARE, CHANNEL_WIDTH_20);
+		rtl8814native_scan_no_txpwr = 0;
 
 #ifdef CONFIG_DFS
 		if (ScanType == SCAN_PASSIVE && ss->dfs_ch_ssid_scan)
@@ -15185,6 +15215,7 @@ void sitesurvey_set_offch_state(_adapter *adapter, u8 scan_state)
 {
 	struct rf_ctl_t *rfctl = adapter_to_rfctl(adapter);
 
+	rtl8814native_slog(SL_STATE, scan_state, adapter->mlmeextpriv.sitesurvey_res.channel_idx);
 	_enter_critical_mutex(&rfctl->offch_mutex, NULL);
 
 	rtl8814native_awdl_backop = scan_state == SCAN_BACK_OP;
@@ -15237,6 +15268,9 @@ u8 sitesurvey_cmd_hdl(_adapter *padapter, u8 *pbuf)
 	}
 #endif /* DBG_CHECK_FW_PS_STATE */
 
+	if (!mlmeext_chk_scan_state(pmlmeext, SCAN_BACK_OP))
+		rtl8814native_slog(SL_HDL, mlmeext_scan_state(pmlmeext), ss->channel_idx);
+
 	/* increase channel idx */
 	if (mlmeext_chk_scan_state(pmlmeext, SCAN_PROCESS))
 		ss->channel_idx++;
@@ -15287,12 +15321,16 @@ operation_by_state:
 			rtw_rx_ampdu_apply(padapter);
 
 		/* clear HW TX queue before scan */
-		rtw_hal_set_hwreg(padapter, HW_VAR_CHECK_TXBUF, 0);
+		sitesurvey_check_txbuf(padapter, 0);
 
 		rtw_hal_macid_sleep_all_used(padapter);
 
-		/* power save state announcement */
-		if (rtw_ps_annc(padapter, 1)) {
+		/* power save state announcement; RTL8814Native: in one-channel
+		 * steps without the fixed waits (rtl8814native_awdl_scan_ps_annc) */
+		if (rtl8814native_awdl_scan_ps_annc(padapter, 1)) {
+			mlmeext_set_scan_state(pmlmeext, SCAN_ENTER);
+			goto operation_by_state;
+		} else if (rtw_ps_annc(padapter, 1)) {
 			mlmeext_set_scan_state(pmlmeext, SCAN_PS_ANNC_WAIT);
 			mlmeext_set_scan_next_state(pmlmeext, SCAN_ENTER);
 			set_survey_timer(pmlmeext, 50); /* delay 50ms to protect nulldata(1) */
@@ -15406,6 +15444,7 @@ operation_by_state:
 		if (IS_NM_ENABLE(padapter))
 			rtw_noise_measure(padapter, scan_ch, _FALSE, 0, scan_ms / 2);
 #endif
+		rtl8814native_slog(SL_CH, scan_ch, (u16)scan_ms);
 		set_survey_timer(pmlmeext, scan_ms);
 		break;
 	}
@@ -15439,20 +15478,28 @@ operation_by_state:
 				);
 		#endif /*DBG_SITESURVEY*/
 		set_channel_bwmode(padapter, back_ch, back_ch_offset, back_bw);
+		rtl8814native_slog(SL_MARK, 1, back_ch);
 
 		sitesurvey_set_msr(padapter, _FALSE);
+		rtl8814native_slog(SL_MARK, 2, 0);
 
 		val8 = 0; /* survey done */
 		rtw_hal_set_hwreg(padapter, HW_VAR_MLME_SITESURVEY, (u8 *)(&val8));
+		rtl8814native_slog(SL_MARK, 3, 0);
 
 		if (mlmeext_chk_scan_backop_flags(pmlmeext, SS_BACKOP_PS_ANNC)) {
 			sitesurvey_set_igi(padapter);
+			rtl8814native_slog(SL_MARK, 4, 0);
 			rtw_hal_macid_wakeup_all_used(padapter);
-			rtw_ps_annc(padapter, 0);
+			rtl8814native_slog(SL_MARK, 5, 0);
+			if (!rtl8814native_awdl_scan_ps_annc(padapter, 0))
+				rtw_ps_annc(padapter, 0);
+			rtl8814native_slog(SL_MARK, 6, 0);
 		}
 
 		mlmeext_set_scan_state(pmlmeext, SCAN_BACK_OP);
 		ss->backop_time = rtw_get_current_time();
+		rtl8814native_awdl_scan_backop_start();
 
 		if (mlmeext_chk_scan_backop_flags(pmlmeext, SS_BACKOP_TX_RESUME))
 			rtw_mi_os_xmit_schedule(padapter);
@@ -15462,12 +15509,14 @@ operation_by_state:
 	}
 
 	case SCAN_BACK_OP:
-		if (rtw_get_passing_time_ms(ss->backop_time) >= ss->backop_ms
+		if (rtl8814native_awdl_scan_backop_over(rtw_get_passing_time_ms(ss->backop_time), ss->backop_ms)
 		    || pmlmeext->scan_abort
 		   ) {
 			if (!sitesurvey_close_awdl_backop(padapter)) {
+				rtl8814native_slog(SL_CLOSE_WAIT, 0,
+				                   (u16)rtw_get_passing_time_ms(ss->backop_time));
 				/* a slot is 65.5 ms; past this nobody is bringing it home */
-				if (rtw_get_passing_time_ms(ss->backop_time) >= ss->backop_ms + 500)
+				if (rtw_get_passing_time_ms(ss->backop_time) >= rtl8814native_awdl_scan_backop_ms(ss->backop_ms) + 500)
 					rtl8814native_radio_awdl_offch(0);
 				set_survey_timer(pmlmeext, 10);
 				break;
@@ -15484,10 +15533,11 @@ operation_by_state:
 		 */
 
 		/* clear HW TX queue before scan */
-		rtw_hal_set_hwreg(padapter, HW_VAR_CHECK_TXBUF, 0);
+		sitesurvey_check_txbuf(padapter, 1);
 
 		rtw_hal_macid_sleep_all_used(padapter);
 		if (mlmeext_chk_scan_backop_flags(pmlmeext, SS_BACKOP_PS_ANNC)
+			&& !rtl8814native_awdl_scan_ps_annc(padapter, 1)
 			&& rtw_ps_annc(padapter, 1)
 		) {
 			mlmeext_set_scan_state(pmlmeext, SCAN_PS_ANNC_WAIT);
@@ -15597,7 +15647,8 @@ operation_by_state:
 #endif
 		{
 			rtw_hal_macid_wakeup_all_used(padapter);
-			rtw_ps_annc(padapter, 0);
+			if (!rtl8814native_awdl_scan_ps_annc(padapter, 0))
+				rtw_ps_annc(padapter, 0);
 		}
 
 		/* apply rx ampdu setting */

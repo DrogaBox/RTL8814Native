@@ -3049,7 +3049,7 @@ phy_set_tx_power_level_by_path(
 {
 	PHAL_DATA_TYPE	pHalData = GET_HAL_DATA(Adapter);
 	BOOLEAN bIsIn24G = (pHalData->current_band_type == BAND_ON_2_4G);
-	u8 under_survey_ch = phy_check_under_survey_ch(Adapter);
+	u8 under_survey_ch = phy_check_under_survey_ch(Adapter) || pHalData->txpwr_legacy_only;
 
 
 	/* if ( pMgntInfo->RegNByteAccess == 0 ) */

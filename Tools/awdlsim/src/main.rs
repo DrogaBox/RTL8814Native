@@ -9,6 +9,7 @@
 mod ba;
 mod iokit;
 mod pcapng;
+mod plain;
 mod responder;
 mod svc;
 mod tun;
@@ -81,11 +82,13 @@ struct Opts {
     airdrop: bool,
     airdrop_flags: u32,
     pairing: bool,
+    plain: bool,
 }
 
 const USAGE: &str = "usage: sudo awdlsim [--channel 6|44|149] [--mac xx:xx:xx:xx:xx:xx] [--metric N]
                     [--counter N] [--seconds N] [--rssi dBm] [--capture file.pcapng] [--echo] [--tun]
                     [--umi SECONDS] [--6e] [--rest] [--addba] [--ba-silent N] [--airdrop] [--airdrop-flags N] [--pairing]
+                    [--plain]
 
   --channel  fix the node on this social channel (default: follow the channel of awdl0's PSFs)
   --mac      the node's AWDL address (default: random, locally administered)
@@ -109,6 +112,10 @@ const USAGE: &str = "usage: sudo awdlsim [--channel 6|44|149] [--mac xx:xx:xx:xx
   --addba    ask awdl0 for a Block Ack session (TID 0, window 64) like an iPhone, then send
              the node's data as QoS data, every eighth frame swapped with the next
   --ba-silent N  leave awdl0's first N ADDBA requests unanswered, then accept as usual
+  --plain    send the node's data as plain RFC 1042 (no AWDL head), as an iPhone sends
+             Continuity Camera's stream: the layer hands it to llw0 (rtlawdl_llw=1), and llw0's
+             plain frames reach the node; with --echo the node's pings test both ways;
+             UDP to port 9999 (Tools/llwchan) goes straight back to the Mac
   --6e       declare 6E in the Data Path State: without it IO80211 takes the node for a legacy peer
              and handleAirDropTrafficReg sends it no UMI
 Needs the boot-arg rtlawdl_sim=1 and awdl0 up (an AirDrop window open).";
@@ -139,6 +146,7 @@ fn parse_args() -> Result<Opts, String> {
         airdrop: false,
         airdrop_flags: svc::FLAGS_LEGACY,
         pairing: false,
+        plain: false,
     };
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -182,6 +190,7 @@ fn parse_args() -> Result<Opts, String> {
                 o.airdrop_flags = val()?.parse().map_err(|_| "bad flags")?;
             }
             "--pairing" => o.pairing = true,
+            "--plain" => o.plain = true,
             "-h" | "--help" => return Err(String::new()),
             _ => return Err(format!("unknown option {a}")),
         }
@@ -229,6 +238,10 @@ struct Sim {
     ba: ba::Ba,
     next_rotate: u64,
     update: u16,
+    plain_tx: u64,
+    plain_rx: u64,
+    plain_seq: u16,
+    reflected: u64,
 }
 
 fn is_awdl_af(f: &[u8]) -> bool {
@@ -423,6 +436,11 @@ impl Sim {
     }
 
     fn transmit(&mut self, bytes: &[u8]) {
+        let rewritten = if self.opts.plain { plain::to_plain(bytes) } else { None };
+        if rewritten.is_some() {
+            self.plain_tx += 1;
+        }
+        let bytes = rewritten.as_deref().unwrap_or(bytes);
         if !self.opts.addba {
             self.inject_one(bytes);
             return;
@@ -520,6 +538,24 @@ impl Sim {
         }
         let plain = self.ba.incoming(f, self.opts.mac.0);
         let f = plain.as_ref().unwrap_or(f);
+        // llwchan: UDP to port 9999 over llw0 goes straight back to the Mac.
+        if let Some(r) = self.opts.plain.then(|| plain::reflect(f, plain::REFLECT_PORT)).flatten() {
+            if self.reflected == 0 {
+                println!("[{:8.3}] first llwchan datagram from the Mac (llw0), sent back", secs(self.start, now));
+            }
+            self.reflected += 1;
+            self.inject_one(&r);
+            return;
+        }
+        let from_llw = if self.opts.plain { plain::from_plain(f, self.plain_seq) } else { None };
+        if from_llw.is_some() {
+            if self.plain_rx == 0 {
+                println!("[{:8.3}] first plain frame from the Mac (llw0)", secs(self.start, now));
+            }
+            self.plain_rx += 1;
+            self.plain_seq = self.plain_seq.wrapping_add(1) & 0xfff;
+        }
+        let f = from_llw.as_ref().unwrap_or(f);
         self.win.lag_max = self.win.lag_max.max(now.saturating_sub(rec.t_us));
         self.win.from_mac += 1;
         let sample = is_awdl_af(f) && (f[30] == 0 || f[30] == 3);
@@ -592,6 +628,10 @@ impl Sim {
         if self.tun.is_some() {
             line += &format!(" | utun in {} out {} drop {}", self.tun_in, self.tun_out,
                              self.tun_drop);
+        }
+        if self.opts.plain {
+            line += &format!(" | plain to Mac {} from Mac {} | llwchan back {}",
+                             self.plain_tx, self.plain_rx, self.reflected);
         }
         if self.ba.rx_sessions > 0 {
             line += &format!(" | from awdl0: sessions {} qos {} gaps {}", self.ba.rx_sessions,
@@ -791,6 +831,10 @@ fn main() -> ExitCode {
         tun_drop: 0,
         ba: ba::Ba::new(),
         next_rotate: 0,
+        plain_tx: 0,
+        plain_rx: 0,
+        plain_seq: 0,
+        reflected: 0,
         update: 1,
         opts,
     };

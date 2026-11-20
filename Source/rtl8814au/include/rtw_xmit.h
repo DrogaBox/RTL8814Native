@@ -476,7 +476,7 @@ struct pkt_attrib {
 	u8	intel_proxim;
 	u8	retry_ctrl;
 	u8	data_tries; /* hardware retry limit of this frame; 0 leaves it to retry_ctrl */
-	u8	rtl_awdl_rpt; /* RTL8814Native: AWDL data at the ladder's rate: CCX report, fallback to OFDM 6 */
+	u8	rtl_awdl_rpt; /* RTL8814Native: CCX report. 1: AWDL data at the ladder's rate, fallback to OFDM 6; bits 7:2 set: a UMI's report number */
 	u8	rtl_awdl_agg; /* RTL8814Native: AWDL QoS data for an A-MPDU: its TX descriptor rate, 0 = not one */
 	u8	rtl_awdl_agg_num; /* most MPDUs in that A-MPDU (descriptor MAX_AGG_NUM) */
 	u8   mbssid;

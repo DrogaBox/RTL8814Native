@@ -991,6 +991,11 @@ u32 beamforming_get_report_frame(
 	/*@Memory comparison to see if CSI report is the same with previous one*/
 	TA = get_addr2_ptr(pframe);
 	beamform_entry = phydm_beamforming_get_bfee_entry_by_addr(dm, TA, &idx);
+	/* A report from a station that is not a beamformee of ours: the entry is
+	 * NULL. Read anyway, it was a page fault at 0x20 in the RX path at boot
+	 * (2026-11-17 19:22, driver C8A320FA, HT compressed beamforming action). */
+	if (!beamform_entry)
+		return ret;
 	if (beamform_entry->beamform_entry_cap & BEAMFORMER_CAP_VHT_SU)
 		offset = 31; /*@24+(1+1+3)+2  MAC header+(Category+ActionCode+MIMOControlField)+SNR(nc=2)*/
 	else if (beamform_entry->beamform_entry_cap & BEAMFORMER_CAP_HT_EXPLICIT)

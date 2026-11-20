@@ -15,6 +15,7 @@
 #include <hal_data.h>
 #include "RTLAwdlSim.h"
 #include "RTLRadioABI.h"
+#include "RTLScanLog.h"
 
 int rtl8814native_radio_tx_80211(const uint8_t *frame, uint32_t len);
 int rtl8814native_radio_awdl_port(const uint8_t *mac);
@@ -29,10 +30,17 @@ int rtl8814native_awdl_cal_stats(uint32_t *out);
 void rtl8814native_awdl_note_peer(int data);
 void rtl8814native_awdl_scan_hold_decide(_adapter *padapter);
 u8 rtl8814native_awdl_scan_hold(void);
+u8 rtl8814native_awdl_scan_cnt_max(u8 def);
+u16 rtl8814native_awdl_scan_backop_ms(u16 def);
+void rtl8814native_awdl_scan_backop_start(void);
+u8 rtl8814native_awdl_scan_backop_over(u32 ms, u16 def);
+void rtl8814native_slog(u8 ev, u8 a, u16 b);
+u8 rtl8814native_awdl_scan_ps_annc(_adapter *padapter, u8 ps);
+void rtl8814native_get_scan_log(struct rtl_slog *out);
 int rtl8814native_radio_awdl_rate(uint32_t rate);
 void rtl8814native_radio_awdl_txstat(struct rtl_radio_awdl_txstat *out);
 int rtl8814native_radio_awdl_agg(struct rtl_radio_awdl_agg *cfg);
-void rtl8814native_awdl_tx_report(int lost, u8 retries, u8 rate);
+void rtl8814native_awdl_ccx_report(const u8 *pl, u8 len);
 extern _adapter *rtl8814native_get_primary_adapter(void);
 extern int rtl8814native_tx_urbs_inflight(void);
 extern u64 rtl8814native_uptime_us(void);
@@ -47,6 +55,112 @@ static const u8 rtl_awdl_bssid[ETH_ALEN] = { 0x00, 0x25, 0x00, 0xFF, 0x94, 0x73 
  * offch_mutex. */
 u8 rtl8814native_awdl_backop;
 u8 rtl8814native_awdl_port1;
+
+/* The scan step log (RTLScanLog.h). */
+static struct rtl_slog rtl_slog;
+
+/* when the last scan ended (SL_STATE SCAN_DISABLE), 0 = none yet */
+static u64 rtl_slog_scan_end_us;
+
+/* Set by site_survey around the channel set of a scan channel that sends no
+ * probe request (a passive scan, RTL_RADIO_SCAN_PASSIVE), to that channel:
+ * the HAL then skips the TX power load for it (phy_SwChnlAndSetBwMode8814A).
+ * The channel, not a flag: an AWDL hop waiting on setch_mutex meanwhile
+ * sets another channel and still loads its power. 0 = none. */
+u8 rtl8814native_scan_no_txpwr;
+
+/* RTL_OPT_AWDL_FULLPWR (test_uc awdlfullpwr): what an AWDL visit to another
+ * 5 GHz block loads of the TX power table (PHY_SetTxPowerLevel8814): 0 = of
+ * OFDM 6/12/24 and the data rate on the way out and all OFDM on the return,
+ * 1 = the whole table both ways, 2 = all OFDM both ways. */
+u8 rtl8814native_awdl_fullpwr;
+
+/*
+ * RTL_OPT_AWDL_FWCHSW (test_uc awdlfwchsw): 1 = an AWDL hop to another 5 GHz
+ * block at the same band and width has the firmware do the channel part with
+ * H2C 0x1C CHNL_SWITCH_OPER_OFFLOAD (fc_area, RF 0x18 on the four paths,
+ * AGC table, TRXPTCL, DATA_SC and the width BB registers, at register speed
+ * in the MCU: Docs/AWDL_FW_8814A_CHSW_OFFLOAD.md). The HAL waits for its
+ * C2H 0x10 and does spur and TX power itself (phy_SwChnlAndSetBwMode8814A).
+ * Three timeouts in a row turn it off. Off by default.
+ */
+u8 rtl8814native_awdl_fwchsw;
+static volatile u32 rtl_fwchsw_seq;     /* C2H 0x10 seen */
+static volatile u8 rtl_fwchsw_ch;       /* channel byte of the last one */
+static u32 rtl_fwchsw_ok, rtl_fwchsw_timeouts, rtl_fwchsw_timeouts_row;
+
+/* C2H 0x10 from c2h_handler, in the USB RX path: payload[0] is the channel */
+void rtl8814native_fw_chsw_done(u8 ch)
+{
+	rtl_fwchsw_ch = ch;
+	__atomic_add_fetch(&rtl_fwchsw_seq, 1, __ATOMIC_RELEASE);
+}
+
+/*
+ * Sends H2C 0x1C for center at bw (CHANNEL_WIDTH_*) with the 40 and 80 MHz
+ * primary offsets (HAL_PRIME_CHNL_OFFSET_*, as the HAL's nCur*MhzPrimeSC) and
+ * waits up to 20 ms for its C2H. The emitter of the tree (TDLS only) passes the
+ * primary and one SC; the firmware wants the center in byte 0 and both SCs.
+ * 0 when the C2H came, *wait_us = from the H2C written to the C2H seen.
+ */
+int rtl8814native_fw_chsw(void *adapter, u8 center, u8 bw, u8 sc40, u8 sc80, u8 rfe, u32 *wait_us)
+{
+	u8 buf[4];
+	u32 seq = __atomic_load_n(&rtl_fwchsw_seq, __ATOMIC_ACQUIRE);
+	u64 t0, now;
+
+	buf[0] = center;
+	buf[1] = (bw & 0x3) | ((sc40 & 0x7) << 2) | ((sc80 & 0x7) << 5);
+	buf[2] = rfe & 0xF;
+	buf[3] = 0;
+	if (rtw_hal_fill_h2c_cmd((_adapter *)adapter, H2C_CHNL_SWITCH_OPER_OFFLOAD, sizeof(buf), buf) !=
+	    _SUCCESS)
+		return -EIO;
+	t0 = rtl8814native_uptime_us();
+	for (;;) {
+		now = rtl8814native_uptime_us();
+		if (__atomic_load_n(&rtl_fwchsw_seq, __ATOMIC_ACQUIRE) != seq && rtl_fwchsw_ch == center) {
+			if (wait_us)
+				*wait_us = (u32)(now - t0);
+			rtl_fwchsw_ok++;
+			rtl_fwchsw_timeouts_row = 0;
+			return 0;
+		}
+		if (now - t0 >= 20000)
+			break;
+		rtw_udelay_os(20);
+	}
+	rtl_fwchsw_timeouts++;
+	if (++rtl_fwchsw_timeouts_row >= 3)
+		rtl8814native_awdl_fwchsw = 0;
+	return -ETIMEDOUT;
+}
+
+/* RTL_OPT_AWDL_FWCHSW_STATS: switches done by the firmware (low 16 bits), timeouts (high 16) */
+int rtl8814native_fw_chsw_stats(uint32_t *out)
+{
+	if (out)
+		*out = (rtl_fwchsw_ok & 0xFFFF) | (rtl_fwchsw_timeouts << 16);
+	return 0;
+}
+
+void rtl8814native_slog(u8 ev, u8 a, u16 b)
+{
+	u32 i = __atomic_fetch_add(&rtl_slog.next, 1, __ATOMIC_RELAXED) % RTL_SLOG_N;
+	u64 now = rtl8814native_uptime_us();
+
+	if (ev == SL_STATE && a == SCAN_DISABLE)
+		rtl_slog_scan_end_us = now;
+	rtl_slog.e[i].t_us = (u32)now;
+	rtl_slog.e[i].ev = ev;
+	rtl_slog.e[i].a = a;
+	rtl_slog.e[i].b = b;
+}
+
+void rtl8814native_get_scan_log(struct rtl_slog *out)
+{
+	_rtw_memcpy(out, &rtl_slog, sizeof(*out));
+}
 
 /*
  * A scan without an association takes the radio through every channel, about
@@ -77,6 +191,7 @@ void rtl8814native_awdl_note_peer(int data)
 /* Decided once for the scan being queued (rtw_scan_timeout_decision), so its
  * timeout counts the returns it will make. */
 static u8 rtl_awdl_scan_hold_now;
+static void rtl_awdl_scan_step_decide(_adapter *padapter);
 
 void rtl8814native_awdl_scan_hold_decide(_adapter *padapter)
 {
@@ -89,11 +204,91 @@ void rtl8814native_awdl_scan_hold_decide(_adapter *padapter)
 	rtl_awdl_scan_hold_now = rtl_awdl_scan_hold_s && at && data && rtl8814native_awdl_port1 &&
 	                         (ch == 6 || ch == 44 || ch == 149) &&
 	                         now - at < win && now - data < win;
+	rtl_awdl_scan_step_decide(padapter);
 }
 
 u8 rtl8814native_awdl_scan_hold(void)
 {
 	return rtl_awdl_scan_hold_now;
+}
+
+/*
+ * A linked scan returns to its BSS every RTW_SCAN_NUM_OF_CH (3) channels, so
+ * locationd's 3-channel 2.4 GHz scan, about once a minute and let through
+ * even in AWDL real-time mode once that is a minute old
+ * (IO80211AWDLPeerManager::deviceAllows2GOnlyScan), took the radio away from
+ * AWDL for 661 ms in one piece (2026-11-17, llwchan at 1000/s). With AWDL data
+ * in the last rtl_awdl_scan_hold_s seconds such a scan returns after every
+ * channel, for less than the 400 ms of a group's return: the hole is one
+ * channel's dwell. Decided with the hold, once per scan.
+ *
+ * A fixed 200 ms return did not always hold an AWDL slot: the layer serves
+ * its slots on its own schedule, and with none in a return the hole spanned
+ * two channels and the return, about 430 ms (2026-11-17, same test). So a
+ * return ended once an AWDL slot had started in it and at least
+ * 100 ms had passed, the slot itself then finishing
+ * before the scan goes on (sitesurvey_close_awdl_backop); without a slot it
+ * ends at RTL_AWDL_SCAN_STEP_MAX_MS.
+ *
+ * A visit that began in the tail of a slot counted as well: 32 ms on AWDL,
+ * the return over at 100 ms, and the hole spanned two channels again, 596 ms
+ * (2026-11-17, driver 1404B22B). So a visit counts once it is back home and
+ * lasted at least RTL_AWDL_SCAN_STEP_VISIT_US.
+ *
+ * With visits counted that way the old 100 ms floor on a return only held
+ * the radio home: a return that came back 54 ms before the end of an AWDL
+ * slot counted at the slot's end, 59 ms into the return, and the scan then
+ * waited for its next 50 ms poll on the BSS channel, so two AWDL stalls of
+ * 216-217 ms came 46 ms apart (2026-11-17, driver 3F4D71D7). A counted
+ * visit now ends the return at once.
+ */
+#define RTL_AWDL_SCAN_STEP_MAX_MS 600
+#define RTL_AWDL_SCAN_STEP_VISIT_US 50000
+static u8 rtl_awdl_scan_step_now;
+/* AWDL visits of a scan's return long enough to count, and the count when
+ * this one began; counted under offch_mutex in rtl8814native_radio_awdl_offch,
+ * which notes when each visit began */
+static u32 rtl_awdl_backop_slots;
+static u32 rtl_awdl_backop_slots_at;
+static u64 rtl_awdl_visit_us;
+
+static void rtl_awdl_scan_step_decide(_adapter *padapter)
+{
+	u64 data = rtl_awdl_data_us;
+	u64 now = rtl8814native_uptime_us();
+	u64 win = (u64)rtl_awdl_scan_hold_s * 1000000;
+
+	rtl_awdl_scan_step_now = rtl_awdl_scan_hold_s && data && rtl8814native_awdl_port1 &&
+	                         check_fwstate(&padapter->mlmepriv, _FW_LINKED) &&
+	                         now - data < win;
+	rtl8814native_slog(SL_STEP, rtl_awdl_scan_step_now, rtl_awdl_scan_hold_now);
+}
+
+u8 rtl8814native_awdl_scan_cnt_max(u8 def)
+{
+	return rtl_awdl_scan_step_now ? 1 : def;
+}
+
+/* the longest a return lasts: the scan timeout counts it */
+u16 rtl8814native_awdl_scan_backop_ms(u16 def)
+{
+	return rtl_awdl_scan_step_now ? RTL_AWDL_SCAN_STEP_MAX_MS : def;
+}
+
+/* SCAN_BACKING_OP: a return begins */
+void rtl8814native_awdl_scan_backop_start(void)
+{
+	rtl_awdl_backop_slots_at = __atomic_load_n(&rtl_awdl_backop_slots, __ATOMIC_RELAXED);
+}
+
+/* SCAN_BACK_OP: whether the return has lasted long enough, ms into it */
+u8 rtl8814native_awdl_scan_backop_over(u32 ms, u16 def)
+{
+	if (!rtl_awdl_scan_step_now)
+		return ms >= def;
+	if (ms >= RTL_AWDL_SCAN_STEP_MAX_MS)
+		return 1;
+	return __atomic_load_n(&rtl_awdl_backop_slots, __ATOMIC_RELAXED) != rtl_awdl_backop_slots_at;
 }
 
 int rtl8814native_awdl_set_scan_hold(uint32_t seconds, uint32_t *prev)
@@ -112,6 +307,15 @@ int rtl8814native_awdl_set_scan_hold(uint32_t seconds, uint32_t *prev)
 static u8 rtl_awdl_data_mrate;
 static u8 rtl_awdl_park_bw = CHANNEL_WIDTH_20;  /* RTL_OPT_AWDL_BW */
 static u32 rtl_awdl_txstat[6];
+/* The UMIs' reports (RTL_RADIO_FN_AWDL_AFSTAT): the receiver of each frame
+ * waiting, by report number / 4, and the results. */
+struct rtl_awdl_umi_wait {
+	u8 mac[ETH_ALEN];
+	u8 busy;
+};
+static struct rtl_awdl_umi_wait rtl_awdl_umi_wait[64];
+static u32 rtl_awdl_umi_sn;
+static struct rtl_radio_awdl_afstat rtl_awdl_af;
 /* A-MPDU for AWDL QoS data (RTL_RADIO_FN_AWDL_AGG): descriptor rate (0 = off),
  * width, short GI, MPDUs per A-MPDU and density, packed in one word so the TX
  * path reads them together. */
@@ -137,6 +341,35 @@ int rtl8814native_radio_awdl_agg(struct rtl_radio_awdl_agg *cfg)
 	return 0;
 }
 
+/*
+ * The way out of an AWDL visit to another 5 GHz block writes, of OFDM, only
+ * the TX power of 6/12/24 and of the data rate of that moment
+ * (PHY_SetTxPowerLevel8814). A rate set during the visit gets its entry
+ * here, for the channel the radio is on: four writes, one a path.
+ */
+static void rtl_awdl_rate_txpwr(u8 m)
+{
+	_adapter *padapter = rtl8814native_get_primary_adapter();
+	struct mlme_ext_priv *ext;
+	struct rf_ctl_t *rfctl;
+	HAL_DATA_TYPE *hal;
+	u8 path;
+
+	if (!IS_OFDM_RATE(m) || m == MGN_6M || m == MGN_12M || m == MGN_24M ||
+	    rtl8814native_awdl_fullpwr || !padapter || !padapter->bup || RTW_CANNOT_RUN(padapter))
+		return;
+	ext = &padapter->mlmeextpriv;
+	rfctl = adapter_to_rfctl(padapter);
+	hal = GET_HAL_DATA(padapter);
+	_enter_critical_mutex(&rfctl->offch_mutex, NULL);
+	if (rfctl->offch_state == OFFCHS_AWDL && hal->current_channel > 14 &&
+	    hal->current_channel != rtw_get_center_ch(ext->cur_channel, ext->cur_bwmode, ext->cur_ch_offset))
+		for (path = RF_PATH_A; path < hal->NumTotalRFPath && path <= RF_PATH_D; path++)
+			PHY_SetTxPowerIndexByRateArray(padapter, (enum rf_path)path, hal->current_channel_bw,
+			                               hal->current_channel, &m, 1);
+	_exit_critical_mutex(&rfctl->offch_mutex, NULL);
+}
+
 int rtl8814native_radio_awdl_rate(uint32_t rate)
 {
 	static const u8 ofdm[8] = {
@@ -153,18 +386,73 @@ int rtl8814native_radio_awdl_rate(uint32_t rate)
 		m = (u8)(MGN_MCS0 + (rate - DESC_RATEMCS0));
 	else
 		return -EINVAL;
-	__atomic_store_n(&rtl_awdl_data_mrate, m, __ATOMIC_RELAXED);
+	if (__atomic_exchange_n(&rtl_awdl_data_mrate, m, __ATOMIC_RELAXED) != m)
+		rtl_awdl_rate_txpwr(m);
 	return 0;
 }
 
-/* From the C2H handler: one CCX TX report. Only frames that ask for one
- * (SPE_RPT) produce it, and only AWDL data at the ladder's rate does. */
-void rtl8814native_awdl_tx_report(int lost, u8 retries, u8 rate)
+u8 rtl8814native_awdl_data_rate(void)
 {
-	int k = lost ? 3 : retries == 0 ? 0 : retries == 1 ? 1 : 2;
+	return __atomic_load_n(&rtl_awdl_data_mrate, __ATOMIC_RELAXED);
+}
+
+/* From the C2H handler: one CCX TX report. Only frames that ask for one
+ * (SPE_RPT) produce it: AWDL data at the ladder's rate, which carries no
+ * report number, and the UMIs, which do (rtl_awdl_umi_tag). Payload byte 0:
+ * bit 6 lifetime over, bit 7 retry over; byte 2 bits 5:0 data retries;
+ * byte 5 final rate; byte 6 bits 7:2 the frame's SW_DEFINE (rtw88's
+ * GET_CCX_REPORT_SEQNUM_V0). */
+void rtl8814native_awdl_ccx_report(const u8 *pl, u8 len)
+{
+	int lost, k;
+	u8 retries, sn;
+	u32 n;
+
+	if (!pl || len < 6)
+		return;
+	for (k = 0; k < 8; k++)
+		__atomic_store_n(&rtl_awdl_af.raw[k], k < len ? pl[k] : 0, __ATOMIC_RELAXED);
+	lost = (pl[0] & 0xC0) != 0;
+	retries = pl[2] & 0x3F;
+	sn = len >= 7 ? pl[6] & 0xFC : 0;
+	if (sn) {
+		struct rtl_awdl_umi_wait *w = &rtl_awdl_umi_wait[sn >> 2];
+		if (!__atomic_exchange_n(&w->busy, 0, __ATOMIC_ACQUIRE)) {
+			__atomic_fetch_add(&rtl_awdl_af.unmatched, 1, __ATOMIC_RELAXED);
+			return;
+		}
+		n = __atomic_load_n(&rtl_awdl_af.head, __ATOMIC_RELAXED);
+		_rtw_memcpy(rtl_awdl_af.e[n % RTL_RADIO_AFSTAT_RING].mac, w->mac, ETH_ALEN);
+		rtl_awdl_af.e[n % RTL_RADIO_AFSTAT_RING].status = lost ? 1 : 0;
+		rtl_awdl_af.e[n % RTL_RADIO_AFSTAT_RING].retries = retries;
+		__atomic_store_n(&rtl_awdl_af.head, n + 1, __ATOMIC_RELEASE);
+		return;
+	}
+	k = lost ? 3 : retries == 0 ? 0 : retries == 1 ? 1 : 2;
 	__atomic_fetch_add(&rtl_awdl_txstat[k], 1, __ATOMIC_RELAXED);
-	__atomic_store_n(&rtl_awdl_txstat[4], rate, __ATOMIC_RELAXED);
+	__atomic_store_n(&rtl_awdl_txstat[4], pl[5], __ATOMIC_RELAXED);
 	__atomic_fetch_add(&rtl_awdl_txstat[5], 1, __ATOMIC_RELAXED);
+}
+
+/* A unicast AWDL action frame (a UMI) about to go out: a report number,
+ * 4..252 in steps of 4, and the receiver kept under it until the report. */
+static u8 rtl_awdl_umi_tag(const u8 *frame)
+{
+	u8 sn = (u8)(__atomic_add_fetch(&rtl_awdl_umi_sn, 1, __ATOMIC_RELAXED) % 63 + 1) << 2;
+	struct rtl_awdl_umi_wait *w = &rtl_awdl_umi_wait[sn >> 2];
+
+	_rtw_memcpy(w->mac, GetAddr1Ptr(frame), ETH_ALEN);
+	__atomic_store_n(&w->busy, 1, __ATOMIC_RELEASE);
+	__atomic_fetch_add(&rtl_awdl_af.sent, 1, __ATOMIC_RELAXED);
+	return sn;
+}
+
+void rtl8814native_radio_awdl_afstat(struct rtl_radio_awdl_afstat *out)
+{
+	u32 head = __atomic_load_n(&rtl_awdl_af.head, __ATOMIC_ACQUIRE);
+
+	_rtw_memcpy(out, &rtl_awdl_af, sizeof(*out));
+	out->head = head;
 }
 
 void rtl8814native_radio_awdl_txstat(struct rtl_radio_awdl_txstat *out)
@@ -279,6 +567,12 @@ int rtl8814native_radio_tx_80211(const uint8_t *frame, uint32_t len)
 			pattrib->rtl_awdl_rpt = 1;
 		}
 	}
+	/* A UMI (unicast AWDL action frame): its report tells the layer whether
+	 * the peer acknowledged it, for the family's event 69. */
+	if (awdl && !data && !IS_MCAST(GetAddr1Ptr(pframe)) && len >= WLAN_HDR_A3_LEN + 5 &&
+	    pframe[0] == 0xD0 && pframe[24] == 0x7F && pframe[25] == 0x00 && pframe[26] == 0x17 &&
+	    pframe[27] == 0xF2 && pframe[28] == 0x08)
+		pattrib->rtl_awdl_rpt = rtl_awdl_umi_tag(pframe);
 	pattrib->pktlen = len;
 	pattrib->last_txcmdsz = len;
 
@@ -453,6 +747,30 @@ static void rtl_awdl_wait_null_out(_adapter *padapter)
 }
 
 /*
+ * The scan's power-save announcements while it goes one channel per return
+ * (rtl_awdl_scan_step_now). Without CONFIG_XMIT_ACK the ack wait of
+ * issue_nulldata is a fixed 50 ms sleep, and the scan waits 50 ms more after
+ * the PM null before it leaves (SCAN_PS_ANNC_WAIT): with the PM-clear null of
+ * the return, 150 of the about 395 ms each channel kept AWDL off the air, the
+ * dwell being 100 (2026-11-17, test_uc scanlog, llwchan at 1000/s). In a step
+ * the null goes as the AWDL switch sends it: no ack wait, and with PM set the
+ * scan leaves once it is out of the chip, up to 2 ms later. Returns false
+ * outside a step, where rtw_ps_annc runs as before; true once the null went,
+ * or with no AP to tell.
+ */
+u8 rtl8814native_awdl_scan_ps_annc(_adapter *padapter, u8 ps)
+{
+	if (!rtl_awdl_scan_step_now)
+		return 0;
+	if (MLME_IS_STA(padapter) && is_client_associated_to_ap(padapter) == _TRUE) {
+		issue_nulldata(padapter, NULL, ps, 0, 0);
+		if (ps)
+			rtl_awdl_wait_null_out(padapter);
+	}
+	return 1;
+}
+
+/*
  * phydm recalibrates I/Q when the chip's temperature moves (thermal tracking in
  * the watchdog, command thread). The calibration takes hundreds of ms in RF
  * loopback and ends restoring the registers it saved. It already waits for a
@@ -506,28 +824,28 @@ int rtl8814native_awdl_cal_stats(uint32_t *out)
  * running and either no scan or a scan in its back-op, which then holds the
  * next scan channel until the return.
  */
-int rtl8814native_radio_awdl_offch(uint8_t ch)
+/* the hop itself, with offch_mutex held */
+static int rtl_awdl_offch_locked(_adapter *padapter, u8 ch)
 {
-	_adapter *padapter = rtl8814native_get_primary_adapter();
-	struct mlme_ext_priv *pmlmeext;
-	struct rf_ctl_t *rfctl;
-	HAL_DATA_TYPE *hal;
-	u8 home, bw, offset, same;
+	struct mlme_ext_priv *pmlmeext = &padapter->mlmeextpriv;
+	struct rf_ctl_t *rfctl = adapter_to_rfctl(padapter);
+	HAL_DATA_TYPE *hal = GET_HAL_DATA(padapter);
+	u8 home = pmlmeext->cur_channel, bw, offset, same;
 	int rc = 0;
 
-	if (!padapter || !padapter->bup || RTW_CANNOT_RUN(padapter))
-		return -ENODEV;
-	if (ch && rtw_chset_search_ch(adapter_to_chset(padapter), ch) < 0)
-		return -EINVAL;
-	pmlmeext = &padapter->mlmeextpriv;
-	rfctl = adapter_to_rfctl(padapter);
-	hal = GET_HAL_DATA(padapter);
-	home = pmlmeext->cur_channel;
-
-	_enter_critical_mutex(&rfctl->offch_mutex, NULL);
 	if (!ch || ch == home) {
 		/* back to the BSS; a scan that ran meanwhile already brought it back */
 		if (rfctl->offch_state == OFFCHS_AWDL) {
+			if (rtl8814native_awdl_backop &&
+			    rtl8814native_uptime_us() - rtl_awdl_visit_us >= RTL_AWDL_SCAN_STEP_VISIT_US) {
+				__atomic_store_n(&rtl_awdl_backop_slots, rtl_awdl_backop_slots + 1,
+				                 __ATOMIC_RELAXED);
+				/* The return may end now: run the scan's handler at once
+				 * instead of at its next 50 ms poll, which left the radio
+				 * home 23-30 ms before the next channel (2026-11-17, driver
+				 * 83DAC0F6). */
+				set_survey_timer(pmlmeext, 1);
+			}
 			/* the HAL reloads the TX power anyway if the channel index moves */
 			hal->awdl_keep_txpwr = 1;
 			set_channel_bwmode(padapter, home, pmlmeext->cur_ch_offset, pmlmeext->cur_bwmode);
@@ -556,6 +874,7 @@ int rtl8814native_radio_awdl_offch(uint8_t ch)
 		rtw_hal_macid_wakeup(padapter, RTW_DEFAULT_MGMT_MACID);
 		issue_nulldata(padapter, NULL, 1, 0, 0);
 		rtl_awdl_wait_null_out(padapter);
+		rtl_awdl_visit_us = rtl8814native_uptime_us();
 	}
 	bw = pmlmeext->cur_bwmode;
 	offset = HAL_PRIME_CHNL_OFFSET_DONT_CARE;
@@ -567,10 +886,85 @@ int rtl8814native_radio_awdl_offch(uint8_t ch)
 		hal->awdl_keep_txpwr = 1;
 		set_channel_bwmode(padapter, ch, offset, bw);
 		hal->awdl_keep_txpwr = 0;
+	} else if (ch > 14 && home > 14 && bw != CHANNEL_WIDTH_20 &&
+	           rtw_get_offset_by_chbw(ch, bw, &offset) &&
+	           rtw_chset_is_chbw_valid(adapter_to_chset(padapter), ch, bw, offset)) {
+		/* Another 5 GHz block at the BSS width (BSS on 52/80 MHz, AWDL on
+		 * 149): band and width stay, so the HAL keeps its width-only
+		 * registers (db67bb2) and only the TX power follows the new index.
+		 * At 20 MHz every hop and return reprogrammed the width, 6.2-6.8 ms
+		 * each way (2026-11-19, driver F9ED9F6A). AWDL frames keep their
+		 * own width (rtl_awdl_agg_cfg) on the primary, as inside the BSS's
+		 * block. */
+		set_channel_bwmode(padapter, ch, offset, bw);
 	} else {
 		set_channel_bwmode(padapter, ch, HAL_PRIME_CHNL_OFFSET_DONT_CARE, CHANNEL_WIDTH_20);
 	}
 out:
+	if (check_fwstate(&padapter->mlmepriv, _FW_UNDER_SURVEY) ||
+	    (rtl_slog_scan_end_us && rtl8814native_uptime_us() - rtl_slog_scan_end_us < 1000000))
+		rtl8814native_slog(SL_OFFCH, ch, (u16)rc);
+	return rc;
+}
+
+int rtl8814native_radio_awdl_offch(uint8_t ch)
+{
+	_adapter *padapter = rtl8814native_get_primary_adapter();
+	struct rf_ctl_t *rfctl;
+	int rc;
+
+	if (!padapter || !padapter->bup || RTW_CANNOT_RUN(padapter))
+		return -ENODEV;
+	if (ch && rtw_chset_search_ch(adapter_to_chset(padapter), ch) < 0)
+		return -EINVAL;
+	rfctl = adapter_to_rfctl(padapter);
+	_enter_critical_mutex(&rfctl->offch_mutex, NULL);
+	rc = rtl_awdl_offch_locked(padapter, ch);
+	_exit_critical_mutex(&rfctl->offch_mutex, NULL);
+	return rc;
+}
+
+/*
+ * RTL_OPT_AWDL_TESTHOP (test_uc testhop): one AWDL-style visit to ch and back
+ * with offch_mutex held all the way, so the layer's own hops wait. For the hop
+ * paths the BSS and the AWDL channel in use do not reach (another 5 GHz block
+ * with the BSS in 149's): timings in test_uc scanlog, registers with peek/rf
+ * during the dwell. No AWDL frames go out there. *out = the way out in 10 us
+ * units (low 16 bits) and the return (high 16).
+ */
+int rtl8814native_awdl_test_hop(u8 ch, u32 dwell_ms, u32 *out)
+{
+	_adapter *padapter = rtl8814native_get_primary_adapter();
+	struct rf_ctl_t *rfctl;
+	u64 t0, t1, t2, t3;
+	int rc;
+
+	if (!padapter || !padapter->bup || RTW_CANNOT_RUN(padapter))
+		return -ENODEV;
+	if (!ch || dwell_ms > 2000 || rtw_chset_search_ch(adapter_to_chset(padapter), ch) < 0 ||
+	    ch == padapter->mlmeextpriv.cur_channel)
+		return -EINVAL;
+	rfctl = adapter_to_rfctl(padapter);
+	_enter_critical_mutex(&rfctl->offch_mutex, NULL);
+	if (rfctl->offch_state != OFFCHS_NONE) {
+		_exit_critical_mutex(&rfctl->offch_mutex, NULL);
+		return -EBUSY;
+	}
+	t0 = rtl8814native_uptime_us();
+	rc = rtl_awdl_offch_locked(padapter, ch);
+	t1 = rtl8814native_uptime_us();
+	if (!rc) {
+		if (dwell_ms)
+			rtw_msleep_os(dwell_ms);
+		t2 = rtl8814native_uptime_us();
+		rtl_awdl_offch_locked(padapter, 0);
+		t3 = rtl8814native_uptime_us();
+		if (out) {
+			u64 a = (t1 - t0) / 10, b = (t3 - t2) / 10;
+
+			*out = (u32)(a > 0xffff ? 0xffff : a) | ((u32)(b > 0xffff ? 0xffff : b) << 16);
+		}
+	}
 	_exit_critical_mutex(&rfctl->offch_mutex, NULL);
 	return rc;
 }

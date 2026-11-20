@@ -31,6 +31,7 @@
 #include <CommonCrypto/CommonKeyDerivation.h>
 #include "../Source/Driver/RTLRadioABI.h"
 #include "../Source/Driver/RTLJoinLog.h"
+#include "../Source/Driver/RTLScanLog.h"
 #include "../Source/Driver/ReplayCheck.h"
 #include "../Source/Driver/RTLAwdlSim.h"
 #include <mach/mach_time.h>
@@ -51,6 +52,7 @@ enum {
     kRTLUC_AwdlSimCtl    = 12,
     kRTLUC_AwdlSimInject = 13,
     kRTLUC_AwdlSimRead   = 14,
+    kRTLUC_GetScanLog    = 15,
 };
 
 #define RX_XFER_LOG_N 16
@@ -544,6 +546,72 @@ static void show_rxlog(io_connect_t connect) {
         printf("\n%*s tail:", 19, "");
         for (uint32_t i = 0; i < m; i++) printf(" %02X", x->tail[i]);
         printf("\n");
+    }
+}
+
+/* The scan step log, oldest first: uptime, time since the previous event, event. */
+static void show_scanlog(io_connect_t connect) {
+    static const char *states[] = {
+        "DISABLE", "START", "PS_ANNC_WAIT", "ENTER", "PROCESS", "BACKING_OP", "BACK_OP",
+        "LEAVING_OP", "LEAVE_OP", "SW_ANTDIV_BL", "TO_P2P_LISTEN", "P2P_LISTEN", "COMPLETE",
+    };
+    static struct rtl_slog log;
+    size_t sz = sizeof(log);
+    memset(&log, 0, sizeof(log));
+    kern_return_t kr = IOConnectCallStructMethod(connect, kRTLUC_GetScanLog, NULL, 0, &log, &sz);
+    if (kr != KERN_SUCCESS) {
+        printf("[-] scanlog: 0x%x (driver without the scan log?)\n", kr);
+        return;
+    }
+    uint32_t n = log.next < RTL_SLOG_N ? log.next : RTL_SLOG_N;
+    uint32_t first = log.next - n;
+    printf("%u events, last %u shown\n", log.next, n);
+    uint32_t prev = 0;
+    for (uint32_t k = 0; k < n; k++) {
+        const struct rtl_slog_ev *e = &log.e[(first + k) % RTL_SLOG_N];
+        double dt = k ? (uint32_t)(e->t_us - prev) / 1000.0 : 0;
+        prev = e->t_us;
+        printf("%10.3f ms  +%8.3f  ", e->t_us / 1000.0, dt);
+        switch (e->ev) {
+        case SL_STATE:
+            printf("state %s (idx %u)\n", e->a < 13 ? states[e->a] : "?", e->b);
+            break;
+        case SL_HDL:
+            printf("  handler in %s (idx %u)\n", e->a < 13 ? states[e->a] : "?", e->b);
+            break;
+        case SL_CH:
+            printf("  channel %u, dwell %u ms\n", e->a, e->b);
+            break;
+        case SL_TXBUF:
+            printf("  TX buffer wait %.1f ms (%s)\n", e->b / 10.0, e->a ? "leaving a return" : "scan start");
+            break;
+        case SL_OFFCH:
+            printf("  AWDL radio to %u%s, rc %d\n", e->a, e->a ? "" : " (home)", (int16_t)e->b);
+            break;
+        case SL_CLOSE_WAIT:
+            printf("  return over, AWDL slot still running (%u ms in)\n", e->b);
+            break;
+        case SL_STEP:
+            printf("scan start: one channel per return %u, unlinked hold %u\n", e->a, e->b);
+            break;
+        case SL_MARK: {
+            static const char *marks[] = { "?", "channel set", "MSR", "survey register", "IGI",
+                                           "MAC IDs awake", "PM null" };
+            printf("    return: %s done\n", e->a < 7 ? marks[e->a] : "?");
+            break;
+        }
+        case SL_PHY: {
+            static const char *parts[] = { "", "channel", "width", "TX power", "IQK", "  band", "  RF channel",
+                                           "fw switch (H2C 0x1C)", "  fw wait for C2H", "spur" };
+            if (e->a == 0)
+                printf("      HAL set: channel %u, width %u\n", e->b & 0xff, e->b >> 8);
+            else
+                printf("      HAL %s %.2f ms\n", e->a < 10 ? parts[e->a] : "?", e->b / 100.0);
+            break;
+        }
+        default:
+            printf("? ev %u a %u b %u\n", e->ev, e->a, e->b);
+        }
     }
 }
 
@@ -1153,6 +1221,8 @@ int main(int argc, char **argv) {
             printf("RF[%c][0x%02X] = 0x%05X\n", 'A' + (int)path, reg, v);
     } else if (strcmp(argv[1], "joinlog") == 0) {
         show_joinlog(connect);
+    } else if (strcmp(argv[1], "scanlog") == 0) {
+        show_scanlog(connect);
     } else if (strcmp(argv[1], "knob") == 0 && argc >= 4) {
         /* knob 1 <0|1|255>: RX A-MPDU accept. knob 2 <0|1>: protect robust management frames we send. */
         uint64_t in[2] = { strtoul(argv[2], NULL, 0), strtoul(argv[3], NULL, 0) };
@@ -1186,6 +1256,76 @@ int main(int argc, char **argv) {
             printf("[+] AWDL scan hold: %u -> %u s (0 = scans never return to the parked channel)\n", prev, s);
         else
             printf("[-] AWDL scan hold %u refused (0 to 60 s; older driver?)\n", s);
+    } else if (strcmp(argv[1], "awdlfullpwr") == 0 && argc >= 3) {
+        static const char *modes[] = { "OFDM 6/12/24 + data rate", "full table", "all OFDM" };
+        uint32_t prev, on = (uint32_t)strtoul(argv[2], NULL, 0);
+        if (reg_access(connect, 3, 4, 7 /* RTL_OPT_AWDL_FULLPWR */, on, &prev) == 0)
+            printf("[+] AWDL visit TX power: %s -> %s\n", modes[prev > 2 ? 1 : prev], modes[on > 2 ? 1 : on]);
+        else
+            printf("[-] AWDL visit TX power option refused (older driver?)\n");
+    } else if (strcmp(argv[1], "awdlfwchsw") == 0) {
+        uint32_t prev, st;
+        if (argc >= 3) {
+            uint32_t on = (uint32_t)strtoul(argv[2], NULL, 0);
+            if (reg_access(connect, 3, 4, 9 /* RTL_OPT_AWDL_FWCHSW */, on, &prev) == 0)
+                printf("[+] AWDL firmware channel switch: %s -> %s\n", prev ? "on" : "off", on ? "on" : "off");
+            else
+                printf("[-] AWDL firmware channel switch option refused (older driver?)\n");
+        }
+        if (reg_access(connect, 3, 4, 10 /* RTL_OPT_AWDL_FWCHSW_STATS */, 0, &st) == 0)
+            printf("[+] firmware switches %u, timeouts %u\n", st & 0xFFFF, st >> 16);
+    } else if (strcmp(argv[1], "pollreg") == 0 && argc >= 4) {
+        /* prints every change of up to 4 registers with the uptime in ms (the scanlog's clock) */
+        uint32_t ms = (uint32_t)strtoul(argv[2], NULL, 0), addr[4], last[4], n = 0;
+        mach_timebase_info_data_t tb;
+        mach_timebase_info(&tb);
+        for (int i = 3; i < argc && n < 4; i++)
+            addr[n++] = (uint32_t)strtoul(argv[i], NULL, 0);
+        uint64_t t0 = mach_absolute_time() * tb.numer / tb.denom, now = t0;
+        uint32_t reads = 0;
+        for (uint32_t i = 0; i < n; i++) {
+            if (reg_access(connect, 0, 4, addr[i], 0, &last[i]) != 0)
+                return 1;
+            printf("%12.3f ms  0x%03x = 0x%08x\n", t0 / 1e6, addr[i], last[i]);
+        }
+        while (now - t0 < (uint64_t)ms * 1000000ull) {
+            for (uint32_t i = 0; i < n; i++) {
+                uint32_t v;
+                if (reg_access(connect, 0, 4, addr[i], 0, &v) != 0)
+                    return 1;
+                now = mach_absolute_time() * tb.numer / tb.denom;
+                reads++;
+                if (v != last[i]) {
+                    printf("%12.3f ms  0x%03x = 0x%08x (was 0x%08x)\n", now / 1e6, addr[i], v, last[i]);
+                    last[i] = v;
+                }
+            }
+        }
+        printf("%u reads in %u ms\n", reads, ms);
+    } else if (strcmp(argv[1], "testhop") == 0 && argc >= 3) {
+        uint32_t ch = (uint32_t)strtoul(argv[2], NULL, 0) & 0xFF;
+        uint32_t dwell = argc >= 4 ? (uint32_t)strtoul(argv[3], NULL, 0) : 30;
+        int n = argc >= 5 ? atoi(argv[4]) : 1;
+        for (int i = 0; i < n; i++) {
+            uint32_t v;
+            if (reg_access(connect, 3, 4, 11 /* RTL_OPT_AWDL_TESTHOP */, ch | (dwell << 8), &v) == 0)
+                printf("[+] hop to %u: out %.2f ms, back %.2f ms (dwell %u ms)\n", ch, (v & 0xFFFF) / 100.0,
+                       (v >> 16) / 100.0, dwell);
+            else
+                printf("[-] test hop to %u refused (busy, not linked, bad channel or older driver)\n", ch);
+            usleep(200000);
+        }
+    } else if (strcmp(argv[1], "usbbench") == 0) {
+        static const char *names[] = { "", "raw sync", "raw async", "rtw_write32" };
+        int rounds = argc >= 3 ? atoi(argv[2]) : 5;
+        for (int r = 0; r < rounds; r++)
+            for (uint32_t m = 1; m <= 3; m++) {
+                uint32_t us;
+                if (reg_access(connect, 3, 4, 8 /* RTL_OPT_USB_BENCH */, m, &us) == 0)
+                    printf("[+] 200 writes %-11s %6u us  %.3f ms each\n", names[m], us, us / 200000.0);
+                else
+                    printf("[-] usb bench mode %u refused (older driver?)\n", m);
+            }
     } else if (strcmp(argv[1], "awdlcal") == 0) {
         uint32_t v;
         if (reg_access(connect, 3, 4, 6 /* RTL_OPT_AWDL_CAL */, 0, &v) == 0)
@@ -1224,6 +1364,11 @@ int main(int argc, char **argv) {
         printf("  %s awdlbw <20|40|80>\n", argv[0]);
         printf("  %s awdlprot <0|1|2>\n", argv[0]);
         printf("  %s awdlscan <seconds>\n", argv[0]);
+        printf("  %s awdlfullpwr <0|1|2>   (AWDL visit TX power: 0 OFDM 6/12/24 + data rate, 1 full table, 2 all OFDM)\n", argv[0]);
+        printf("  %s awdlfwchsw [0|1]    (AWDL hops to another 5 GHz block by firmware H2C 0x1C; counters)\n", argv[0]);
+        printf("  %s pollreg <ms> <addr> [addr ...]   (every change of up to 4 registers, scanlog clock)\n", argv[0]);
+        printf("  %s testhop <ch> [dwell ms] [count]   (one AWDL-style visit to ch and back)\n", argv[0]);
+        printf("  %s usbbench [rounds]   (200 REG_MACID rewrites: sync, async, driver path)\n", argv[0]);
         printf("  %s awdlcal\n", argv[0]);
         printf("  %s recycle <0|1>\n", argv[0]);
         printf("  %s perfreset\n", argv[0]);

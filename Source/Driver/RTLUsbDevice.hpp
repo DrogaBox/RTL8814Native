@@ -64,6 +64,12 @@ public:
                              uint16_t value, uint16_t index,
                              void *buffer, uint16_t length,
                              uint32_t timeoutMs);
+        /* n vendor writes of value to addr through the interface, one
+         * deviceRequest at a time or all queued with one wait at the end;
+         * *us = elapsed. Only for a register where writing value is
+         * harmless (RTL_OPT_USB_BENCH). */
+        int  benchControlWrite(uint16_t addr, uint32_t value, uint32_t n,
+                               bool async, uint64_t *us);
         int  bulkTransfer(uint8_t endpoint, uint8_t direction,
                           void *buffer, uint32_t length,
                           uint32_t *transferred, uint32_t timeoutMs);

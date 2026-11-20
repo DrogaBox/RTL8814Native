@@ -12,6 +12,7 @@
 #include "VendorGlue.hpp"
 #include "RTLRadioABI.h"
 #include "RTLJoinLog.h"
+#include "RTLScanLog.h"
 #include "RTLAwdlSim.h"
 
 #include <IOKit/IOLib.h>
@@ -120,7 +121,7 @@ IOReturn RTLUserClient::externalMethod(uint32_t selector,
         }
 
         case kRTLUC_TriggerScan: {
-                int rc = rtl8814native_trigger_scan(NULL, 0);
+                int rc = rtl8814native_trigger_scan(NULL, 0, 0);
                 return (rc == 0) ? kIOReturnSuccess : kIOReturnBusy;
         }
 
@@ -214,6 +215,14 @@ IOReturn RTLUserClient::externalMethod(uint32_t selector,
                         return kIOReturnBadArgument;
                 rtl8814native_get_join_log((struct rtl_jlog *)args->structureOutput);
                 args->structureOutputSize = sizeof(struct rtl_jlog);
+                return kIOReturnSuccess;
+        }
+
+        case kRTLUC_GetScanLog: {
+                if (!args->structureOutput || args->structureOutputSize < sizeof(struct rtl_slog))
+                        return kIOReturnBadArgument;
+                rtl8814native_get_scan_log((struct rtl_slog *)args->structureOutput);
+                args->structureOutputSize = sizeof(struct rtl_slog);
                 return kIOReturnSuccess;
         }
 

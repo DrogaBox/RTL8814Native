@@ -210,7 +210,7 @@ esac
 
 mkdir -p "$OBJ" "$KEXT/Contents/MacOS"
 
-NEWEST_HDR="$(find Source/Compat/include Source/Driver -name '*.h' -o -name '*.hpp' | xargs ls -t 2>/dev/null | head -n 1 || true)"
+NEWEST_HDR="$(find Source/Compat/include Source/Driver Source/rtl8814au \( -name '*.h' -o -name '*.hpp' \) -print0 | xargs -0 ls -t 2>/dev/null | head -n 1 || true)"
 
 compile() {
     local src="$1"; local force="${2:-0}"; local ext="${src##*.}"

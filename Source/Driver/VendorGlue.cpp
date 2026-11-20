@@ -233,6 +233,17 @@ int rtl_netif_rx(struct net_device *dev, struct sk_buff *skb)
 
 /* AWDL RX entry from validate_recv_frame (core/rtw_recv.c): nonzero when the
  * radio ABI AWDL hook took the frame */
+extern "C" int rtl8814native_usb_bench(uint16_t addr, uint32_t value, uint32_t n, int async,
+                                       uint32_t *us)
+{
+        RTLUsbDevice *u = usb();
+        if (!u || !us)
+                return -ENODEV;
+        uint64_t t = 0;
+        int rc = u->benchControlWrite(addr, value, n, async != 0, &t);
+        *us = (uint32_t)(t < 0xFFFFFFFFull ? t : 0xFFFFFFFFull);
+        return rc;
+}
 extern "C" int rtl8814native_awdl_rx(struct net_device *dev, const uint8_t *frame,
                                      uint32_t len, int8_t rssi, uint8_t channel)
 {
