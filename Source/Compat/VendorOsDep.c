@@ -167,6 +167,7 @@ volatile uint32_t g_rx_frames_decoded = 0;
 struct rtl8814_trx_diag g_trx_diag;
 struct rtl8814_rx_log g_rx_log;
 struct rtl8814_rate_diag g_rate_diag;   /* RX-side fields only; the rest is filled on read */
+struct rtl8814_c2h_diag g_c2h_diag;     /* C2H ids + raw ring, RX path only */
 volatile uint32_t g_rx_skb_recycle = 1;  /* live option RTL_OPT_RX_SKB_RECYCLE */
 
 static inline uint64_t rx_now_ns(void)
@@ -587,14 +588,43 @@ int recvbuf2recvframe(_adapter *padapter, _pkt *pskb)
 			else
 				g_trx_diag.rx_other_rpt++;
 			if (pattrib->pkt_rpt_type == C2H_PACKET) {
-				u8 cid, cseq, cplen, *cpl;
-				if (rtw_hal_c2h_pkt_hdr_parse(padapter, precvframe->u.hdr.rx_data,
-							      pattrib->pkt_len, &cid, &cseq, &cplen, &cpl) != _SUCCESS)
+				u8 cid = 0, cseq = 0, cplen = 0, *cpl;
+				u8 *craw = precvframe->u.hdr.rx_data;
+				u8 cfail = 0;
+				if (rtw_hal_c2h_pkt_hdr_parse(padapter, craw,
+							      pattrib->pkt_len, &cid, &cseq, &cplen, &cpl) != _SUCCESS) {
 					g_rate_diag.c2h_parse_fail++;
-				else if (cid < 16)
-					g_rate_diag.c2h_id_cnt[cid]++;
-				else
-					g_rate_diag.c2h_id_other++;
+					cfail = 1;
+				} else {
+					g_c2h_diag.id_all[cid]++;
+					if (cid < 16)
+						g_rate_diag.c2h_id_cnt[cid]++;
+					else
+						g_rate_diag.c2h_id_other++;
+				}
+				{
+					struct rtl8814_c2h_raw *e = NULL;
+					if (cfail || (cid != 0x03 && cid != 0x0C)) {
+						e = &g_c2h_diag.ring[g_c2h_diag.ring_total % RTL_C2H_RING_N];
+						g_c2h_diag.ring_total++;
+					} else if (cid == 0x03) {
+						e = &g_c2h_diag.ccx_last;
+						g_c2h_diag.ccx_seen++;
+					}
+					if (e) {
+						u16 n = pattrib->pkt_len < sizeof(e->raw) ? pattrib->pkt_len : sizeof(e->raw);
+						e->pkt_len = pattrib->pkt_len;
+						e->id = cid;
+						e->seq = cseq;
+						e->plen = cplen;
+						e->flags = cfail;
+						e->drvinfo_sz = pattrib->drvinfo_sz;
+						e->shift_sz = pattrib->shift_sz;
+						_rtw_memset(e->raw, 0, sizeof(e->raw));
+						if (craw)
+							_rtw_memcpy(e->raw, craw, n);
+					}
+				}
 				rtw_hal_c2h_pkt_pre_hdl(padapter, precvframe->u.hdr.rx_data, pattrib->pkt_len);
 			}
 			rtw_free_recvframe(precvframe, pfree_recv_queue);

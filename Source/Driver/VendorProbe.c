@@ -26,10 +26,12 @@ void rtl8814native_get_join_log(struct rtl_jlog *out)
 }
 extern u8 rtl8814native_awdl_backop;
 extern u8 rtl8814native_awdl_fullpwr;
+extern u8 rtl8814native_awdl_retry;
 extern u8 rtl8814native_awdl_fwchsw;
 /* kernel KPI, for RTL_OPT_USB_BENCH */
 extern uint64_t mach_absolute_time(void);
 extern void absolutetime_to_nanoseconds(uint64_t abstime, uint64_t *result);
+extern int PE_parse_boot_argn(const char *arg_string, void *arg_ptr, int max_arg);
 extern volatile uint32_t g_rx_reassemble;
 extern volatile uint32_t g_rx_skb_recycle;
 static uint32_t g_bulk_in_mps;
@@ -546,7 +548,22 @@ int rtl8814native_vendor_probe(struct usb_device *udev, unsigned long driver_inf
 	 * and writes 0x05=0x80 (USB disconnect); the chip re-enumerates on the
 	 * SuperSpeed lanes and a new kext instance probes it. In SS it clears
 	 * the switch bits. ISSUED is kept for the kext's lifetime so that a chip
-	 * which falls back to HS is brought up in HS instead of looping. */
+	 * which falls back to HS is brought up in HS instead of looping.
+	 *
+	 * The HS->SS switch is opt-in (boot-arg rtlusb3=1). When the SS lanes do
+	 * not link, the chip has already left the bus after 0x05=0x80 and never
+	 * comes back: Wi-Fi stays gone until a manual replug (measured
+	 * 2026-11-21, SS companion port with kPortStatConnectCount=0). Without
+	 * the boot-arg the chip stays in HS and no 0x74/0x70/0x3e/0x3d/0x05
+	 * write is issued. A chip that already enumerates in SS is finalized
+	 * either way. */
+	{
+		uint32_t usb3 = 0;
+		if (PE_parse_boot_argn("rtlusb3", &usb3, sizeof(usb3)) && usb3 == 1)
+			g_usb_switch |= RTL_USB_SWITCH_OPTED_IN;
+		else
+			g_usb_switch &= ~RTL_USB_SWITCH_OPTED_IN;
+	}
 	if (pHalData && pHalData->EEPROMUsbSwitch) {
 		g_usb_switch |= RTL_USB_SWITCH_EFUSE_OK;
 		if (IS_SUPER_SPEED_USB(g_padapter)) {
@@ -554,7 +571,8 @@ int rtl8814native_vendor_probe(struct usb_device *udev, unsigned long driver_inf
 			rtw_hal_set_hwreg(g_padapter, HW_VAR_USB_MODE, &unused);
 			g_usb_switch |= RTL_USB_SWITCH_SS_FINALIZED;
 			rtl_printk("RTL8814Native: running in USB 3.0 mode\n");
-		} else if (IS_HIGH_SPEED_USB(g_padapter) && !(g_usb_switch & RTL_USB_SWITCH_ISSUED)) {
+		} else if (IS_HIGH_SPEED_USB(g_padapter) && (g_usb_switch & RTL_USB_SWITCH_OPTED_IN) &&
+			   !(g_usb_switch & RTL_USB_SWITCH_ISSUED)) {
 			u8 disconnected = _FALSE;
 			g_usb_switch |= RTL_USB_SWITCH_ISSUED;
 			rtw_hal_set_hwreg(g_padapter, HW_VAR_USB_MODE, &disconnected);
@@ -1494,6 +1512,7 @@ void rtl8814native_get_link_status(struct rtl8814_link_status *out)
 		out->rate.reg_rxdma_mode = rtw_read32(g_padapter, REG_RXDMA_MODE_8814A);
 	}
 	rtl8814_fill_rate_diag(&out->rate);
+	_rtw_memcpy(&out->c2h, &g_c2h_diag, sizeof(out->c2h));
 
 	if (out->connected) {
 		WLAN_BSSID_EX *cur = &pmlmepriv->cur_network.network;
@@ -1562,6 +1581,13 @@ int rtl8814native_reg_access(uint32_t op, uint32_t width, uint32_t addr, uint32_
 		case RTL_OPT_AWDL_FULLPWR:
 			*out = rtl8814native_awdl_fullpwr;
 			rtl8814native_awdl_fullpwr = value > 2 ? 1 : (u8)value;
+			return 0;
+		case RTL_OPT_AWDL_RETRY:
+			if (value > 63)
+				return -EINVAL;
+			*out = __atomic_load_n(&rtl8814native_awdl_retry, __ATOMIC_RELAXED);
+			if (value)
+				__atomic_store_n(&rtl8814native_awdl_retry, (u8)value, __ATOMIC_RELAXED);
 			return 0;
 		case RTL_OPT_AWDL_FWCHSW:
 			*out = rtl8814native_awdl_fwchsw;

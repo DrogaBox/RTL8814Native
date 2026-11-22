@@ -129,8 +129,23 @@ enum {
 	RTL_OPT_AWDL_FWCHSW = 9,    /* 1: AWDL hops to another 5 GHz block switch by firmware (H2C 0x1C) */
 	RTL_OPT_AWDL_FWCHSW_STATS = 10, /* read only: firmware switches done (low 16), timeouts (high 16) */
 	RTL_OPT_AWDL_TESTHOP = 11,  /* value = channel | dwell ms << 8: one AWDL-style visit and back; out = 10 us units, out low 16, back high 16 */
+	RTL_OPT_AWDL_RETRY = 12,   /* retry limit of unicast AWDL frames, 1..63; 0 reads it; out = previous */
 };
 extern struct rtl8814_trx_diag g_trx_diag;
+
+/* One raw C2H packet as handed to rtw_hal_c2h_pkt_hdr_parse (rx_data: RX desc,
+ * drvinfo and shift already skipped) */
+struct rtl8814_c2h_raw {
+	uint16_t pkt_len;           /* RX desc pkt_len */
+	uint8_t  id;                /* parsed: raw[0] */
+	uint8_t  seq;               /* parsed: raw[1] */
+	uint8_t  plen;              /* parsed: pkt_len - 2 (truncated to 8 bits) */
+	uint8_t  flags;             /* bit0: header parse failed */
+	uint8_t  drvinfo_sz;        /* bytes skipped after the RX desc */
+	uint8_t  shift_sz;
+	uint8_t  raw[24];           /* first min(pkt_len, 24) bytes of the buffer */
+};
+#define RTL_C2H_RING_N 8
 
 /* Negotiated PHY rate + RX aggregation (throughput investigation) */
 struct rtl8814_rate_diag {
@@ -213,6 +228,17 @@ struct rtl8814_rate_diag {
 };
 extern struct rtl8814_rate_diag g_rate_diag;
 
+/* Every C2H id + raw packets of ids other than 0x03/0x0C (written by the RX path
+ * only). Kept out of rtl8814_rate_diag so its stack copies stay small. */
+struct rtl8814_c2h_diag {
+	uint32_t id_all[256];       /* C2H packets by parsed id (0x00-0xFF) */
+	uint32_t ring_total;        /* packets written to ring; newest = ring[(total - 1) % RTL_C2H_RING_N] */
+	uint32_t ccx_seen;          /* id 0x03 packets (ccx_last valid if != 0) */
+	struct rtl8814_c2h_raw ring[RTL_C2H_RING_N];
+	struct rtl8814_c2h_raw ccx_last;
+};
+extern struct rtl8814_c2h_diag g_c2h_diag;
+
 struct rtl8814_link_status {
 	uint32_t connected;  /* 1 if _FW_LINKED */
 	uint32_t wpa2_state; /* 0=Idle, 1=WaitMsg1, 2=WaitMsg3, 3=Completed, 4=Failed */
@@ -241,6 +267,7 @@ struct rtl8814_link_status {
 	uint32_t rx_reassemble;     /* RTL_OPT_RX_REASSEMBLE */
 	uint32_t usb_switch;        /* RTL_USB_SWITCH_* flags */
 	struct rtl8814_rate_diag rate;
+	struct rtl8814_c2h_diag c2h; /* appended: tools built before it get no struct (size check) */
 };
 
 /* USB 2.0 -> 3.0 mode switch (Linux usb_reprobe_switch_usb_mode, switch_usb_mode=1) */
@@ -248,6 +275,7 @@ enum {
 	RTL_USB_SWITCH_EFUSE_OK     = 1u << 0, /* efuse 0x0e bit4: driver may switch modes */
 	RTL_USB_SWITCH_ISSUED       = 1u << 1, /* HS->SS switch + USB disconnect issued (once per kext load) */
 	RTL_USB_SWITCH_SS_FINALIZED = 1u << 2, /* enumerated SS, 0x70[1]/0x3e[0] cleared */
+	RTL_USB_SWITCH_OPTED_IN     = 1u << 3, /* boot-arg rtlusb3=1: HS->SS switch allowed */
 };
 /* vendor_probe() return value: the chip dropped off the bus to re-enumerate as USB 3.0 */
 #define RTL_PROBE_USB3_SWITCH 1

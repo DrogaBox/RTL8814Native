@@ -179,6 +179,26 @@ struct rtl8814_rate_diag {
     uint8_t  reserved5[7];
 };
 
+struct rtl8814_c2h_raw {
+    uint16_t pkt_len;
+    uint8_t  id;
+    uint8_t  seq;
+    uint8_t  plen;
+    uint8_t  flags;      /* bit0: header parse failed */
+    uint8_t  drvinfo_sz;
+    uint8_t  shift_sz;
+    uint8_t  raw[24];
+};
+#define RTL_C2H_RING_N 8
+
+struct rtl8814_c2h_diag {
+    uint32_t id_all[256];
+    uint32_t ring_total;
+    uint32_t ccx_seen;
+    struct rtl8814_c2h_raw ring[RTL_C2H_RING_N];
+    struct rtl8814_c2h_raw ccx_last;
+};
+
 struct rtl8814_link_status {
     uint32_t connected;
     uint32_t wpa2_state;
@@ -207,6 +227,7 @@ struct rtl8814_link_status {
     uint32_t rx_reassemble;
     uint32_t usb_switch;
     struct rtl8814_rate_diag rate;
+    struct rtl8814_c2h_diag c2h;
 };
 
 struct rtl_uc_join_request {
@@ -241,6 +262,17 @@ static const char *sec_name(uint8_t sec) {
     case 3: return "WPA2-PSK";
     default: return "UNKNOWN";
     }
+}
+
+static void print_c2h_raw(const char *tag, uint32_t idx, const struct rtl8814_c2h_raw *e)
+{
+    unsigned n = e->pkt_len < sizeof(e->raw) ? e->pkt_len : (unsigned)sizeof(e->raw);
+    printf("    %s #%-6u pkt_len=%-4u id=0x%02X seq=%-3u plen=%-3u drvinfo=%u shift=%u%s raw:",
+           tag, idx, e->pkt_len, e->id, e->seq, e->plen, e->drvinfo_sz, e->shift_sz,
+           (e->flags & 1) ? " PARSE_FAIL" : "");
+    for (unsigned i = 0; i < n; i++)
+        printf("%s%02X", (i % 4) == 0 ? "  " : " ", e->raw[i]);
+    printf("\n");
 }
 
 static const char *wpa2_state_name(uint32_t st) {
@@ -349,9 +381,9 @@ static void show_status(io_connect_t connect) {
         printf("[+] USB Link (HAL view)      : usb_speed=%u (%s), bulk_in_mps=%u\n", st.usb_speed,
                st.usb_speed == 3 ? "SuperSpeed" : st.usb_speed == 2 ? "High-Speed" : st.usb_speed == 1 ? "Full-Speed" : "unknown",
                st.bulk_in_mps);
-        printf("[+] USB3 Mode Switch         : efuse_allows=%s, switch_issued=%s, ss_finalized=%s\n",
+        printf("[+] USB3 Mode Switch         : efuse_allows=%s, switch_issued=%s, ss_finalized=%s, optin=%s\n",
                (st.usb_switch & 1) ? "yes" : "no", (st.usb_switch & 2) ? "yes" : "no",
-               (st.usb_switch & 4) ? "yes" : "no");
+               (st.usb_switch & 4) ? "yes" : "no", (st.usb_switch & 8) ? "yes" : "no");
         printf("[+] RX Reassembly            : %s (carry=%u, reassembled=%u, stage_dropped=%u)\n",
                st.rx_reassemble ? "ON" : "off", st.trx.rx_carry, st.trx.rx_reassembled, st.trx.rx_stage_dropped);
         printf("[+] RX Filter Registers      : RCR=0x%08X, RXFLTMAP0(mgmt)=0x%04X, RXFLTMAP2(data)=0x%04X\n",
@@ -386,6 +418,27 @@ static void show_status(io_connect_t connect) {
                 if (r->c2h_id_cnt[i])
                     printf(" 0x%02X=%u", i, r->c2h_id_cnt[i]);
             printf(" other=%u parse_fail=%u\n", r->c2h_id_other, r->c2h_parse_fail);
+            if (stSize >= sizeof(st)) {
+                const struct rtl8814_c2h_diag *c = &st.c2h;
+                printf("[+] C2H all ids              :");
+                for (int i = 0; i < 256; i++)
+                    if (c->id_all[i])
+                        printf(" 0x%02X=%u", i, c->id_all[i]);
+                printf("\n");
+                printf("[+] C2H raw ring             : total=%u (ids other than 0x03/0x0C, oldest first)\n",
+                       c->ring_total);
+                uint32_t n = c->ring_total < RTL_C2H_RING_N ? c->ring_total : RTL_C2H_RING_N;
+                for (uint32_t k = 0; k < n; k++) {
+                    uint32_t idx = c->ring_total - n + k;
+                    print_c2h_raw("ring", idx, &c->ring[idx % RTL_C2H_RING_N]);
+                }
+                printf("[+] C2H CCX (id 0x03)        : seen=%u\n", c->ccx_seen);
+                if (c->ccx_seen)
+                    print_c2h_raw("ccx", c->ccx_seen - 1, &c->ccx_last);
+            } else {
+                printf("[+] C2H all ids              : n/a (kext reply %zu B < %zu B: older kext)\n",
+                       stSize, sizeof(st));
+            }
             printf("[+] FW RA Reports            : handled=%u, last(len=%u):", r->ra_rpt_handled, r->ra_rpt_last_len);
             for (int i = 0; i < 8; i++)
                 printf(" %02X", r->ra_rpt_last[i]);
@@ -1263,6 +1316,14 @@ int main(int argc, char **argv) {
             printf("[+] AWDL visit TX power: %s -> %s\n", modes[prev > 2 ? 1 : prev], modes[on > 2 ? 1 : on]);
         else
             printf("[-] AWDL visit TX power option refused (older driver?)\n");
+    } else if (strcmp(argv[1], "awdlretry") == 0) {
+        uint32_t prev, n = argc >= 3 ? (uint32_t)strtoul(argv[2], NULL, 0) : 0;
+        if (reg_access(connect, 3, 4, 12 /* RTL_OPT_AWDL_RETRY */, n, &prev) != 0)
+            printf("[-] AWDL retry limit %u refused (1 to 63; older driver?)\n", n);
+        else if (n == 0)
+            printf("[+] AWDL unicast retry limit: %u\n", prev);
+        else
+            printf("[+] AWDL unicast retry limit: %u -> %u\n", prev, n);
     } else if (strcmp(argv[1], "awdlfwchsw") == 0) {
         uint32_t prev, st;
         if (argc >= 3) {
@@ -1365,6 +1426,7 @@ int main(int argc, char **argv) {
         printf("  %s awdlprot <0|1|2>\n", argv[0]);
         printf("  %s awdlscan <seconds>\n", argv[0]);
         printf("  %s awdlfullpwr <0|1|2>   (AWDL visit TX power: 0 OFDM 6/12/24 + data rate, 1 full table, 2 all OFDM)\n", argv[0]);
+        printf("  %s awdlretry [1..63]     (retry limit of unicast AWDL frames; no value = read)\n", argv[0]);
         printf("  %s awdlfwchsw [0|1]    (AWDL hops to another 5 GHz block by firmware H2C 0x1C; counters)\n", argv[0]);
         printf("  %s pollreg <ms> <addr> [addr ...]   (every change of up to 4 registers, scanlog clock)\n", argv[0]);
         printf("  %s testhop <ch> [dwell ms] [count]   (one AWDL-style visit to ch and back)\n", argv[0]);

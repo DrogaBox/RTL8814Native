@@ -44,7 +44,7 @@ My setup: the TP-Link Archer T9UH v1 on an AMD Hackintosh, macOS 26.7.3 (25G342)
 - Open, WPA2-PSK and WPA3-SAE networks, with 802.11w (protected management frames). SAE, the 4-way handshake and PMF are done in the driver (`Source/Driver/SAE.c`, `WPA2Supplicant.c`, `PMF.c`), and a WPA2/WPA3 mixed router joins as WPA3. Known quirk: after a reboot without a clean leave, a PMF access point keeps the old association for 30 to 60 s and the first join attempt can fail; the next one works.
 - Sleep/wake and unplug/replug.
 - Location Services.
-- USB 3.0. The adapter enumerates as USB 2.0 and the driver switches it to USB 3.0 when it loads; on a motherboard port it then runs at SuperSpeed (5 Gbps).
+- USB 3.0. On a motherboard USB 3 port my adapter comes up at SuperSpeed (5 Gbps) by itself. The driver can also switch an adapter that enumerates as USB 2.0, but since November 21, 2026 it only does so with the boot-arg `rtlusb3=1`: on a port where the USB 3 lanes do not connect, the switch took the adapter off the bus at boot until it was replugged.
 - Speed at SuperSpeed, on a 5 GHz 80 MHz link to my 2x2 router: 320 to 360 Mbit/s down and 130 to 330 Mbit/s up in October 2026, before AWDL existed. The Linux in-tree driver gives 288 to 366 down and 227 to 280 up with the same adapter, port and router, so the download side is on par. Measured again on November 13, 2026, with AWDL enabled and sharing the radio: 297 Mbit/s down and 266 Mbit/s up with macOS's own `networkQuality -I en2 -s`, and a 200 MB upload at 245 Mbit/s. At USB 2.0 High-Speed it was about 150 down and 83 up.
 
 ### AWDL and AirDrop
@@ -206,7 +206,7 @@ The kexts come from your own build (`Build/`) or from the preview zip on the Rel
    ```
    rtlair=2 rtlawdl=1 rtlawdl_tx=1 rtlawdl_mcc=1 rtlawdl_sim=1 rtlawdl_air=15000 rtlawdl_lastaw=1
    ```
-5. Reboot and plug the adapter into a USB 3 port on the motherboard. Avoid hubs: behind my monitor's USB 3 hub the switch to USB 3.0 fails, and the adapter drops off the bus until you replug it. Join your network from the Wi-Fi menu; macOS asks for the password the first time.
+5. Reboot and plug the adapter into a USB 3 port on the motherboard. Avoid hubs: behind my monitor's USB 3 hub the adapter never reached USB 3.0. Join your network from the Wi-Fi menu; macOS asks for the password the first time.
 
 What the boot-args do:
 
@@ -218,6 +218,7 @@ What the boot-args do:
 | `rtlawdl_mcc=1` | AWDL shares the radio with the network you are connected to |
 | `rtlawdl_sim=1` | Opens the test port that `Tools/awdl_report.sh` and `Tools/awdlsim` use to read frames |
 | `rtlawdl_air=15000`, `rtlawdl_lastaw=1` | Transmit time per AWDL window. These are the values the throughput figures above were measured with |
+| `rtlusb3=1` | Optional. Lets the driver switch an adapter that came up at USB 2.0 to USB 3.0. Leave it out if the adapter is missing after a restart |
 
 If something goes wrong, remove both kexts and the boot-args from the EFI.
 

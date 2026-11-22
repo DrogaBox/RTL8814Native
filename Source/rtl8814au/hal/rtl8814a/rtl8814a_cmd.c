@@ -18,6 +18,7 @@
 #include <rtl8814a_hal.h>
 
 extern void rtl8814native_awdl_ccx_report(const u8 *pl, u8 len);
+extern void rtl8814native_awdl_ccx_report_ext(const u8 *pl, u8 len);
 
 #define CONFIG_H2C_EF
 
@@ -745,6 +746,15 @@ s32 c2h_handler_8814a(_adapter *adapter, u8 id, u8 seq, u8 plen, u8 *payload)
 		break;
 	case C2H_SPC_STAT:
 		C2HSPC_STAT_8814(adapter, payload, plen);
+		break;
+	/* RTL8814Native: the firmware sends the CCX TX report of a frame that
+	 * asked for one (SPE_RPT) as extended sub-id 0x0F, not as id 0x03.
+	 * Other sub-ids go on to the generic handler (phydm's debug print). */
+	case C2H_EXTEND:
+		if (plen && payload[0] == EXTEND_C2H_CCX_RPT)
+			rtl8814native_awdl_ccx_report_ext(payload, plen);
+		else
+			ret = _FAIL;
 		break;
 	default:
 		ret = _FAIL;

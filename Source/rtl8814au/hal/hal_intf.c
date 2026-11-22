@@ -1322,6 +1322,10 @@ s32 rtw_hal_c2h_id_handle_directly(_adapter *adapter, u8 id, u8 seq, u8 plen, u8
 	case C2H_AP_REQ_TXRPT:
 	case C2H_SPC_STAT:
 		return _TRUE;
+	/* RTL8814Native: the CCX TX report of the 8814A firmware, handled in the
+	 * RX path like id 0x03; other extended sub-ids stay queued */
+	case C2H_EXTEND:
+		return plen && payload && payload[0] == EXTEND_C2H_CCX_RPT ? _TRUE : _FALSE;
 	default:
 		return _FALSE;
 	}

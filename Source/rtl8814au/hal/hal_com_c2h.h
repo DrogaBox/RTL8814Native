@@ -80,7 +80,9 @@ typedef enum _C2H_EVT {
 } C2H_EVT;
 
 typedef enum _EXTEND_C2H_EVT {
-	EXTEND_C2H_DBG_PRINT = 0
+	EXTEND_C2H_DBG_PRINT = 0,
+	/* RTL8814Native: the 8814A firmware's CCX TX report (rtw88 C2H_CCX_RPT) */
+	EXTEND_C2H_CCX_RPT = 0x0F
 } EXTEND_C2H_EVT;
 
 #define C2H_REG_LEN 16

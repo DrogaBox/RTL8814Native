@@ -41,6 +41,7 @@ int rtl8814native_radio_awdl_rate(uint32_t rate);
 void rtl8814native_radio_awdl_txstat(struct rtl_radio_awdl_txstat *out);
 int rtl8814native_radio_awdl_agg(struct rtl_radio_awdl_agg *cfg);
 void rtl8814native_awdl_ccx_report(const u8 *pl, u8 len);
+void rtl8814native_awdl_ccx_report_ext(const u8 *pl, u8 len);
 extern _adapter *rtl8814native_get_primary_adapter(void);
 extern int rtl8814native_tx_urbs_inflight(void);
 extern u64 rtl8814native_uptime_us(void);
@@ -74,6 +75,15 @@ u8 rtl8814native_scan_no_txpwr;
  * OFDM 6/12/24 and the data rate on the way out and all OFDM on the return,
  * 1 = the whole table both ways, 2 = all OFDM both ways. */
 u8 rtl8814native_awdl_fullpwr;
+
+/* RTL_OPT_AWDL_RETRY (test_uc awdlretry): hardware retry limit of unicast
+ * AWDL frames, data and UMIs alike, 1 to 63 (6-bit descriptor field). The
+ * vendor gives frames with retry_ctrl 6. WirDrop (Realtek USB, commit
+ * cd2e9b4) measured TX to an iPhone going from 23.2 to 35.8 MB/s and TCP
+ * retransmissions from 70 to 1 when it raised the limit from 8 to 32. A
+ * UMI's CCX report carries the retries used, so against the virtual peer,
+ * which never ACKs, every UMI shows this limit. */
+u8 rtl8814native_awdl_retry = 16;
 
 /*
  * RTL_OPT_AWDL_FWCHSW (test_uc awdlfwchsw): 1 = an AWDL hop to another 5 GHz
@@ -396,42 +406,88 @@ u8 rtl8814native_awdl_data_rate(void)
 	return __atomic_load_n(&rtl_awdl_data_mrate, __ATOMIC_RELAXED);
 }
 
-/* From the C2H handler: one CCX TX report. Only frames that ask for one
+/* One CCX TX report, of either format. Only frames that ask for one
  * (SPE_RPT) produce it: AWDL data at the ladder's rate, which carries no
- * report number, and the UMIs, which do (rtl_awdl_umi_tag). Payload byte 0:
- * bit 6 lifetime over, bit 7 retry over; byte 2 bits 5:0 data retries;
- * byte 5 final rate; byte 6 bits 7:2 the frame's SW_DEFINE (rtw88's
- * GET_CCX_REPORT_SEQNUM_V0). */
-void rtl8814native_awdl_ccx_report(const u8 *pl, u8 len)
+ * report number, and the UMIs, which do (rtl_awdl_umi_tag). rpt/n: the
+ * report's bytes, kept in rtl_awdl_af.raw; sn: the report number (SW_DEFINE
+ * bits 7:2), 0 for data. data = 0: a data report that must not reach the
+ * rate ladder's counters. */
+static void rtl_awdl_ccx_note(const u8 *rpt, u8 n, int lost, u8 retries, u8 rate, u8 sn, int data)
 {
-	int lost, k;
-	u8 retries, sn;
-	u32 n;
+	int k;
+	u32 h;
 
-	if (!pl || len < 6)
-		return;
 	for (k = 0; k < 8; k++)
-		__atomic_store_n(&rtl_awdl_af.raw[k], k < len ? pl[k] : 0, __ATOMIC_RELAXED);
-	lost = (pl[0] & 0xC0) != 0;
-	retries = pl[2] & 0x3F;
-	sn = len >= 7 ? pl[6] & 0xFC : 0;
+		__atomic_store_n(&rtl_awdl_af.raw[k], k < n ? rpt[k] : 0, __ATOMIC_RELAXED);
 	if (sn) {
 		struct rtl_awdl_umi_wait *w = &rtl_awdl_umi_wait[sn >> 2];
 		if (!__atomic_exchange_n(&w->busy, 0, __ATOMIC_ACQUIRE)) {
 			__atomic_fetch_add(&rtl_awdl_af.unmatched, 1, __ATOMIC_RELAXED);
 			return;
 		}
-		n = __atomic_load_n(&rtl_awdl_af.head, __ATOMIC_RELAXED);
-		_rtw_memcpy(rtl_awdl_af.e[n % RTL_RADIO_AFSTAT_RING].mac, w->mac, ETH_ALEN);
-		rtl_awdl_af.e[n % RTL_RADIO_AFSTAT_RING].status = lost ? 1 : 0;
-		rtl_awdl_af.e[n % RTL_RADIO_AFSTAT_RING].retries = retries;
-		__atomic_store_n(&rtl_awdl_af.head, n + 1, __ATOMIC_RELEASE);
+		h = __atomic_load_n(&rtl_awdl_af.head, __ATOMIC_RELAXED);
+		_rtw_memcpy(rtl_awdl_af.e[h % RTL_RADIO_AFSTAT_RING].mac, w->mac, ETH_ALEN);
+		rtl_awdl_af.e[h % RTL_RADIO_AFSTAT_RING].status = lost ? 1 : 0;
+		rtl_awdl_af.e[h % RTL_RADIO_AFSTAT_RING].retries = retries;
+		__atomic_store_n(&rtl_awdl_af.head, h + 1, __ATOMIC_RELEASE);
 		return;
 	}
+	if (!data)
+		return;
 	k = lost ? 3 : retries == 0 ? 0 : retries == 1 ? 1 : 2;
 	__atomic_fetch_add(&rtl_awdl_txstat[k], 1, __ATOMIC_RELAXED);
-	__atomic_store_n(&rtl_awdl_txstat[4], pl[5], __ATOMIC_RELAXED);
+	__atomic_store_n(&rtl_awdl_txstat[4], rate, __ATOMIC_RELAXED);
 	__atomic_fetch_add(&rtl_awdl_txstat[5], 1, __ATOMIC_RELAXED);
+}
+
+/* From the C2H handler: a report as C2H 0x03 (C2H_CCX_TX_RPT, rtw88's V0
+ * layout). Payload byte 0: bit 6 lifetime over, bit 7 retry over; byte 2
+ * bits 5:0 data retries; byte 5 final rate; byte 6 bits 7:2 the frame's
+ * SW_DEFINE (GET_CCX_REPORT_SEQNUM_V0). The 8814A firmware does not send it
+ * (rtl8814native_awdl_ccx_report_ext); kept for a firmware that does. */
+void rtl8814native_awdl_ccx_report(const u8 *pl, u8 len)
+{
+	if (!pl || len < 6)
+		return;
+	rtl_awdl_ccx_note(pl, len, (pl[0] & 0xC0) != 0, pl[2] & 0x3F, pl[5],
+	                  len >= 7 ? pl[6] & 0xFC : 0, 1);
+}
+
+/*
+ * From the C2H handler: a report as the 8814A firmware sends it, C2H 0xFF
+ * (C2H_EXTEND) sub-id 0x0F (rtw88's C2H_CCX_RPT). pl: the payload from the
+ * sub-id on, [0] 0x0F, [1] 8 (the length), [2..9] one 8-byte entry of the
+ * MAC's TX report buffer, copied as it is: the report drain of firmware
+ * v33.6 (IRAM 0x800080A0) takes entries whose byte 0 bits 7:6 are 1 and
+ * sends both words untouched (0x80008040), without reading any field. Of
+ * the entry, r = pl + 2:
+ *   r[0] bits 7:6  report type, 1 = CCX (firmware, proven)
+ *   r[6]           SW_DEFINE low byte: bits 7:2 the report number, bit 0 the
+ *                  descriptor's fixed rate (rtw88 GET_CCX_REPORT_SEQNUM_V1;
+ *                  measured: 0x01 data, 0x09 the UMI tagged 8)
+ *   r[7] bits 7:6  TX state, 0 = acknowledged (rtw88
+ *                  GET_CCX_REPORT_STATUS_V1, halmac TX_STATE; measured 1 for
+ *                  every frame to the virtual peer, which never ACKs)
+ *   r[3] bits 6:0  a rate, the descriptor's (0x06 data at 12 Mb/s, 0x04 a
+ *                  UMI at 6): halmac calls it the initial rate, so not the
+ *                  final one after fallback (unproven)
+ *   r[0] bits 5:0  measured 1 on data sent with retry limit 1 and 16 on
+ *                  UMIs with limit 16, all unacknowledged: the retries used
+ *                  or the limit itself, the two not told apart yet
+ * The retry count is therefore not known. The UMI ring takes r[0] bits 5:0
+ * as its retries, which the layer only logs; data reports stay out of the
+ * rate ladder's counters (rtl_radio_awdl_txstat), whose clean / retried /
+ * retried2 split is a retry count: the layer keeps rating by the peers'
+ * signal, as it does while no report comes.
+ */
+void rtl8814native_awdl_ccx_report_ext(const u8 *pl, u8 len)
+{
+	const u8 *r;
+
+	if (!pl || len < 10 || pl[1] < 8)
+		return;
+	r = pl + 2;
+	rtl_awdl_ccx_note(r, 8, (r[7] & 0xC0) != 0, r[0] & 0x3F, r[3] & 0x7F, r[6] & 0xFC, 0);
 }
 
 /* A unicast AWDL action frame (a UMI) about to go out: a report number,
@@ -553,6 +609,8 @@ int rtl8814native_radio_tx_80211(const uint8_t *frame, uint32_t len)
 	 * picks the unicast retry limit. */
 	if (IS_MCAST(GetAddr1Ptr(pframe)))
 		pattrib->retry_ctrl = _FALSE;
+	else if (awdl)
+		pattrib->data_tries = __atomic_load_n(&rtl8814native_awdl_retry, __ATOMIC_RELAXED);
 	/* The virtual peer has no radio, so it never sends the 802.11 ACK and every
 	 * unicast frame would use all its retries. A real peer ACKs the first try:
 	 * one try keeps the air time of a test near that of a real link. */
