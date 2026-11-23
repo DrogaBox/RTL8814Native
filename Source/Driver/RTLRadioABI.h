@@ -167,6 +167,21 @@ struct rtl_radio_awdl_agg {
 	uint32_t density;          /* A-MPDU density code 0..7 (the receiver's minimum MPDU start spacing) */
 	uint32_t radio_bw;         /* out: the width the radio is tuned to now */
 };
+/*
+ * The width the radio has on a channel in an AWDL slot there, from the
+ * decisions that tune it: while associated the BSS width on the BSS channel
+ * and, elsewhere, what rtlRadioAwdlOffch takes (the BSS width inside its 40 or
+ * 80 MHz block or in another 5 GHz block where that width is valid, 20 MHz
+ * otherwise); while joining 20 MHz; otherwise the park of rtlRadioSetChannel
+ * (rtl_awdl_park_bw on 5 GHz, 20 MHz on 2.4 GHz), and no wider than the radio
+ * is now when it already sits on the channel, since no park moves it then.
+ * *mhz is 20, 40 or 80; *upper, if given, is 1 when the channel is the upper
+ * 20 MHz of its 40 MHz pair (secondary below), else 0. Reads driver state
+ * only: no lock, no USB. kIOReturnBadArgument for a channel outside the plan;
+ * older builds answer kIOReturnUnsupported.
+ */
+#define RTL_RADIO_FN_AWDL_WIDTH   "rtlRadioAwdlWidth"  /* p1: const uint32_t *channel, p2: uint32_t *mhz (out),
+                                                        * p3: uint32_t *upper (out) or NULL */
 /* rtl_radio_status.state */
 #define RTL_RADIO_S_IDLE          0
 #define RTL_RADIO_S_SCAN          1

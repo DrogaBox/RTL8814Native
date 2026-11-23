@@ -34,6 +34,7 @@ extern void absolutetime_to_nanoseconds(uint64_t abstime, uint64_t *result);
 extern int PE_parse_boot_argn(const char *arg_string, void *arg_ptr, int max_arg);
 extern volatile uint32_t g_rx_reassemble;
 extern volatile uint32_t g_rx_skb_recycle;
+extern u32 rtl8814native_awdl_hop_seq;     /* AWDLTx.c */
 static uint32_t g_bulk_in_mps;
 static uint32_t g_usb_switch;   /* RTL_USB_SWITCH_*; survives re-probe, reset on kext load */
 
@@ -1513,6 +1514,9 @@ void rtl8814native_get_link_status(struct rtl8814_link_status *out)
 	}
 	rtl8814_fill_rate_diag(&out->rate);
 	_rtw_memcpy(&out->c2h, &g_c2h_diag, sizeof(out->c2h));
+	_rtw_memcpy(&out->sync, &g_awdl_sync_diag, sizeof(out->sync));
+	out->sync.restamp = g_awdl_sync_restamp;
+	out->sync.hops = __atomic_load_n(&rtl8814native_awdl_hop_seq, __ATOMIC_RELAXED);
 
 	if (out->connected) {
 		WLAN_BSSID_EX *cur = &pmlmepriv->cur_network.network;
@@ -1612,6 +1616,15 @@ int rtl8814native_reg_access(uint32_t op, uint32_t width, uint32_t addr, uint32_
 				return -EINVAL;
 			return rtl8814native_usb_bench(REG_MACID, v, 200, value == 2, out) ? -EIO : 0;
 		}
+		case RTL_OPT_AWDL_SYNC_RESTAMP:
+			*out = g_awdl_sync_restamp;
+			g_awdl_sync_restamp = value ? 1 : 0;
+			return 0;
+		case RTL_OPT_AWDL_SYNC_RESET:
+			/* a frame in flight may still land in the zeroed counters */
+			*out = 0;
+			_rtw_memset(&g_awdl_sync_diag, 0, sizeof(g_awdl_sync_diag));
+			return 0;
 		case RTL_OPT_RESET_PERF:
 			*out = 0;
 			g_rate_diag.rx_xfers = 0;

@@ -101,6 +101,11 @@ struct urb {
         void *shim_priv;                /* Compat: IOUSBHostCompletion sidecar */
         volatile int inflight;          /* Compat: io() accepted, completion pending */
         volatile int done;              /* Compat: last completion ran */
+        /* Compat: bulk OUT of an AWDL sync action frame (VendorOsDep.c,
+         * g_awdl_sync_diag), set by usb_write_port on every submit */
+        u32 rtl_sync_build_us;          /* PHY TX time the layer wrote (before any restamp) */
+        u32 rtl_sync_hop_seq;           /* rtl8814native_awdl_hop_seq at submit */
+        u8  rtl_sync;                   /* 1: the transfer carries one */
 };
 
 struct urb *usb_alloc_urb(int iso_packets, gfp_t mem_flags);

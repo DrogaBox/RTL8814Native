@@ -21,6 +21,7 @@ int rtl8814native_radio_tx_80211(const uint8_t *frame, uint32_t len);
 int rtl8814native_radio_awdl_port(const uint8_t *mac);
 int rtl8814native_radio_set_channel(uint8_t ch);
 int rtl8814native_radio_awdl_offch(uint8_t ch);
+int rtl8814native_radio_awdl_width(uint8_t ch, uint32_t *mhz, uint32_t *upper);
 int rtl8814native_awdl_set_park_bw(uint32_t mhz, uint32_t *prev);
 int rtl8814native_awdl_set_prot(uint32_t mode, uint32_t *prev);
 int rtl8814native_awdl_set_scan_hold(uint32_t seconds, uint32_t *prev);
@@ -584,6 +585,14 @@ int rtl8814native_radio_tx_80211(const uint8_t *frame, uint32_t len)
 	if (agg & 0xFF) {
 		u8 tid = frame[WLAN_HDR_A3_LEN] & 0x7;
 		u8 bw = (agg >> 8) & 0xF;
+		u8 rate = agg & 0xFF;
+		u8 cur = GET_HAL_DATA(padapter)->current_channel_bw;
+		/* VHT MCS 9 has no 20 MHz rate with one or two streams: a frame that
+		 * goes out at 20 MHz (BWMapping_8814: the narrower of bw and the
+		 * radio's width) takes MCS 8. */
+		if ((rate == DESC_RATEVHTSS1MCS9 || rate == DESC_RATEVHTSS2MCS9) &&
+		    (bw == RTL_RADIO_BW_20 || (cur != CHANNEL_WIDTH_40 && cur != CHANNEL_WIDTH_80)))
+			rate--;
 		pattrib->hdrlen = WLAN_HDR_A3_LEN + 2;
 		pattrib->qos_en = _TRUE;
 		pattrib->priority = tid;
@@ -595,7 +604,7 @@ int rtl8814native_radio_tx_80211(const uint8_t *frame, uint32_t len)
 		pattrib->sgi = (agg >> 12) & 1;
 		pattrib->ampdu_en = _TRUE;
 		pattrib->ampdu_spacing = (agg >> 24) & 0x7;
-		pattrib->rtl_awdl_agg = agg & 0xFF;
+		pattrib->rtl_awdl_agg = rate;
 		pattrib->rtl_awdl_agg_num = (agg >> 16) & 0x1F;
 		pattrib->vcs_mode = rtl_awdl_agg_prot;
 	} else {
@@ -703,6 +712,21 @@ int rtl8814native_radio_awdl_port(const uint8_t *mac)
 	return 0;
 }
 
+/* The park's width on ch, and its primary offset in *off: 20 MHz unless
+ * RTL_OPT_AWDL_BW asks for 40 or 80 on 5 GHz, with the channel as the primary
+ * 20 (149: LOWER, centre 155 at 80). Also rtl8814native_radio_awdl_width's. */
+static u8 rtl_awdl_park_chbw(u8 ch, u8 *off)
+{
+	u8 bw = ch > 14 ? rtl_awdl_park_bw : CHANNEL_WIDTH_20;
+
+	*off = HAL_PRIME_CHNL_OFFSET_DONT_CARE;
+	if (bw != CHANNEL_WIDTH_20 && !rtw_get_offset_by_chbw(ch, bw, off)) {
+		bw = CHANNEL_WIDTH_20;
+		*off = HAL_PRIME_CHNL_OFFSET_DONT_CARE;
+	}
+	return bw;
+}
+
 /*
  * Parks the radio on ch at 20 MHz while it is not associated, so awdl0 can
  * stay on a social channel without a network there. rtw_set_chbw_hdl runs
@@ -713,7 +737,7 @@ int rtl8814native_radio_awdl_port(const uint8_t *mac)
 int rtl8814native_radio_set_channel(uint8_t ch)
 {
 	_adapter *padapter = rtl8814native_get_primary_adapter();
-	u8 bw, off = HAL_PRIME_CHNL_OFFSET_DONT_CARE;
+	u8 bw, off;
 
 	if (!padapter || !padapter->bup || RTW_CANNOT_RUN(padapter))
 		return -ENODEV;
@@ -723,15 +747,9 @@ int rtl8814native_radio_set_channel(uint8_t ch)
 		return -EBUSY;
 	/* AWDL frames go at OFDM 6 Mb/s on either band, never CCK on 5 GHz */
 	update_mgnt_tx_rate(padapter, IEEE80211_OFDM_RATE_6MB);
-	/* 20 MHz unless RTL_OPT_AWDL_BW asks for 40 or 80 on 5 GHz, with the
-	 * channel as the primary 20 (149: LOWER, centre 155 at 80). The frames
-	 * sent here still go at 20 MHz legacy on the primary: the management
-	 * descriptor never sets DATA_BW. */
-	bw = ch > 14 ? rtl_awdl_park_bw : CHANNEL_WIDTH_20;
-	if (bw != CHANNEL_WIDTH_20 && !rtw_get_offset_by_chbw(ch, bw, &off)) {
-		bw = CHANNEL_WIDTH_20;
-		off = HAL_PRIME_CHNL_OFFSET_DONT_CARE;
-	}
+	/* The frames sent here still go at 20 MHz legacy on the primary: the
+	 * management descriptor never sets DATA_BW. */
+	bw = rtl_awdl_park_chbw(ch, &off);
 	if (rtw_set_chbw_cmd(padapter, ch, bw, off, RTW_CMDF_CHBW_IDLE_ONLY) != _SUCCESS)
 		return -ENOMEM;
 	return 0;
@@ -882,18 +900,53 @@ int rtl8814native_awdl_cal_stats(uint32_t *out)
  * running and either no scan or a scan in its back-op, which then holds the
  * next scan channel until the return.
  */
+/* AWDL channel hops started, either way: the bulk OUT counters of the sync
+ * frames (VendorOsDep.c) tell a frame whose transfer one started during. */
+u32 rtl8814native_awdl_hop_seq;
+
+/*
+ * How a hop from the BSS on home to ch tunes the radio, from the BSS's cur_*
+ * (read here, no lock): RTL_AWDL_HOP_SAME when ch shares the BSS's 40 or 80
+ * MHz block, RTL_AWDL_HOP_BLOCK in another 5 GHz block where that width is
+ * valid, both at the BSS width; RTL_AWDL_HOP_20 otherwise. *bw and *offset get
+ * the width and the primary offset. Also rtl8814native_radio_awdl_width's.
+ */
+#define RTL_AWDL_HOP_20     0
+#define RTL_AWDL_HOP_SAME   1
+#define RTL_AWDL_HOP_BLOCK  2
+static int rtl_awdl_hop_chbw(_adapter *padapter, u8 ch, u8 home, u8 *bw, u8 *offset)
+{
+	struct mlme_ext_priv *pmlmeext = &padapter->mlmeextpriv;
+	u8 b = pmlmeext->cur_bwmode;
+
+	*bw = b;
+	*offset = HAL_PRIME_CHNL_OFFSET_DONT_CARE;
+	if ((b == CHANNEL_WIDTH_40 || b == CHANNEL_WIDTH_80) &&
+	    rtw_get_offset_by_chbw(ch, b, offset) &&
+	    rtw_get_center_ch(ch, b, *offset) == rtw_get_center_ch(home, b, pmlmeext->cur_ch_offset))
+		return RTL_AWDL_HOP_SAME;
+	if (ch > 14 && home > 14 && b != CHANNEL_WIDTH_20 &&
+	    rtw_get_offset_by_chbw(ch, b, offset) &&
+	    rtw_chset_is_chbw_valid(adapter_to_chset(padapter), ch, b, *offset))
+		return RTL_AWDL_HOP_BLOCK;
+	*bw = CHANNEL_WIDTH_20;
+	*offset = HAL_PRIME_CHNL_OFFSET_DONT_CARE;
+	return RTL_AWDL_HOP_20;
+}
+
 /* the hop itself, with offch_mutex held */
 static int rtl_awdl_offch_locked(_adapter *padapter, u8 ch)
 {
 	struct mlme_ext_priv *pmlmeext = &padapter->mlmeextpriv;
 	struct rf_ctl_t *rfctl = adapter_to_rfctl(padapter);
 	HAL_DATA_TYPE *hal = GET_HAL_DATA(padapter);
-	u8 home = pmlmeext->cur_channel, bw, offset, same;
-	int rc = 0;
+	u8 home = pmlmeext->cur_channel, bw, offset;
+	int rc = 0, how;
 
 	if (!ch || ch == home) {
 		/* back to the BSS; a scan that ran meanwhile already brought it back */
 		if (rfctl->offch_state == OFFCHS_AWDL) {
+			__atomic_add_fetch(&rtl8814native_awdl_hop_seq, 1, __ATOMIC_RELAXED);
 			if (rtl8814native_awdl_backop &&
 			    rtl8814native_uptime_us() - rtl_awdl_visit_us >= RTL_AWDL_SCAN_STEP_VISIT_US) {
 				__atomic_store_n(&rtl_awdl_backop_slots, rtl_awdl_backop_slots + 1,
@@ -922,6 +975,7 @@ static int rtl_awdl_offch_locked(_adapter *padapter, u8 ch)
 		rc = -EBUSY;
 		goto out;
 	}
+	__atomic_add_fetch(&rtl8814native_awdl_hop_seq, 1, __ATOMIC_RELAXED);
 	if (rfctl->offch_state == OFFCHS_NONE) {
 		rfctl->offch_state = OFFCHS_AWDL;
 		rtw_hal_macid_sleep_all_used(padapter);
@@ -934,19 +988,12 @@ static int rtl_awdl_offch_locked(_adapter *padapter, u8 ch)
 		rtl_awdl_wait_null_out(padapter);
 		rtl_awdl_visit_us = rtl8814native_uptime_us();
 	}
-	bw = pmlmeext->cur_bwmode;
-	offset = HAL_PRIME_CHNL_OFFSET_DONT_CARE;
-	same = (bw == CHANNEL_WIDTH_40 || bw == CHANNEL_WIDTH_80) &&
-	       rtw_get_offset_by_chbw(ch, bw, &offset) &&
-	       rtw_get_center_ch(ch, bw, offset) ==
-	           rtw_get_center_ch(home, bw, pmlmeext->cur_ch_offset);
-	if (same) {
+	how = rtl_awdl_hop_chbw(padapter, ch, home, &bw, &offset);
+	if (how == RTL_AWDL_HOP_SAME) {
 		hal->awdl_keep_txpwr = 1;
 		set_channel_bwmode(padapter, ch, offset, bw);
 		hal->awdl_keep_txpwr = 0;
-	} else if (ch > 14 && home > 14 && bw != CHANNEL_WIDTH_20 &&
-	           rtw_get_offset_by_chbw(ch, bw, &offset) &&
-	           rtw_chset_is_chbw_valid(adapter_to_chset(padapter), ch, bw, offset)) {
+	} else if (how == RTL_AWDL_HOP_BLOCK) {
 		/* Another 5 GHz block at the BSS width (BSS on 52/80 MHz, AWDL on
 		 * 149): band and width stay, so the HAL keeps its width-only
 		 * registers (db67bb2) and only the TX power follows the new index.
@@ -980,6 +1027,58 @@ int rtl8814native_radio_awdl_offch(uint8_t ch)
 	rc = rtl_awdl_offch_locked(padapter, ch);
 	_exit_critical_mutex(&rfctl->offch_mutex, NULL);
 	return rc;
+}
+
+static uint32_t rtl_awdl_bw_mhz(u8 bw)
+{
+	return bw == CHANNEL_WIDTH_80 ? 80 : bw == CHANNEL_WIDTH_40 ? 40 : 20;
+}
+
+/*
+ * RTL_RADIO_FN_AWDL_WIDTH: the width the radio has on ch in an AWDL slot
+ * there, so the layer announces no wider. Associated: the BSS width on the
+ * BSS channel, rtl_awdl_hop_chbw on another. Joining: 20 MHz, the join owns
+ * the radio. Otherwise the park's width (rtl_awdl_park_chbw), and no wider
+ * than cur_* when the radio already sits on ch: the layer does not park a
+ * radio that is there, so one left by a disconnect, or by a scan that kept a
+ * park width change from taking effect, stays as it is. Reads mlmeext and the
+ * channel set only, without offch_mutex: callable from any thread, also while
+ * a hop runs (cur_* stay on the BSS during one).
+ */
+int rtl8814native_radio_awdl_width(uint8_t ch, uint32_t *mhz, uint32_t *upper)
+{
+	_adapter *padapter = rtl8814native_get_primary_adapter();
+	struct mlme_ext_priv *pmlmeext;
+	u8 bw = CHANNEL_WIDTH_20, off = HAL_PRIME_CHNL_OFFSET_DONT_CARE;
+
+	if (!padapter || !padapter->bup || RTW_CANNOT_RUN(padapter))
+		return -ENODEV;
+	if (!ch || rtw_chset_search_ch(adapter_to_chset(padapter), ch) < 0)
+		return -EINVAL;
+	pmlmeext = &padapter->mlmeextpriv;
+	if (check_fwstate(&padapter->mlmepriv, _FW_UNDER_LINKING)) {
+		/* 20 MHz */
+	} else if (check_fwstate(&padapter->mlmepriv, _FW_LINKED)) {
+		u8 home = pmlmeext->cur_channel;
+
+		if (ch == home) {
+			bw = pmlmeext->cur_bwmode;
+			off = pmlmeext->cur_ch_offset;
+		} else {
+			rtl_awdl_hop_chbw(padapter, ch, home, &bw, &off);
+		}
+	} else {
+		bw = rtl_awdl_park_chbw(ch, &off);
+		if (pmlmeext->cur_channel == ch &&
+		    rtl_awdl_bw_mhz(pmlmeext->cur_bwmode) < rtl_awdl_bw_mhz(bw)) {
+			bw = pmlmeext->cur_bwmode;
+			off = pmlmeext->cur_ch_offset;
+		}
+	}
+	*mhz = rtl_awdl_bw_mhz(bw);
+	if (upper)
+		*upper = *mhz == 40 && off == HAL_PRIME_CHNL_OFFSET_UPPER;
+	return 0;
 }
 
 /*

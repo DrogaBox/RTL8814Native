@@ -361,6 +361,99 @@ u32 usb_read_port(struct intf_hdl *pintfhdl, u32 addr, u32 cnt, u8 *rmem)
 
 /* (g_tx_urbs_inflight: bulk OUT URBs submitted and not yet completed) */
 
+/*
+ * AWDL sync action frames at the bulk OUT (Docs/AWDL_PLAN_20261119.md §6).
+ * The layer writes its build time in both PHY TX time (+8 of the AWDL fixed
+ * header) and target TX time (+12), and a receiver reads +8 as the moment
+ * the frame left. g_awdl_sync_diag measures the wait since that stamp at
+ * usb_submit_urb and at the URB's completion, on the layer's clock
+ * (AWDLInterface.cpp awdlNowUs: mach_absolute_time in us, low 32 bits). With
+ * g_awdl_sync_restamp set, +8 gets the time of the submit; +12 stays the
+ * build time, which the TU count to the next slot (TLV 4) is taken at. The
+ * waits are still measured from the stamp read before the rewrite. The
+ * chip's own queue after the transfer is not seen here.
+ */
+volatile uint32_t g_awdl_sync_restamp;  /* live option RTL_OPT_AWDL_SYNC_RESTAMP */
+struct rtl8814_awdl_sync_diag g_awdl_sync_diag;
+extern u32 rtl8814native_awdl_hop_seq;  /* AWDLTx.c: AWDL channel hops started */
+
+static const u8 rtl_sync_bssid[ETH_ALEN] = { 0x00, 0x25, 0x00, 0xFF, 0x94, 0x73 };
+
+/* The layer's awdlNowUs, as the u32 it stores */
+static inline u32 rtl_sync_now_us(void)
+{
+	uint64_t ns;
+	absolutetime_to_nanoseconds(mach_absolute_time(), &ns);
+	return (u32)(ns / 1000);
+}
+
+static void rtl_sync_lat_add(struct rtl8814_sync_lat *l, u32 d)
+{
+	static const u32 edge[RTL_SYNC_HIST_N - 1] = { 500, 1000, 2000, 5000, 10000, 20000 };
+	u32 i = 0, m;
+
+	if (d >= 0x80000000u) {
+		__atomic_fetch_add(&g_awdl_sync_diag.clock_neg, 1, __ATOMIC_RELAXED);
+		return;
+	}
+	while (i < RTL_SYNC_HIST_N - 1 && d >= edge[i])
+		i++;
+	__atomic_fetch_add(&l->hist[i], 1, __ATOMIC_RELAXED);
+	__atomic_fetch_add(&l->cnt, 1, __ATOMIC_RELAXED);
+	__atomic_fetch_add(&l->sum_us, (u64)d, __ATOMIC_RELAXED);
+	m = __atomic_load_n(&l->max_us, __ATOMIC_RELAXED);
+	while (d > m && !__atomic_compare_exchange_n(&l->max_us, &m, d, 1, __ATOMIC_RELAXED,
+	                                             __ATOMIC_RELAXED))
+		;
+}
+
+/*
+ * The 802.11 frame of a bulk OUT buffer when it is an AWDL sync action
+ * frame: action, not protected, A3 the AWDL BSSID, category 0x7F, OUI
+ * 00:17:F2, type 8, subtype 0 (PSF) or 3 (MIF; a UMI when unicast). The
+ * buffer starts at the TX descriptor (update_txdesc), the frame at its
+ * OFFSET plus PKT_OFFSET 8-byte units. Management frames go one per bulk OUT
+ * (rtw_dump_xframe); an aggregated transfer starts with a data frame.
+ */
+static u8 *rtl_sync_frame(u8 *buf, u32 cnt)
+{
+	u32 off;
+	u8 *f;
+
+	if (cnt < TXDESC_SIZE)
+		return NULL;
+	off = GET_TX_DESC_OFFSET_8814A(buf) + 8 * LE_BITS_TO_4BYTE(buf + 4, 24, 5);
+	if (off < TXDESC_SIZE || off > cnt || cnt - off < WLAN_HDR_A3_LEN + 16)
+		return NULL;
+	f = buf + off;
+	if (f[0] != 0xD0 || (f[1] & 0x40) || f[24] != 0x7F || f[25] != 0x00 || f[26] != 0x17 ||
+	    f[27] != 0xF2 || f[28] != 0x08 || (f[30] != 0 && f[30] != 3) ||
+	    _rtw_memcmp(f + 16, rtl_sync_bssid, ETH_ALEN) != _TRUE)
+		return NULL;
+	return f;
+}
+
+/* Completion of a bulk OUT that carried one (USB completion workloop) */
+static void rtl_sync_done(struct urb *purb)
+{
+	u32 d = rtl_sync_now_us() - purb->rtl_sync_build_us;
+	int hop = __atomic_load_n(&rtl8814native_awdl_hop_seq, __ATOMIC_RELAXED) != purb->rtl_sync_hop_seq;
+
+	purb->rtl_sync = 0;
+	if (purb->status) {
+		__atomic_fetch_add(&g_awdl_sync_diag.done_err, 1, __ATOMIC_RELAXED);
+		return;
+	}
+	rtl_sync_lat_add(&g_awdl_sync_diag.done, d);
+	if (hop)
+		__atomic_fetch_add(&g_awdl_sync_diag.hop_inflight, 1, __ATOMIC_RELAXED);
+	if (d >= 3000 && d < 0x80000000u) {
+		__atomic_fetch_add(&g_awdl_sync_diag.slow3, 1, __ATOMIC_RELAXED);
+		if (hop)
+			__atomic_fetch_add(&g_awdl_sync_diag.slow3_hop, 1, __ATOMIC_RELAXED);
+	}
+}
+
 /* Runs on the USB completion workloop: must not block (sctx done, buffer
  * free and tasklet scheduling only), same as the Linux softirq handler. */
 static void usb_write_port_complete(struct urb *purb)
@@ -374,6 +467,8 @@ static void usb_write_port_complete(struct urb *purb)
 		return;   /* stale completion of a torn-down instance */
 	struct xmit_priv *pxmitpriv = &padapter->xmitpriv;
 
+	if (purb->rtl_sync)
+		rtl_sync_done(purb);
 	if (purb->status == 0) {
 		g_trx_diag.tx_write_ok++;
 	} else {
@@ -428,9 +523,43 @@ u32 usb_write_port(struct intf_hdl *pintfhdl, u32 addr, u32 cnt, u8 *wmem)
 	usb_fill_bulk_urb(purb, pusbd, ffaddr2pipehdl(pdvobj, addr),
 	                  buf_ptr, cnt, usb_write_port_complete, pxmitbuf);
 
+	/* An AWDL sync frame: its stamp, and the restamp last, right before the
+	 * submit (the transfer maps this buffer, it is not copied). */
+	u8 *sync = rtl_sync_frame(buf_ptr, cnt);
+	u32 t_sub = 0, t_build = 0;
+	uint32_t *kind = NULL;
+	purb->rtl_sync = 0;
+	if (sync) {
+		u8 *phy = sync + WLAN_HDR_A3_LEN + 8;
+		/* Locals: once submitted, the completion may free and reuse the
+		 * buffer and the URB before the counters below are written. */
+		kind = sync[WLAN_HDR_A3_LEN + 6] == 0 ? &g_awdl_sync_diag.psf
+		       : IS_MCAST(GetAddr1Ptr(sync)) ? &g_awdl_sync_diag.mif : &g_awdl_sync_diag.umi;
+		t_build = (u32)phy[0] | (u32)phy[1] << 8 | (u32)phy[2] << 16 | (u32)phy[3] << 24;
+		purb->rtl_sync_build_us = t_build;
+		purb->rtl_sync_hop_seq = __atomic_load_n(&rtl8814native_awdl_hop_seq, __ATOMIC_RELAXED);
+		purb->rtl_sync = 1;
+		t_sub = rtl_sync_now_us();
+		if (g_awdl_sync_restamp) {
+			phy[0] = (u8)t_sub;
+			phy[1] = (u8)(t_sub >> 8);
+			phy[2] = (u8)(t_sub >> 16);
+			phy[3] = (u8)(t_sub >> 24);
+			__atomic_fetch_add(&g_awdl_sync_diag.restamped, 1, __ATOMIC_RELAXED);
+		}
+	}
+
 	OSIncrementAtomic(&g_tx_urbs_inflight);
 	status = usb_submit_urb(purb, GFP_ATOMIC);
+	if (kind && !status) {
+		__atomic_fetch_add(kind, 1, __ATOMIC_RELAXED);
+		rtl_sync_lat_add(&g_awdl_sync_diag.submit, t_sub - t_build);
+	}
 	if (status) {
+		if (kind) {
+			purb->rtl_sync = 0;
+			__atomic_fetch_add(&g_awdl_sync_diag.submit_fail, 1, __ATOMIC_RELAXED);
+		}
 		OSDecrementAtomic(&g_tx_urbs_inflight);
 		g_trx_diag.tx_write_err++;
 		g_trx_diag.tx_last_err = status;

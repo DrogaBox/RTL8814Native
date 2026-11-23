@@ -594,6 +594,14 @@ IOReturn RTL8814Native::callPlatformFunction(const OSSymbol *functionName,
                 return rtl8814native_radio_awdl_agg((struct rtl_radio_awdl_agg *)param1) == 0
                        ? kIOReturnSuccess : kIOReturnBadArgument;
         }
+        if (functionName->isEqualTo(RTL_RADIO_FN_AWDL_WIDTH)) {
+                if (!param1 || !param2 || *(const uint32_t *)param1 > 0xFF)
+                        return kIOReturnBadArgument;
+                int rc = rtl8814native_radio_awdl_width((uint8_t)*(const uint32_t *)param1,
+                                                        (uint32_t *)param2, (uint32_t *)param3);
+                return rc == 0 ? kIOReturnSuccess
+                       : rc == -EINVAL ? kIOReturnBadArgument : kIOReturnNotReady;
+        }
         if (functionName->isEqualTo(RTL_RADIO_FN_AWDL_TXSTAT)) {
                 if (!param1)
                         return kIOReturnBadArgument;

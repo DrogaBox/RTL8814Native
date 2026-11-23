@@ -130,6 +130,8 @@ enum {
 	RTL_OPT_AWDL_FWCHSW_STATS = 10, /* read only: firmware switches done (low 16), timeouts (high 16) */
 	RTL_OPT_AWDL_TESTHOP = 11,  /* value = channel | dwell ms << 8: one AWDL-style visit and back; out = 10 us units, out low 16, back high 16 */
 	RTL_OPT_AWDL_RETRY = 12,   /* retry limit of unicast AWDL frames, 1..63; 0 reads it; out = previous */
+	RTL_OPT_AWDL_SYNC_RESTAMP = 13, /* 1: PHY TX time of AWDL sync frames = time of their bulk OUT submit; out = previous */
+	RTL_OPT_AWDL_SYNC_RESET = 14,   /* zero g_awdl_sync_diag (value ignored) */
 };
 extern struct rtl8814_trx_diag g_trx_diag;
 
@@ -239,6 +241,39 @@ struct rtl8814_c2h_diag {
 };
 extern struct rtl8814_c2h_diag g_c2h_diag;
 
+/* AWDL sync action frames (PSF, MIF and UMI: category 0x7F, OUI 00:17:F2,
+ * type 8, subtype 0 or 3) at the bulk OUT (VendorOsDep.c usb_write_port and
+ * its completion): the wait since the layer stamped PHY TX time (+8 of the
+ * AWDL fixed header), in us on the layer's clock (mach_absolute_time, low 32
+ * bits), always against that original stamp, restamped or not. Bins: <0.5,
+ * 0.5-1, 1-2, 2-5, 5-10, 10-20, >=20 ms. */
+#define RTL_SYNC_HIST_N 7
+struct rtl8814_sync_lat {
+	uint32_t cnt;
+	uint32_t max_us;
+	uint64_t sum_us;
+	uint32_t hist[RTL_SYNC_HIST_N];
+	uint32_t reserved;
+};
+struct rtl8814_awdl_sync_diag {
+	uint32_t restamp;           /* RTL_OPT_AWDL_SYNC_RESTAMP, filled on read */
+	uint32_t hops;              /* AWDL channel hops started (AWDLTx.c), filled on read */
+	uint32_t psf;               /* submitted, by kind */
+	uint32_t mif;               /* broadcast MIFs */
+	uint32_t umi;               /* MIFs to one peer */
+	uint32_t restamped;         /* PHY TX time rewritten just before the submit */
+	uint32_t submit_fail;       /* usb_submit_urb refused (no completion follows) */
+	uint32_t done_err;          /* completed with an error status: not in done */
+	uint32_t clock_neg;         /* stamp ahead of now (not the layer's clock): in no histogram */
+	uint32_t hop_inflight;      /* completions with a hop started between submit and completion */
+	uint32_t slow3;             /* completions 3 ms or more after the stamp */
+	uint32_t slow3_hop;         /* ... of which with a hop started in flight */
+	struct rtl8814_sync_lat submit;  /* stamp -> usb_submit_urb */
+	struct rtl8814_sync_lat done;    /* stamp -> URB completion */
+};
+extern struct rtl8814_awdl_sync_diag g_awdl_sync_diag;
+extern volatile uint32_t g_awdl_sync_restamp;
+
 struct rtl8814_link_status {
 	uint32_t connected;  /* 1 if _FW_LINKED */
 	uint32_t wpa2_state; /* 0=Idle, 1=WaitMsg1, 2=WaitMsg3, 3=Completed, 4=Failed */
@@ -268,6 +303,7 @@ struct rtl8814_link_status {
 	uint32_t usb_switch;        /* RTL_USB_SWITCH_* flags */
 	struct rtl8814_rate_diag rate;
 	struct rtl8814_c2h_diag c2h; /* appended: tools built before it get no struct (size check) */
+	struct rtl8814_awdl_sync_diag sync; /* appended after c2h, same rule */
 };
 
 /* USB 2.0 -> 3.0 mode switch (Linux usb_reprobe_switch_usb_mode, switch_usb_mode=1) */
@@ -306,6 +342,8 @@ int  rtl8814native_radio_awdl_port(const uint8_t *mac);
 int  rtl8814native_radio_set_channel(uint8_t ch);
 /* AWDLTx.c: while associated, an AWDL slot on ch; 0 = back to the BSS */
 int  rtl8814native_radio_awdl_offch(uint8_t ch);
+/* AWDLTx.c: the width the radio has on ch in an AWDL slot (20/40/80), *upper = upper 20 of a 40 */
+int  rtl8814native_radio_awdl_width(uint8_t ch, uint32_t *mhz, uint32_t *upper);
 /* AWDLTx.c: park width on 5 GHz (20/40/80 MHz), applied at once when idle; previous width in *prev */
 int  rtl8814native_awdl_set_park_bw(uint32_t mhz, uint32_t *prev);
 int  rtl8814native_awdl_set_prot(uint32_t mode, uint32_t *prev);

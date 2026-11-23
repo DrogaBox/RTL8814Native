@@ -1753,8 +1753,17 @@ bool RTLAirNub::didTerminate(IOService *provider, IOOptionBits options, bool *de
 	return ok;
 }
 
+/* IOService::didTerminate schedules stop(radio) when the radio is not open,
+ * so a radio leaving a nub that stays (IOResources still holds it) also
+ * lands here: only that provider goes; gNub, the controller and the thread
+ * calls must stay for the next radio's adopt(). A terminated nub is already
+ * inactive here and takes the full teardown. */
 void RTLAirNub::stop(IOService *provider)
 {
+	if (!isInactive() && provider != getResourceService()) {
+		IOService::stop(provider);
+		return;
+	}
 	if (gNub == this)
 		gNub = nullptr;
 	_ctrl = nullptr;

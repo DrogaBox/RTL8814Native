@@ -315,6 +315,13 @@ public:
 	void companionTx(const uint8_t *eth, uint32_t len);
 	/* Largest IP packet the TX ring carries: the MTU of awdl0 and llw0. */
 	static uint32_t dataMtu();
+	/* Runtime knobs (Tools/awdlknob): RTLAwdlBss, RTLAwdlMcc and RTLAwdlMccRun
+	 * change _bssAllowed, _mccMode and _mccRun without a reboot, and
+	 * RTLAwdlAggSgi, RTLAwdlAggMcs9, RTLAwdlAggDen and RTLAwdlAggBurst the
+	 * A-MPDU's _aggSgiAllowed, _aggMcs9Allowed, _aggDensity and _aggBurstUs. Overrides
+	 * IORegistryEntry::setProperties, the cell IO80211AWDLProtocol's vtable
+	 * has: no new vtable entry. */
+	IOReturn setProperties(OSObject *props) override;
 
 	/* COMPANION_SKYWALK_IF_CREATE (type 293): wifip2pd asks for llw0 right
 	 * after awdl0 is up (Docs/AWDL_LLW_COMPANION.md, AWDL_STAGE4_LLW_CLOSURE.md).
@@ -558,7 +565,10 @@ private:
 	/* Time sharing while en2 is associated on a non-social channel (boot-arg
 	 * rtlawdl_mcc: 0 off, 1 the first slot of each run of the social channel
 	 * in the 129, 2 all of its slots): rtlRadioAwdlOffch takes the radio there
-	 * for those slots only. _mccLock orders the switches against tx off. */
+	 * for those slots only. _mccLock orders the switches against tx off.
+	 * _mccMode, _mccRun and _bssAllowed are also the knobs of setProperties,
+	 * written under _txLock; txTick reads _mccMode and _bssAllowed once per
+	 * tick under it. */
 	uint32_t _mccMode;
 	uint32_t _mccRun;           /* boot-arg rtlawdl_mccrun: slots in a row a transfer takes from the BSS, 0 = none */
 	uint32_t _mccAw;            /* boot-arg rtlawdl_mccaw, 1..4: AWs of a served slot
@@ -570,6 +580,19 @@ private:
 	uint16_t _mccServe;
 	uint8_t _mccCur;            /* channel the radio was sent to, 0 = the BSS */
 	uint8_t _mccTarget;         /* social channel served while associated, 0 = none */
+	/* The slots the 129 gives the BSS's own channel, served there while the
+	 * radio is on the BSS (boot-arg rtlawdl_bss, 1 unless set to 0; AWDLShare.h
+	 * awdlShareBss). Not during a scan: the radio may leave the BSS at any time
+	 * in one, unlike a time-sharing visit, which the scan waits for. */
+	bool _bssAllowed;
+	uint8_t _bssLogCh;          /* channel and slots of the last "serving" log */
+	uint16_t _bssLogMask;
+	uint8_t _bssLogs;
+	uint64_t _ev41Bss;          /* windows (event 41) on the BSS's channel, of _ev41 */
+	uint64_t _txDataBss;        /* data frames sent there */
+	/* The RTLAwdlKnobs property: the knobs, the windows of _ev41 split by
+	 * _ev41Bss, and _txDataBss; set outside _txLock, as RTLAwdlLog is. */
+	void publishKnobs();
 	uint64_t _mccPreUs;         /* slot start a tick armed early switches for, 0 = none */
 	uint64_t _scanTailUs;       /* a scan just ended: serve as in a return until then */
 	bool     _scanSeen;         /* txTick saw a scan running */
@@ -579,6 +602,18 @@ private:
 	uint8_t _mccLeaveIdx;
 	uint8_t _clkMaster[6];      /* master the AW clock follows (alignClock) */
 	uint64_t _clkMasterUs;      /* last frame from it, 0 = none */
+	/* Operating class of the served slots in TLV 4 and 18, from the width the
+	 * radio has on the channel (rtlRadioAwdlWidth): a peer sends no wider than
+	 * a slot's class says. txTick asks outside _txLock and stores it under it;
+	 * annClass gives it for _annCh, the 20 MHz class for any other channel.
+	 * Entry 0 is the social channel, entry 1 the BSS's own (_bssAllowed). */
+	uint8_t _annCh[2];          /* channel _annClass is for, 0 = none yet */
+	uint8_t _annClass[2];
+	bool _annOff;               /* the radio has no rtlRadioAwdlWidth: 20 MHz classes */
+	uint64_t _annKey[2];        /* channel and radio state of the last answer */
+	uint64_t _annAskUs[2];      /* when it came, 0 = ask at the next tick */
+	void updateAnnounce(uint8_t ch, const struct rtl_radio_status &st, int which = 0);
+	uint8_t annClass(uint8_t ch) const;
 
 	/* AWDL data TX: frames built from awdl0's TX submission packets wait in a
 	 * ring until the window of a served slot is open (txTick). Under _txLock;
@@ -652,14 +687,36 @@ private:
 	 * (rtlRadioAwdlAgg), picked from the peers' signal like the single-frame
 	 * rate. _bao under _txLock; the rate fields from txTick only. Boot-args
 	 * rtlawdl_agg=0 (off), rtlawdl_aggwd=0 (never close a silent session),
-	 * rtlawdl_aggmax, rtlawdl_aggden, rtlawdl_aggbw. */
+	 * rtlawdl_aggmax, rtlawdl_aggden, rtlawdl_aggbw, rtlawdl_aggsgi=0 (long
+	 * guard interval always), rtlawdl_aggmcs9=0 (no MCS 9), rtlawdl_aggburst.
+	 * The four of them also as knobs (setProperties), under _txLock. */
 	AwdlBaoTab _bao;
 	bool _aggAllowed;
 	bool _aggOff;               /* the radio has no rtlRadioAwdlAgg */
 	bool _aggSet;               /* the radio took a rate: requests may go */
 	uint8_t _aggIdx, _aggBw;
 	uint32_t _aggMbps;          /* of that rate at the radio's width; under _txLock */
-	uint32_t _aggMax, _aggDensity, _aggBwMax;
+	uint32_t _aggMax, _aggBwMax;
+	uint32_t _aggDensity;       /* density code 0..7, or 8: the one the peers ask for */
+	bool _aggSgiAllowed;        /* short guard interval for peers that announce it */
+	bool _aggMcs9Allowed;       /* MCS 9 at 40 and 80 MHz for peers that announce it */
+	uint32_t _aggBurstUs;       /* air of an A-MPDU's preamble, BlockAck and backoff;
+	                             * 0 = AWDL_TX_AGG_FRAME_US for every MPDU instead */
+	bool _aggSgi;               /* what the radio has now, for pumpData; under _txLock */
+	uint8_t _aggDen;
+	/* Each peer's HT and VHT capabilities as its action frames carry them
+	 * (TLV 7 and 17, notePeerSeq): the A-MPDU density it asks for, the short
+	 * guard interval and two streams up to VHT MCS 9. Under _txLock. */
+	struct AwdlPeerCaps {
+		uint8_t mac[6];
+		bool ht;                /* TLV 7 seen: density is the peer's */
+		uint8_t density;        /* A-MPDU minimum MPDU start spacing, code 0..7 */
+		uint8_t sgi;            /* bit 0 at 20 MHz, bit 1 at 40 (TLV 7), bit 2 at 80 (TLV 17) */
+		bool mcs9;              /* TLV 17: two streams up to MCS 9 */
+		uint64_t lastUs;        /* 0 = empty */
+	};
+	AwdlPeerCaps _peerCaps[8];
+	const AwdlPeerCaps *peerCaps(const uint8_t *mac, uint64_t now) const;
 	uint64_t _aggUs, _aggWatchUs, _aggChanges;
 	uint64_t _txDataAgg;        /* data frames sent as QoS data of a session */
 	uint8_t _txQos[24 + 2 + 16 + 1428]; /* the frame pumpData is sending, as QoS data */
@@ -708,9 +765,12 @@ private:
 	void rateByRssi(uint64_t now);
 	void updateRate();
 	bool setRate(uint8_t idx);
-	bool sendAf(uint8_t subtype, uint8_t channel, uint16_t mask, bool umi = false);
-	size_t buildAf(uint8_t *out, size_t cap, uint8_t subtype, uint8_t channel, uint16_t mask,
-	               bool umi);
+	/* planCh and planOc: the channel and operating class of each of the 16
+	 * slots, as TLV 4 and 18 announce them (awdlSharePlan). */
+	bool sendAf(uint8_t subtype, uint8_t channel, const uint8_t *planCh, const uint8_t *planOc,
+	            bool umi = false);
+	size_t buildAf(uint8_t *out, size_t cap, uint8_t subtype, uint8_t channel,
+	               const uint8_t *planCh, const uint8_t *planOc, bool umi);
 	bool copyMiTemplate(const uint8_t *req);
 	void alignClock(mbuf_t m, const uint8_t *src);
 	static void txTickEntry(thread_call_param_t p0, thread_call_param_t);

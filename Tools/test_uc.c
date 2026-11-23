@@ -23,6 +23,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <stddef.h>
 #include <string.h>
 #include <unistd.h>
 #include <errno.h>
@@ -199,6 +200,32 @@ struct rtl8814_c2h_diag {
     struct rtl8814_c2h_raw ccx_last;
 };
 
+#define RTL_SYNC_HIST_N 7   /* <0.5, 0.5-1, 1-2, 2-5, 5-10, 10-20, >=20 ms */
+struct rtl8814_sync_lat {
+    uint32_t cnt;
+    uint32_t max_us;
+    uint64_t sum_us;
+    uint32_t hist[RTL_SYNC_HIST_N];
+    uint32_t reserved;
+};
+
+struct rtl8814_awdl_sync_diag {
+    uint32_t restamp;
+    uint32_t hops;
+    uint32_t psf;
+    uint32_t mif;
+    uint32_t umi;
+    uint32_t restamped;
+    uint32_t submit_fail;
+    uint32_t done_err;
+    uint32_t clock_neg;
+    uint32_t hop_inflight;
+    uint32_t slow3;
+    uint32_t slow3_hop;
+    struct rtl8814_sync_lat submit;
+    struct rtl8814_sync_lat done;
+};
+
 struct rtl8814_link_status {
     uint32_t connected;
     uint32_t wpa2_state;
@@ -228,6 +255,7 @@ struct rtl8814_link_status {
     uint32_t usb_switch;
     struct rtl8814_rate_diag rate;
     struct rtl8814_c2h_diag c2h;
+    struct rtl8814_awdl_sync_diag sync;
 };
 
 struct rtl_uc_join_request {
@@ -305,6 +333,28 @@ static const char *bw_str(uint8_t bw) {
     static const char *names[] = { "20", "40", "80", "160", "80+80", "5", "10" };
     if (bw == 0xFF) return "n/a";  /* 8814A FW RA report / RX desc carry no BW */
     return bw < 7 ? names[bw] : "?";
+}
+
+/* AWDL sync frames (PSF/MIF/UMI) at the bulk OUT: wait since the layer's PHY TX time stamp */
+static void print_sync_lat(const char *tag, const struct rtl8814_sync_lat *l)
+{
+    static const char *bins[RTL_SYNC_HIST_N] = { "<0.5", "0.5-1", "1-2", "2-5", "5-10", "10-20", ">=20" };
+    printf("    %-25s: n=%u avg %.3f ms max %.3f ms |", tag, l->cnt,
+           l->cnt ? l->sum_us / 1000.0 / l->cnt : 0.0, l->max_us / 1000.0);
+    for (int i = 0; i < RTL_SYNC_HIST_N; i++)
+        printf(" %s %u", bins[i], l->hist[i]);
+    printf("\n");
+}
+
+static void print_sync(const struct rtl8814_awdl_sync_diag *y)
+{
+    printf("[+] AWDL Sync TX Time        : restamp=%s, psf=%u mif=%u umi=%u, restamped=%u, submit_fail=%u, done_err=%u, clock_neg=%u\n",
+           y->restamp ? "ON" : "off", y->psf, y->mif, y->umi, y->restamped, y->submit_fail,
+           y->done_err, y->clock_neg);
+    print_sync_lat("stamp -> submit", &y->submit);
+    print_sync_lat("stamp -> USB done", &y->done);
+    printf("    %-25s: started=%u, in flight at completion=%u; done >= 3 ms: %u (%u with a hop in flight)\n",
+           "AWDL hops", y->hops, y->hop_inflight, y->slow3, y->slow3_hop);
 }
 
 static void show_status(io_connect_t connect) {
@@ -418,7 +468,7 @@ static void show_status(io_connect_t connect) {
                 if (r->c2h_id_cnt[i])
                     printf(" 0x%02X=%u", i, r->c2h_id_cnt[i]);
             printf(" other=%u parse_fail=%u\n", r->c2h_id_other, r->c2h_parse_fail);
-            if (stSize >= sizeof(st)) {
+            if (stSize >= offsetof(struct rtl8814_link_status, sync)) {
                 const struct rtl8814_c2h_diag *c = &st.c2h;
                 printf("[+] C2H all ids              :");
                 for (int i = 0; i < 256; i++)
@@ -437,7 +487,7 @@ static void show_status(io_connect_t connect) {
                     print_c2h_raw("ccx", c->ccx_seen - 1, &c->ccx_last);
             } else {
                 printf("[+] C2H all ids              : n/a (kext reply %zu B < %zu B: older kext)\n",
-                       stSize, sizeof(st));
+                       stSize, offsetof(struct rtl8814_link_status, sync));
             }
             printf("[+] FW RA Reports            : handled=%u, last(len=%u):", r->ra_rpt_handled, r->ra_rpt_last_len);
             for (int i = 0; i < 8; i++)
@@ -467,6 +517,11 @@ static void show_status(io_connect_t connect) {
                    r->warm_start & 0xFF, (r->warm_start >> 8) & 0xFF,
                    (r->warm_start >> 16) & 1 ? "chip was already on, powered off before HAL init (warm start)" : "cold (chip was off)");
         }
+        if (stSize >= sizeof(st))
+            print_sync(&st.sync);
+        else
+            printf("[+] AWDL Sync TX Time        : n/a (kext reply %zu B < %zu B: older kext)\n",
+                   stSize, sizeof(st));
         if (st.connected) {
             printf("[+] Connected SSID           : %s\n", st.ssid);
             printf("[+] Connected BSSID          : %02X:%02X:%02X:%02X:%02X:%02X\n",
@@ -1324,6 +1379,31 @@ int main(int argc, char **argv) {
             printf("[+] AWDL unicast retry limit: %u\n", prev);
         else
             printf("[+] AWDL unicast retry limit: %u -> %u\n", prev, n);
+    } else if (strcmp(argv[1], "awdlrestamp") == 0 && argc >= 3) {
+        uint32_t prev, on = (uint32_t)strtoul(argv[2], NULL, 0);
+        if (reg_access(connect, 3, 4, 13 /* RTL_OPT_AWDL_SYNC_RESTAMP */, on, &prev) == 0)
+            printf("[+] AWDL sync PHY TX time restamp at bulk OUT: %s -> %s\n", prev ? "ON" : "off", on ? "ON" : "off");
+        else
+            printf("[-] AWDL sync restamp option refused (older driver?)\n");
+    } else if (strcmp(argv[1], "awdlsync") == 0) {
+        uint32_t prev;
+        if (argc >= 3 && strcmp(argv[2], "reset") == 0) {
+            if (reg_access(connect, 3, 4, 14 /* RTL_OPT_AWDL_SYNC_RESET */, 0, &prev) == 0)
+                printf("[+] AWDL sync TX time counters reset\n");
+            else
+                printf("[-] AWDL sync counter reset refused (older driver?)\n");
+        }
+        struct rtl8814_link_status st = {0};
+        size_t stSize = sizeof(st);
+        uint64_t lOut[4] = {0};
+        uint32_t lCount = 4;
+        if (IOConnectCallMethod(connect, kRTLUC_GetLinkStatus, NULL, 0, NULL, 0,
+                                lOut, &lCount, &st, &stSize) != KERN_SUCCESS)
+            printf("[-] GetLinkStatus failed\n");
+        else if (stSize < sizeof(st))
+            printf("[-] No AWDL sync counters (kext reply %zu B < %zu B: older kext)\n", stSize, sizeof(st));
+        else
+            print_sync(&st.sync);
     } else if (strcmp(argv[1], "awdlfwchsw") == 0) {
         uint32_t prev, st;
         if (argc >= 3) {
@@ -1428,6 +1508,8 @@ int main(int argc, char **argv) {
         printf("  %s awdlfullpwr <0|1|2>   (AWDL visit TX power: 0 OFDM 6/12/24 + data rate, 1 full table, 2 all OFDM)\n", argv[0]);
         printf("  %s awdlretry [1..63]     (retry limit of unicast AWDL frames; no value = read)\n", argv[0]);
         printf("  %s awdlfwchsw [0|1]    (AWDL hops to another 5 GHz block by firmware H2C 0x1C; counters)\n", argv[0]);
+        printf("  %s awdlrestamp <0|1>   (PHY TX time of AWDL PSF/MIF/UMI = time of the bulk OUT submit)\n", argv[0]);
+        printf("  %s awdlsync [reset]    (AWDL sync frames: wait since the PHY TX time stamp at submit / USB done)\n", argv[0]);
         printf("  %s pollreg <ms> <addr> [addr ...]   (every change of up to 4 registers, scanlog clock)\n", argv[0]);
         printf("  %s testhop <ch> [dwell ms] [count]   (one AWDL-style visit to ch and back)\n", argv[0]);
         printf("  %s usbbench [rounds]   (200 REG_MACID rewrites: sync, async, driver path)\n", argv[0]);
