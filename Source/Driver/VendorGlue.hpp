@@ -361,6 +361,9 @@ void rtl8814native_radio_awdl_txstat(struct rtl_radio_awdl_txstat *out);
 void rtl8814native_radio_awdl_afstat(struct rtl_radio_awdl_afstat *out);
 int  rtl8814native_radio_awdl_agg(struct rtl_radio_awdl_agg *cfg);
 void rtl8814native_get_link_status(struct rtl8814_link_status *out);
+/* Active regulatory country (alpha2, empty when the plan came from a plan id)
+ * and channel plan id, read-only. -ENODEV before the probe. */
+int  rtl8814native_get_regulatory(char alpha2[3], uint32_t *chplan);
 /* Live register access for diagnostics: op 0=MAC read, 1=MAC write, 2=RF read (addr = path<<8 | reg),
  * 3=set driver option (addr = RTL_OPT_*, out = previous value) */
 int  rtl8814native_reg_access(uint32_t op, uint32_t width, uint32_t addr, uint32_t value, uint32_t *out);

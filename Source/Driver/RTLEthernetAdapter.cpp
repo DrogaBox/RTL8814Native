@@ -7,6 +7,7 @@
 #include "RTLEthernetAdapter.hpp"
 #include "RTL8814Native.hpp"
 #include "VendorGlue.hpp"
+#include "StatusLed.h"
 
 #include <IOKit/network/IONetworkMedium.h>
 #include <IOKit/network/IOOutputQueue.h>
@@ -107,6 +108,7 @@ bool RTLEthernetAdapter::start(IOService *provider)
 void RTLEthernetAdapter::stop(IOService *provider)
 {
         if (_netif) {
+                rtl8814native_led_netif(-1);
                 detachInterface(_netif);
                 _netif->release();
                 _netif = nullptr;
@@ -131,6 +133,7 @@ IOReturn RTLEthernetAdapter::enable(IONetworkInterface *netif)
 {
         IOLog("RTL8814Native: interface enable\n");
         _enabled = true;
+        rtl8814native_led_netif(1);
         /* Keep a carrier the core already reported: the re-join after a
          * fresh start (4.6h) can finish before configd brings en2 up, and
          * writing plain LinkValid here left en2 "inactive" while associated */
@@ -146,6 +149,7 @@ IOReturn RTLEthernetAdapter::disable(IONetworkInterface *netif)
         IOLog("RTL8814Native: interface disable\n");
         /* PHASE 1: netdev_ops->ndo_stop(netdev) → rtw_hw_stop */
         _enabled = false;
+        rtl8814native_led_netif(0);
         setLinkStatus(0, getCurrentMedium());
         return kIOReturnSuccess;
 }

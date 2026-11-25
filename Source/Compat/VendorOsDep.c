@@ -22,6 +22,7 @@
 #include <IOKit/IOLib.h>
 #include "VendorGlue.hpp"
 #include "WPA2Supplicant.h"
+#include "RxWatchdog.h"
 
 /* VendorProbe (C, vendor types) — the live _adapter or NULL while torn
  * down. URB completions compare their padapter against it and drop stale
@@ -357,6 +358,63 @@ u32 usb_read_port(struct intf_hdl *pintfhdl, u32 addr, u32 cnt, u8 *rmem)
 	g_rx_urb_submit_ok++;
 	precvbuf->irp_pending = _TRUE;
 	return _SUCCESS;
+}
+
+/*
+ * RX watchdog level 1 (Source/Driver/RxWatchdog.h): abort every bulk IN
+ * transfer, wait for the completions, reset the reassembly stage and submit
+ * each recv_buf again. rtw_read_port_cancel sets DF_RX_BIT first, as on
+ * sleep, so the aborted completions only free their skb: no error count, no
+ * drv_stopped, no resubmit. TX, the command thread and the timers go on.
+ * A recv_buf whose URB never completes is not submitted again (a second
+ * submit of a transfer still in flight would corrupt it): then RX stays
+ * disabled and -EBUSY comes back. Called with offch_mutex and setch_mutex
+ * held. Returns the URBs submitted, or a negative errno.
+ */
+#define RX_REARM_WAIT_MS	200
+
+int rtl8814native_rx_ring_restart(void *adapter)
+{
+	_adapter *padapter = (_adapter *)adapter;
+	struct recv_priv *precvpriv;
+	struct recv_buf *precvbuf;
+	struct intf_hdl *pintfhdl;
+	int i, ms, left, armed = 0;
+
+	if (!padapter || RTW_CANNOT_RUN(padapter) || !padapter->recvpriv.precv_buf)
+		return -ENODEV;
+	precvpriv = &padapter->recvpriv;
+	precvbuf = (struct recv_buf *)precvpriv->precv_buf;
+	pintfhdl = &padapter->iopriv.intf;
+	if (!pintfhdl->io_ops._read_port)
+		return -ENODEV;
+
+	rtw_read_port_cancel(padapter);
+	for (ms = 0; ; ms++) {
+		left = 0;
+		for (i = 0; i < NR_RECVBUFF; i++)
+			if (*(volatile u8 *)&precvbuf[i].irp_pending)
+				left++;
+		if (!left || ms >= RX_REARM_WAIT_MS)
+			break;
+		rtw_msleep_os(1);
+	}
+	if (left)
+		return -EBUSY;
+	/* the end of rtlUrbCompletion, after the vendor handler */
+	rtw_msleep_os(2);
+
+	/* the stage belongs to usb_recv_tasklet: only with nothing queued for it */
+	if (skb_queue_len(&precvpriv->rx_skb_queue) == 0)
+		rtl8814native_rx_stage_reset();
+	RTW_ENABLE_FUNC(padapter, DF_RX_BIT);
+	precvpriv->ff_hwaddr = RECV_BULK_IN_ADDR;
+	for (i = 0; i < NR_RECVBUFF; i++)
+		if (!precvbuf[i].irp_pending &&
+		    pintfhdl->io_ops._read_port(pintfhdl, precvpriv->ff_hwaddr, 0,
+		                                (u8 *)&precvbuf[i]) == _SUCCESS)
+			armed++;
+	return armed;
 }
 
 /* (g_tx_urbs_inflight: bulk OUT URBs submitted and not yet completed) */
@@ -1671,9 +1729,20 @@ void rtw_os_indicate_disconnect(_adapter *adapter, u16 reason, u8 locally_genera
 	if (ndev) rtl_netif_carrier(ndev, 0);
 }
 
+/* Scans that ran to the end, for the RX watchdog (a whole scan with no bulk
+ * IN completion is a deaf radio, RxWatchdog.h) */
+static volatile uint32_t g_rx_scans_done;
+
+uint32_t rtl8814native_rx_scans_done(void)
+{
+	return __atomic_load_n(&g_rx_scans_done, __ATOMIC_RELAXED);
+}
+
 void rtw_os_indicate_scan_done(_adapter *adapter, bool aborted)
 {
-	(void)adapter; (void)aborted;
+	(void)adapter;
+	if (!aborted)
+		__atomic_add_fetch(&g_rx_scans_done, 1, __ATOMIC_RELAXED);
 }
 
 void rtw_os_recv_indicate_pkt(_adapter *padapter, _pkt *pkt, union recv_frame *rframe)

@@ -16,6 +16,8 @@
 #include "SAEJoin.h"
 #include "WPA2Supplicant.h"
 #include "RTLRadioABI.h"
+#include "StatusLed.h"
+#include "RxWatchdog.h"
 
 extern struct rtl8814_rx_log g_rx_log;
 extern struct rtl_jlog g_jlog;
@@ -271,6 +273,100 @@ u8 rtw_free_drv_sw(_adapter *padapter)
 	return _SUCCESS;
 }
 
+/*
+ * Regulatory country, opt-in by boot-arg rtlcc=XX (two letters: AR, US, DE...).
+ * The code goes into registry alpha2, the field Linux fills from module_param
+ * rtw_country_code; hal_com_config_channel_plan then takes the country's
+ * channel plan (core/rtw_chplan.c country_chplan_map) instead of the efuse or
+ * default one, and rtw_txpwr_init_regd its power-limit table. An efuse plan
+ * with the force bit (bit 7) still wins, as on Linux. Without the boot-arg, or
+ * with a code that is not two letters or not in the map, alpha2 stays 0xFFFF
+ * and nothing changes.
+ */
+static char g_rtlcc[3];         /* accepted code, empty when none */
+
+static void rtl8814_parse_rtlcc(void)
+{
+	char cc[4] = { 0 };
+
+	g_rtlcc[0] = 0;
+	if (!PE_parse_boot_argn("rtlcc", cc, sizeof(cc)))
+		return;
+	if (!is_alpha(cc[0]) || !is_alpha(cc[1]) || cc[2]) {
+		rtl_printk("RTL8814Native: rtlcc ignored, not two letters\n");
+		return;
+	}
+	cc[0] = alpha_to_upper(cc[0]);
+	cc[1] = alpha_to_upper(cc[1]);
+	if (!rtw_get_chplan_from_country(cc)) {
+		rtl_printk("RTL8814Native: rtlcc=%c%c ignored, not in the country map\n", cc[0], cc[1]);
+		return;
+	}
+	g_rtlcc[0] = cc[0];
+	g_rtlcc[1] = cc[1];
+	g_rtlcc[2] = 0;
+}
+
+/* After HAL init (channel set and regd are built): the plan the code gave, and
+ * whether the AWDL social channels survived it. Only with the boot-arg. */
+static void rtl8814_report_rtlcc(_adapter *padapter)
+{
+	static const u8 awdl_ch[3] = { 6, 44, 149 };
+	struct rf_ctl_t *rfctl = adapter_to_rfctl(padapter);
+	HAL_DATA_TYPE *hal = GET_HAL_DATA(padapter);
+	const char *regd = "none";
+	int i;
+
+	if (!g_rtlcc[0] || !rfctl)
+		return;
+#if CONFIG_TXPWR_LIMIT
+	if (rfctl->regd_name)
+		regd = rfctl->regd_name;
+#endif
+	if (rfctl->country_ent && rfctl->country_ent->alpha2[0] == g_rtlcc[0] &&
+	    rfctl->country_ent->alpha2[1] == g_rtlcc[1])
+		rtl_printk("RTL8814Native: rtlcc=%s -> chplan 0x%02X, %u channels, regd %s, power limit %s%s\n",
+			   g_rtlcc, rfctl->ChannelPlan, rfctl->max_chan_nums, regd,
+			   phy_is_tx_power_limit_needed(padapter) ? "on" : "off (efuse)",
+			   COUNTRY_CHPLAN_EN_11AC(rfctl->country_ent) ? "" : ", 11ac off for this country");
+	else
+		rtl_printk("RTL8814Native: rtlcc=%s not applied (%s), chplan 0x%02X\n", g_rtlcc,
+			   (hal && hal->bDisableSWChannelPlan) ? "efuse forces its plan" : "vendor kept another plan",
+			   rfctl->ChannelPlan);
+
+	for (i = 0; i < 3; i++) {
+		int idx = rtw_chset_search_ch(rfctl->channel_set, awdl_ch[i]);
+		if (idx < 0)
+			rtl_printk("RTL8814Native: warning: rtlcc=%s plan has no channel %u, AWDL cannot use it%s\n",
+				   g_rtlcc, awdl_ch[i], awdl_ch[i] == 149 ? " (default park channel)" : "");
+		else if (rfctl->channel_set[idx].ScanType == SCAN_PASSIVE)
+			rtl_printk("RTL8814Native: warning: rtlcc=%s plan marks channel %u passive\n",
+				   g_rtlcc, awdl_ch[i]);
+	}
+}
+
+/* RTLCountry / RTLChannelPlan: the country entry the vendor took (efuse or
+ * rtlcc; empty when the plan came from a plan id) and the plan id in use. */
+int rtl8814native_get_regulatory(char alpha2[3], uint32_t *chplan)
+{
+	struct rf_ctl_t *rfctl;
+
+	alpha2[0] = 0;
+	*chplan = 0;
+	if (!g_padapter)
+		return -ENODEV;
+	rfctl = adapter_to_rfctl(g_padapter);
+	if (!rfctl)
+		return -ENODEV;
+	if (rfctl->country_ent) {
+		alpha2[0] = rfctl->country_ent->alpha2[0];
+		alpha2[1] = rfctl->country_ent->alpha2[1];
+		alpha2[2] = 0;
+	}
+	*chplan = rfctl->ChannelPlan;
+	return 0;
+}
+
 uint loadparam(_adapter *padapter)
 {
 	struct registry_priv *registry_par = &padapter->registrypriv;
@@ -332,6 +428,9 @@ uint loadparam(_adapter *padapter)
 	registry_par->tx_nss = 0;
 	registry_par->rx_nss = 0;
 	_rtw_memset(registry_par->alpha2, 0xFF, 2);
+	rtl8814_parse_rtlcc();
+	if (g_rtlcc[0])
+		_rtw_memcpy(registry_par->alpha2, g_rtlcc, 2);
 	registry_par->channel_plan = CONFIG_RTW_CHPLAN;
 	registry_par->bAcceptAddbaReq = _TRUE;
 	registry_par->antdiv_cfg = 2;
@@ -648,6 +747,7 @@ int rtl8814native_vendor_probe(struct usb_device *udev, unsigned long driver_inf
 	} else {
 		rtl_printk("RTL8814Native: rtw_hal_init returned status %d\n", status);
 	}
+	rtl8814_report_rtlcc(g_padapter);
 
 	/* 11. Start Driver Threads (RTW_CMD_THREAD) and USB Bulk IN RX IRPs */
 	skb_queue_head_init(&g_tx_skb_queue);
@@ -670,6 +770,8 @@ int rtl8814native_vendor_probe(struct usb_device *udev, unsigned long driver_inf
 	rtw_set_pwr_state_check_timer(adapter_to_pwrctl(g_padapter));
 
 	g_radio_telem.probe_status = 0;
+	rtl8814native_led_start();
+	rtl8814native_rxwd_start();
 	rtl_printk("RTL8814Native: === Vendor Radio Bring-Up & RX/TX Pipeline Ready ===\n");
 	return 0;
 }
@@ -677,6 +779,15 @@ int rtl8814native_vendor_probe(struct usb_device *udev, unsigned long driver_inf
 int rtl8814native_vendor_remove(void)
 {
 	rtl_printk("RTL8814Native: stopping vendor radio...\n");
+
+	/* The RX watchdog before the LED: a recovery in its tick restarts the
+	 * LED, and stop waits for that tick */
+	rtl8814native_rxwd_stop();
+
+	/* The LED tick first, while the chip still answers; the next instance's
+	 * layer gives its own peer count */
+	rtl8814native_led_stop();
+	rtl8814native_led_awdl_peers(0);
 
 	if (g_tx_work_inited) {
 		cancel_work_sync(&g_tx_work);
@@ -737,6 +848,9 @@ void rtl8814native_vendor_shutdown(void)
 
 	rtl_printk("RTL8814Native: system shutdown, powering the radio off\n");
 
+	rtl8814native_rxwd_stop();
+	rtl8814native_led_stop();
+
 	/* Stop new TX and the watchdog before the HAL powers the chip down */
 	g_padapter->net_closed = _TRUE;
 	g_padapter->bup = _FALSE;
@@ -763,6 +877,9 @@ int rtl8814native_vendor_suspend(void)
 
 	rtl_printk("RTL8814Native: system sleep, powering the radio off\n");
 
+	rtl8814native_rxwd_stop();
+	rtl8814native_led_stop();
+
 	/* The stop path of vendor_remove(), but every allocation stays: the
 	 * wake path re-runs HAL init + firmware on the same _adapter. */
 	rtl8814native_disconnect();
@@ -786,9 +903,56 @@ int rtl8814native_vendor_suspend(void)
 	return 0;
 }
 
+/*
+ * rtw_hal_init, then proof that the chip answers. hal_init checks only its
+ * power-on step and drops every other register write's result, so with the
+ * device not reachable (woken before its USB port) it "succeeds" with every
+ * write lost. SYS_CLKR+1 and CR then read back both 0x00 (usb_read8 returns 0
+ * for a failed transfer) or both 0xFF; a live chip after HAL init reads
+ * 0xFC / 0xFF (register dumps of 2026-11-11, Logs/pruebas_awdl/rx_parado_20261111).
+ * A silent chip gets up to RTL_HAL_LIVE_RETRIES more inits, RTL_HAL_LIVE_WAIT_MS
+ * apart. 0 when it answers (the first time: one init and two reads, as
+ * before), -EIO when the first rtw_hal_init failed (*hal_status), -EAGAIN when
+ * the chip never answered (also when a retry's rtw_hal_init failed: that one
+ * began with a silent chip). bup is whatever rtw_hal_init left.
+ */
+#define RTL_HAL_LIVE_RETRIES 3
+#define RTL_HAL_LIVE_WAIT_MS 2
+
+static int rtl8814_hal_init_live(const char *who, int *hal_status)
+{
+	int attempt;
+	u8 clkr = 0, cr = 0;
+
+	for (attempt = 0; attempt <= RTL_HAL_LIVE_RETRIES; attempt++) {
+		if (attempt)
+			rtw_msleep_os(RTL_HAL_LIVE_WAIT_MS);
+		*hal_status = rtw_hal_init(g_padapter);
+		if (*hal_status != _SUCCESS) {
+			if (!attempt)
+				return -EIO;
+			rtl_printk("RTL8814Native: %s: HAL init %d of %d failed (%d)\n", who, attempt + 1,
+				   RTL_HAL_LIVE_RETRIES + 1, *hal_status);
+			return -EAGAIN;
+		}
+		clkr = rtw_read8(g_padapter, REG_SYS_CLKR + 1);
+		cr = rtw_read8(g_padapter, REG_CR);
+		if (!((clkr == 0xFF && cr == 0xFF) || (clkr == 0 && cr == 0))) {
+			if (attempt)
+				rtl_printk("RTL8814Native: %s: the chip answered after %d more HAL inits "
+					   "(SYS_CLKR+1=0x%02x CR=0x%02x)\n", who, attempt, clkr, cr);
+			return 0;
+		}
+		rtl_printk("RTL8814Native: %s: no answer from the chip after HAL init %d of %d "
+			   "(SYS_CLKR+1=0x%02x CR=0x%02x)\n", who, attempt + 1, RTL_HAL_LIVE_RETRIES + 1,
+			   clkr, cr);
+	}
+	return -EAGAIN;
+}
+
 int rtl8814native_vendor_resume(void)
 {
-	int status;
+	int status, rc;
 
 	if (!g_padapter)
 		return -ENODEV;
@@ -816,14 +980,31 @@ int rtl8814native_vendor_resume(void)
 	/* usb_write_port gates on drv_stopped, so clear it before the
 	 * firmware download */
 	rtw_clr_drv_stopped(g_padapter);
+	/* rtw_intf_stop at sleep set DF_RX_BIT and DF_TX_BIT; without
+	 * clearing them (as rtw_reset_drv_sw does) every bulk transfer is
+	 * refused after wake */
+	RTW_ENABLE_FUNC(g_padapter, DF_RX_BIT);
+	RTW_ENABLE_FUNC(g_padapter, DF_TX_BIT);
 	rtl8814native_rx_stage_reset();
 
-	status = rtw_hal_init(g_padapter);
-	if (status != _SUCCESS) {
+	rc = rtl8814_hal_init_live("wake", &status);
+	if (rc == -EIO) {
 		rtl_printk("RTL8814Native: wake: rtw_hal_init failed (%d)\n", status);
 		g_suspended = 0;
 		rtw_set_surprise_removed(g_padapter);
 		return -EIO;
+	}
+	if (rc) {
+		/* Not "unplugged": the device is there and a later wake may reach
+		 * it. Left as after sleep: no threads, no timers, RX not armed, no
+		 * I/O path open (drv_stopped), still marked asleep; remove frees
+		 * it as usual. */
+		g_padapter->bup = _FALSE;
+		g_padapter->net_closed = _TRUE;
+		rtw_set_drv_stopped(g_padapter);
+		rtl_printk("RTL8814Native: wake: the chip never answered after %d HAL inits, radio "
+			   "left down, RX not armed\n", RTL_HAL_LIVE_RETRIES + 1);
+		return -EAGAIN;
 	}
 
 	skb_queue_head_init(&g_tx_skb_queue);
@@ -842,6 +1023,8 @@ int rtl8814native_vendor_resume(void)
 	rtw_set_pwr_state_check_timer(adapter_to_pwrctl(g_padapter));
 
 	g_suspended = 0;
+	rtl8814native_led_start();
+	rtl8814native_rxwd_start();
 
 	/* Re-associate with the network we were on at sleep. join_network is
 	 * async (cmd thread + MLME + supplicant), so this just queues it. */
@@ -856,6 +1039,106 @@ void rtl8814native_rejoin_last(void)
 		rtl8814native_join_network(g_last_ssid,
 					   g_last_psk[0] ? g_last_psk : NULL,
 					   g_last_auth);
+}
+
+/*
+ * RX watchdog level 2 (RxWatchdog.h, rtlrxwd=3): the radio down and up in
+ * place, the stop half of vendor_suspend and the start half of
+ * vendor_resume, from the watchdog's tick. Every stop path stops that tick
+ * first and waits for it, so no sleep, remove or shutdown runs meanwhile.
+ * Two additions to the sleep/wake pair:
+ * - offch_mutex is held from the moment the command thread is gone to the
+ *   moment the radio is up again, so an AWDL hop that passed its bup check
+ *   before the stop waits instead of switching channel under the card
+ *   disable or HAL init. setch_mutex is only waited for (a channel set in
+ *   flight ends first), not held: init_hw_mlme_ext in rtw_hal_init takes it.
+ * - DF_RX_BIT and DF_TX_BIT, set by rtw_intf_stop's port cancels, are
+ *   cleared before HAL init (the vendor's rtw_reset_drv_sw does it on its
+ *   wake path); without that every bulk transfer is refused afterwards.
+ * The link is dropped first (the layer sees it go); with rtlair < 2 the
+ * last network is joined again, as after a probe; with rtlair=2 the
+ * system's auto-join does it through the layer. AWDL port 1 gets its MAC
+ * back. Returns 0, or a negative errno with the radio left down (bup 0,
+ * drv_stopped; never surprise_removed).
+ */
+int rtl8814native_radio_restart(void)
+{
+	struct rf_ctl_t *rfctl;
+	struct dvobj_priv *dvobj;
+	extern u8 rtl8814native_awdl_port1;     /* AWDLTx.c */
+	u8 awdl_mac[ETH_ALEN];
+	uint32_t rtlair = 0;
+	int awdl = 0, status, rc, i;
+
+	if (!g_padapter || !g_dvobj || g_suspended || !g_padapter->bup || RTW_CANNOT_RUN(g_padapter))
+		return -ENODEV;
+	rfctl = adapter_to_rfctl(g_padapter);
+	dvobj = adapter_to_dvobj(g_padapter);
+
+	rtl_printk("RTL8814Native: RX watchdog: restarting the radio in place\n");
+	rtl8814native_led_stop();
+
+	if (rtl8814native_awdl_port1) {
+		for (i = 0; i < ETH_ALEN; i++)
+			awdl_mac[i] = rtw_read8(g_padapter, REG_MACID1 + i);
+		awdl = 1;
+	}
+
+	/* the stop half of vendor_suspend */
+	rtl8814native_disconnect();
+	g_padapter->net_closed = _TRUE;
+	g_padapter->bup = _FALSE;
+	rtw_set_drv_stopped(g_padapter);
+	if (g_tx_work_inited) {
+		cancel_work_sync(&g_tx_work);
+		rtw_skb_queue_purge(&g_tx_skb_queue);
+		g_tx_work_inited = 0;
+	}
+	rtw_intf_stop(g_padapter);
+	rtw_stop_drv_threads(g_padapter);
+	rtw_cancel_all_timer(g_padapter);
+
+	_enter_critical_mutex(&rfctl->offch_mutex, NULL);
+	_enter_critical_mutex(&dvobj->setch_mutex, NULL);
+	_exit_critical_mutex(&dvobj->setch_mutex, NULL);
+	rtw_hal_deinit(g_padapter);
+
+	/* the start half of vendor_resume */
+	rtw_clr_drv_stopped(g_padapter);
+	RTW_ENABLE_FUNC(g_padapter, DF_RX_BIT);
+	RTW_ENABLE_FUNC(g_padapter, DF_TX_BIT);
+	rtl8814native_rx_stage_reset();
+	rc = rtl8814_hal_init_live("RX watchdog restart", &status);
+	if (rc) {
+		g_padapter->bup = _FALSE;
+		rtw_set_drv_stopped(g_padapter);
+		_exit_critical_mutex(&rfctl->offch_mutex, NULL);
+		rtl_printk("RTL8814Native: RX watchdog restart: %s (%d), radio left down\n",
+			   rc == -EIO ? "rtw_hal_init failed" : "the chip never answered", status);
+		return rc;
+	}
+
+	skb_queue_head_init(&g_tx_skb_queue);
+	INIT_WORK(&g_tx_work, rtl8814_tx_work_fn);
+	g_tx_work_inited = 1;
+	if (rtw_start_drv_threads(g_padapter) == _FAIL)
+		rtl_printk("RTL8814Native: RX watchdog restart: rtw_start_drv_threads failed\n");
+	rtw_intf_start(g_padapter);
+	g_padapter->bup = _TRUE;
+	g_padapter->net_closed = _FALSE;
+	g_padapter->netif_up = _TRUE;
+	if (awdl)
+		rtl8814native_radio_awdl_port(awdl_mac);
+	_exit_critical_mutex(&rfctl->offch_mutex, NULL);
+
+	_set_timer(&g_dvobj->dynamic_chk_timer, 2000);
+	rtw_set_pwr_state_check_timer(adapter_to_pwrctl(g_padapter));
+	rtl8814native_led_start();
+
+	PE_parse_boot_argn("rtlair", &rtlair, sizeof(rtlair));
+	if (rtlair < 2)
+		rtl8814native_rejoin_last();
+	return 0;
 }
 
 /* ======================================================================
@@ -1014,7 +1297,9 @@ int rtl8814native_join_network(const char *ssid_str, const char *psk_str, uint32
 }
 
 /* Live experiments from Tools/test_uc (kRTLUC_SetKnob). 1: RX A-MPDU accept (0 off, 1 on, 255 auto).
- * 2: protect robust management frames we send (0 off, 1 on). */
+ * 2: protect robust management frames we send (0 off, 1 on). 3 (RTL_KNOB_LED): the status LED,
+ * RTL_LED_* as boot-arg rtlled (StatusLed.h). 4 (RTL_KNOB_RXWD): the RX watchdog, RTL_RXWD_* as
+ * boot-arg rtlrxwd (RxWatchdog.h). */
 int rtl8814native_set_knob(uint32_t knob, uint32_t value)
 {
 	if (!g_padapter)
@@ -1026,6 +1311,10 @@ int rtl8814native_set_knob(uint32_t knob, uint32_t value)
 	case 2:
 		rtl8814_wpa2_pmf_tx_enable(value != 0);
 		return 0;
+	case RTL_KNOB_LED:
+		return rtl8814native_led_set_mode(value);
+	case RTL_KNOB_RXWD:
+		return rtl8814native_rxwd_set_mode(value);
 	}
 	return -1;
 }

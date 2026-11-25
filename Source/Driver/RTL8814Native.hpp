@@ -50,6 +50,12 @@ public:
                                               APPLE_KEXT_OVERRIDE;
         using IOService::callPlatformFunction;
 
+        /* RTLLed (StatusLed.h): the LED mode at run time, administrator only */
+        virtual IOReturn setProperties(OSObject *props) APPLE_KEXT_OVERRIDE;
+        /* RTLLed in the registry, after a change of the mode */
+        void publishLed();
+        void publishRegulatory();
+
         RTLUsbDevice *usbDevice() { return _usb; }
         RTLEthernetAdapter *adapter() { return _adapter; }
 

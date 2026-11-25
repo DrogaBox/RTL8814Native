@@ -593,6 +593,30 @@ private:
 	/* The RTLAwdlKnobs property: the knobs, the windows of _ev41 split by
 	 * _ev41Bss, and _txDataBss; set outside _txLock, as RTLAwdlLog is. */
 	void publishKnobs();
+	/* The AWDL status for the registry and the radio's LED: RTLAwdlPeers,
+	 * the peers unicast data went to or came from in the last
+	 * AWDL_DATA_PEER_US (_dataPeer, under _txLock), and RTLAwdlChannel, the
+	 * social channel served. txTick gives them to publishStatus, which sets
+	 * the properties and calls rtlRadioAwdlPeers only when they change, under
+	 * _mccLock, which orders it against tx off (zero both). The RX side notes
+	 * a peer again at most every AWDL_DATA_PEER_NOTE_US (_rxDataPeer*, the RX
+	 * drain only), so a transfer takes _txLock a few times a second for it. */
+	struct AwdlDataPeer {
+		uint8_t mac[6];
+		uint64_t lastUs;        /* 0 = empty */
+	};
+	AwdlDataPeer _dataPeer[8];
+	uint8_t _rxDataPeerMac[6];
+	uint64_t _rxDataPeerUs;
+	uint32_t _statPeers;        /* RTLAwdlPeers as published */
+	uint8_t _statCh;            /* RTLAwdlChannel as published */
+	bool _statInit;             /* both published once */
+	uint32_t _statPeersSent;    /* the count the radio has */
+	bool _statPeersOff;         /* the radio has no rtlRadioAwdlPeers */
+	uint64_t _statPeersRetryUs; /* a refused call is not repeated before this */
+	void noteDataPeer(const uint8_t *mac, uint64_t now);
+	uint32_t dataPeers(uint64_t now) const;
+	void publishStatus(uint32_t peers, uint8_t ch, bool tick);
 	uint64_t _mccPreUs;         /* slot start a tick armed early switches for, 0 = none */
 	uint64_t _scanTailUs;       /* a scan just ended: serve as in a return until then */
 	bool     _scanSeen;         /* txTick saw a scan running */

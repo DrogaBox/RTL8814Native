@@ -172,6 +172,8 @@ DRIVER_SOURCES=(
     "Source/Driver/SecurityIE.c"
     "Source/Driver/ReplayCheck.c"
     "Source/Driver/CSA.c"
+    "Source/Driver/StatusLed.c"
+    "Source/Driver/RxWatchdog.c"
 )
 
 # Common kernel flags

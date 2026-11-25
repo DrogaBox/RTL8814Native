@@ -14,6 +14,7 @@
 #include "RTLJoinLog.h"
 #include "RTLScanLog.h"
 #include "RTLAwdlSim.h"
+#include "StatusLed.h"
 
 #include <IOKit/IOLib.h>
 #include <libkern/libkern.h>
@@ -230,6 +231,8 @@ IOReturn RTLUserClient::externalMethod(uint32_t selector,
                 if (!args->scalarInput || args->scalarInputCount < 2)
                         return kIOReturnBadArgument;
                 int rc = rtl8814native_set_knob((uint32_t)args->scalarInput[0], (uint32_t)args->scalarInput[1]);
+                if (rc == 0 && args->scalarInput[0] == RTL_KNOB_LED && _driver)
+                        _driver->publishLed();
                 return (rc == 0) ? kIOReturnSuccess : kIOReturnBadArgument;
         }
 

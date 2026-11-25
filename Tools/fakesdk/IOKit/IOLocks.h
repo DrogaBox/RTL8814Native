@@ -24,4 +24,14 @@ bool    IOLockTryLock(IOLock *);
 int     IOLockSleep(IOLock *, void *event, wait_interrupt_t);
 int     IOLockSleepDeadline(IOLock *, void *event, uint64_t, wait_interrupt_t);
 void    IOLockWakeup(IOLock *, void *event, bool oneThread);
+/* Recursive locks: spinlock_t has been backed by IORecursiveLock since
+ * roadmap milestone 2.1; signatures as in the Kernel.framework header */
+typedef int boolean_t;
+typedef struct _IORecursiveLock IORecursiveLock;
+IORecursiveLock *IORecursiveLockAlloc(void);
+void      IORecursiveLockFree(IORecursiveLock *);
+void      IORecursiveLockLock(IORecursiveLock *);
+boolean_t IORecursiveLockTryLock(IORecursiveLock *);
+void      IORecursiveLockUnlock(IORecursiveLock *);
+boolean_t IORecursiveLockHaveLock(const IORecursiveLock *);
 #endif

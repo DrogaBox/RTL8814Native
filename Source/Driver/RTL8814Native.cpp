@@ -11,6 +11,8 @@
 #include "VendorGlue.hpp"
 #include "RTLRadioABI.h"
 #include "RTLAwdlSim.h"
+#include "StatusLed.h"
+#include "RxWatchdog.h"
 
 #include <IOKit/IORegistryEntry.h>
 #include <IOKit/IOLocks.h>
@@ -244,6 +246,9 @@ bool RTL8814Native::startLocked(IOService *provider)
         pm_trace(this, "registerPowerDriver %s, state %lu",
                  _pmInited ? "ok" : "FAILED", (unsigned long)getPowerState());
 
+        publishLed();
+        if (probe_rc == 0)
+                publishRegulatory();
         registerService();
 
         /* A dongle that re-enumerated across sleep (or was replugged) comes
@@ -560,11 +565,22 @@ IOReturn RTL8814Native::callPlatformFunction(const OSSymbol *functionName,
         }
         if (functionName->isEqualTo(RTL_RADIO_FN_AWDL_HOOK)) {
                 _adapter->setAwdlHook((rtl_radio_awdl_rx_fn)param1, param2);
+                if (!param1)
+                        rtl8814native_led_awdl_peers(0);
                 return kIOReturnSuccess;
         }
-        if (functionName->isEqualTo(RTL_RADIO_FN_AWDL_PORT))
+        if (functionName->isEqualTo(RTL_RADIO_FN_AWDL_PORT)) {
+                if (!param1)
+                        rtl8814native_led_awdl_peers(0);
                 return rtl8814native_radio_awdl_port((const uint8_t *)param1) == 0
                        ? kIOReturnSuccess : kIOReturnNotReady;
+        }
+        if (functionName->isEqualTo(RTL_RADIO_FN_AWDL_PEERS)) {
+                if (!param1)
+                        return kIOReturnBadArgument;
+                rtl8814native_led_awdl_peers(*(const uint32_t *)param1);
+                return kIOReturnSuccess;
+        }
         if (functionName->isEqualTo(RTL_RADIO_FN_SET_CHANNEL)) {
                 if (!param1 || *(const uint32_t *)param1 > 0xFF)
                         return kIOReturnBadArgument;
@@ -630,6 +646,66 @@ IOReturn RTL8814Native::callPlatformFunction(const OSSymbol *functionName,
                 return _adapter->transmitFrame((mbuf_t)param1);
         }
         return kIOReturnUnsupported;
+}
+
+/* RTLLed: the LED mode (StatusLed.h), as boot-arg rtlled or knob 3 left it */
+void RTL8814Native::publishLed()
+{
+        setProperty("RTLLed", (unsigned long long)rtl8814native_led_mode(), 32);
+}
+
+/*
+ * RTLRxStalls (count since kext load) and RTLRxLastStall (uptime in s of the
+ * last, 0 = none) of the RX watchdog (RxWatchdog.h), on the instance that
+ * owns the radio. Called from the watchdog's start and tick, which run only
+ * between probe and remove of that instance (remove waits for the tick).
+ */
+extern "C" void rtl8814native_publish_rx_stalls(uint32_t count, uint64_t last_s)
+{
+        RTL8814Native *o = g_owner;
+
+        if (!o)
+                return;
+        o->setProperty("RTLRxStalls", (unsigned long long)count, 32);
+        o->setProperty("RTLRxLastStall", (unsigned long long)last_s, 64);
+}
+
+/*
+ * RTLCountry (alpha2, "none" when the plan came from a plan id) and
+ * RTLChannelPlan (plan id), as the efuse or boot-arg rtlcc left them at probe.
+ * Read-only: setProperties below takes only RTLLed.
+ */
+void RTL8814Native::publishRegulatory()
+{
+        char cc[3];
+        uint32_t chplan;
+
+        if (rtl8814native_get_regulatory(cc, &chplan) != 0)
+                return;
+        setProperty("RTLCountry", cc[0] ? cc : "none");
+        setProperty("RTLChannelPlan", (unsigned long long)chplan, 32);
+}
+
+/*
+ * RTLLed (an OSNumber, RTL_LED_*) changes the LED mode without a reboot
+ * (Tools/awdlknob led=N), as knob 3 does. Only a task with administrator
+ * privilege; any other dictionary goes to IOService::setProperties.
+ */
+IOReturn RTL8814Native::setProperties(OSObject *props)
+{
+        OSDictionary *d = OSDynamicCast(OSDictionary, props);
+        OSObject *o = d ? d->getObject("RTLLed") : nullptr;
+        if (!o)
+                return super::setProperties(props);
+        if (IOUserClient::clientHasPrivilege(current_task(), kIOClientPrivilegeAdministrator) !=
+            kIOReturnSuccess)
+                return kIOReturnNotPrivileged;
+        OSNumber *n = OSDynamicCast(OSNumber, o);
+        if (!n || n->unsigned64BitValue() > RTL_LED_STEADY ||
+            rtl8814native_led_set_mode((uint32_t)n->unsigned64BitValue()) != 0)
+                return kIOReturnBadArgument;
+        publishLed();
+        return kIOReturnSuccess;
 }
 
 IOReturn RTL8814Native::newUserClient(task_t owningTask,

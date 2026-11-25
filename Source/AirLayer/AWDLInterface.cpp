@@ -206,6 +206,8 @@ struct rtl_awdl_pool_options {
 #define AWDL_TX_FRAME_US        160     /* preamble, SIFS, ACK and backoff of one data frame */
 #define AWDL_TX_LAST_SLACK_US   3000    /* rtlawdl_lastaw: data ends this long before the slot */
 #define AWDL_TX_AGE_US          1200000 /* past one 16-slot period a queued data frame is dropped */
+#define AWDL_DATA_PEER_US       3000000 /* a peer counts in RTLAwdlPeers this long after its last unicast data */
+#define AWDL_DATA_PEER_NOTE_US  250000  /* the RX side notes the same peer again no sooner */
 #define AWDL_IFACE_ID           2       /* Broadcom: interface id 2 for AWDL */
 #define AWDL_ROLE               6       /* IO80211VirtualInterfaceRole AirLink */
 #define AWDL_LINK_DOWN          1       /* linkState() values the PeerManager tests */
@@ -350,6 +352,15 @@ bool RTLAwdInterface::initWithController(RTLAirController *ctrl, const uint8_t m
 	}
 	/* the boot-args' values, before any tick or knob change */
 	publishKnobs();
+	/* RTLAwdlPeers and RTLAwdlChannel at 0, as the radio starts */
+	bzero(_dataPeer, sizeof(_dataPeer));
+	bzero(_rxDataPeerMac, sizeof(_rxDataPeerMac));
+	_rxDataPeerUs = 0;
+	_statInit = false;
+	_statPeersSent = 0;
+	_statPeersOff = false;
+	_statPeersRetryUs = 0;
+	publishStatus(0, 0, false);
 	return true;
 }
 
@@ -748,6 +759,14 @@ void RTLAwdInterface::radioBack()
 		if (!_port1On)
 			LOG("awdl: port 1 refused by the new radio 0x%x", r);
 	}
+	/* a new radio starts with no AWDL peers for its LED */
+	if (_mccLock) {
+		IOLockLock(_mccLock);
+		_statPeersSent = 0;
+		_statPeersOff = false;
+		_statPeersRetryUs = 0;
+		IOLockUnlock(_mccLock);
+	}
 	_rateSet = false;           /* a new radio starts at its fixed rate */
 	/* and without an A-MPDU rate: the sessions start over, since frames sent
 	 * through it before the rate is set again would get the radio's numbers */
@@ -993,6 +1012,17 @@ void RTLAwdInterface::deliverData(mbuf_t m)
 	if ((f[0] != 0x08 && !qos) || (f[1] & 0x47) || (f[22] & 0x0F) || len < hdr) {
 		_rxDataBad++;
 		return;
+	}
+	/* Unicast to awdl0: its transmitter has data with us (RTLAwdlPeers). */
+	if (!memcmp(f + 4, _mac, 6) && _txLock) {
+		uint64_t now = awdlNowUs();
+		if (memcmp(_rxDataPeerMac, f + 10, 6) || now - _rxDataPeerUs >= AWDL_DATA_PEER_NOTE_US) {
+			memcpy(_rxDataPeerMac, f + 10, 6);
+			_rxDataPeerUs = now;
+			IOLockLock(_txLock);
+			noteDataPeer(f + 10, now);
+			IOLockUnlock(_txLock);
+		}
 	}
 	bool amsdu = qos && (f[AWDL_WLAN_HDR] & 0x80);
 
@@ -1858,6 +1888,8 @@ void RTLAwdInterface::setRadioTx(bool on)
 		/* After _txOn went false: a tick that switches later sees it under
 		 * _mccLock and stays on the BSS */
 		mccSwitch(0);
+		/* and one that publishes later sees it there too */
+		publishStatus(0, 0, false);
 	}
 	if (!on)
 		flushRadioTx();
@@ -2013,7 +2045,12 @@ void RTLAwdInterface::txTick()
 	 * dense still ends 2 s after the last busy sample. */
 	bool denseChanged = updateDense(awdlNowUs(), shared && !scanning && !(mcc && _mccRun));
 	bool denseNow = _dense;
+	/* the social channel the windows go on, the time sharing's target while
+	 * the radio is on the BSS */
+	uint32_t statPeers = dataPeers(awdlNowUs());
+	uint8_t statCh = mcc ? _mccTarget : awdlSocial(ch) ? ch : 0;
 	IOLockUnlock(_txLock);
+	publishStatus(statPeers, statCh, true);
 	if (denseChanged && _denseChanges <= 64)
 		LOG("awdl: dense presence %s%s (rx data %llu, tx data %llu)", denseNow ? "on" : "off",
 		    mcc ? ", radio shared with the BSS" : "", _rxData, _txDataSent);
@@ -3078,6 +3115,83 @@ void RTLAwdInterface::publishKnobs()
 	d->release();
 }
 
+/* Under _txLock: unicast data to or from mac now. A new peer takes a free
+ * entry, else the one quiet longest. */
+void RTLAwdInterface::noteDataPeer(const uint8_t *mac, uint64_t now)
+{
+	AwdlDataPeer *e = nullptr, *old = &_dataPeer[0];
+	for (uint32_t i = 0; i < sizeof(_dataPeer) / sizeof(_dataPeer[0]) && !e; i++) {
+		if (_dataPeer[i].lastUs && !memcmp(_dataPeer[i].mac, mac, 6))
+			e = &_dataPeer[i];
+		else if (_dataPeer[i].lastUs < old->lastUs)
+			old = &_dataPeer[i];
+	}
+	if (!e) {
+		e = old;
+		memcpy(e->mac, mac, 6);
+	}
+	e->lastUs = now;
+}
+
+/* Under _txLock: the peers with unicast data in the last AWDL_DATA_PEER_US. */
+uint32_t RTLAwdInterface::dataPeers(uint64_t now) const
+{
+	uint32_t n = 0;
+	for (uint32_t i = 0; i < sizeof(_dataPeer) / sizeof(_dataPeer[0]); i++) {
+		uint64_t t = _dataPeer[i].lastUs;
+		if (t && now >= t && now - t < AWDL_DATA_PEER_US)
+			n++;
+	}
+	return n;
+}
+
+/*
+ * RTLAwdlPeers and RTLAwdlChannel when they change, and the count to the radio
+ * for its LED (rtlRadioAwdlPeers) when it differs from what the radio has. From
+ * txTick (tick set: nothing once tx is off) and from tx off (0, 0). Outside
+ * _txLock; _mccLock orders the two, so a tick that computed before the off
+ * cannot publish after it. A radio without the call is not asked again; a
+ * refusal is retried a second later, so a takeover does not log every tick.
+ */
+void RTLAwdInterface::publishStatus(uint32_t peers, uint8_t ch, bool tick)
+{
+	if (!_mccLock || !_txLock)
+		return;
+	IOLockLock(_mccLock);
+	if (tick) {
+		IOLockLock(_txLock);
+		bool on = _txOn;
+		IOLockUnlock(_txLock);
+		if (!on) {
+			IOLockUnlock(_mccLock);
+			return;
+		}
+	}
+	if (!_statInit || peers != _statPeers)
+		setProperty("RTLAwdlPeers", (unsigned long long)peers, 32);
+	if (!_statInit || ch != _statCh)
+		setProperty("RTLAwdlChannel", (unsigned long long)ch, 32);
+	_statInit = true;
+	_statPeers = peers;
+	_statCh = ch;
+	if (!_statPeersOff && peers != _statPeersSent && _ctrl) {
+		uint64_t now = awdlNowUs();
+		if (now >= _statPeersRetryUs) {
+			uint32_t n = peers;
+			IOReturn r = _ctrl->radio(RTL_RADIO_FN_AWDL_PEERS, &n);
+			if (r == kIOReturnSuccess) {
+				_statPeersSent = peers;
+			} else if (r == kIOReturnUnsupported) {
+				_statPeersOff = true;
+				LOG("awdl: the radio has no rtlRadioAwdlPeers: its LED shows no AWDL peers");
+			} else {
+				_statPeersRetryUs = now + 1000000;
+			}
+		}
+	}
+	IOLockUnlock(_mccLock);
+}
+
 bool RTLAwdInterface::sendAf(uint8_t subtype, uint8_t channel, const uint8_t *planCh,
                              const uint8_t *planOc, bool umi)
 {
@@ -3698,6 +3812,8 @@ void RTLAwdInterface::queueData(const uint8_t *eth, uint32_t len, bool plain)
 	f->tsUs = (uint32_t)now;
 	_txRingCount++;
 	_txDataQueued++;
+	if (!(eth[0] & 1))
+		noteDataPeer(eth, now);
 	/* A run of unicast data to one peer asks it for a Block Ack session. */
 	uint8_t req[AWDL_BAO_REQUEST_LEN];
 	AwdlBaoPeer *bp = nullptr;

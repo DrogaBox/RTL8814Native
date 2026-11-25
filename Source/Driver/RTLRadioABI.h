@@ -182,6 +182,13 @@ struct rtl_radio_awdl_agg {
  */
 #define RTL_RADIO_FN_AWDL_WIDTH   "rtlRadioAwdlWidth"  /* p1: const uint32_t *channel, p2: uint32_t *mhz (out),
                                                         * p3: uint32_t *upper (out) or NULL */
+/*
+ * The number of AWDL peers with a data session, for the radio's status LED
+ * (StatusLed.h): the layer gives it when it changes, and the radio takes 0
+ * again when port 1 or the AWDL hook goes off. Reads and writes no register.
+ * Older builds answer kIOReturnUnsupported.
+ */
+#define RTL_RADIO_FN_AWDL_PEERS   "rtlRadioAwdlPeers"  /* p1: const uint32_t *peers */
 /* rtl_radio_status.state */
 #define RTL_RADIO_S_IDLE          0
 #define RTL_RADIO_S_SCAN          1
